@@ -58,6 +58,7 @@ def build_table(customer_facts=(), supplier_facts=(), releases=(), max_quarters=
                 release.get("source_type") or "release",
                 release.get("url") or "",
                 release.get("filing_date"),
+                accession=release.get("accession"),
             )
         )
     rows.sort(
@@ -125,31 +126,64 @@ def figures_from_records(records, seen_at):
 
 
 def keep_distinct_amounts(figures):
-    """A repeated prose metric collapses. A different amount on that key stays.
+    """One row per metric and segment. The amount is not written into the label.
 
-    Company-facts rows keep the shared key, so two currencies for one concept
-    still collapse. Orders and backlog from one release do not.
+    An unlabeled orders or backlog row is dropped when a segmented row has the
+    same amount. A second copy whose period is only the filing date is dropped
+    when the quarter-end row is already there. Company-facts rows are unchanged,
+    so two currencies for one concept still collapse on the shared key.
     """
-    seen = {}
-    for row in figures or []:
+    rows = list(figures or [])
+    segmented = set()
+    for row in rows:
         instrument = row.get("instrument") or ""
-        prose = ":" in instrument or instrument.startswith(("orders", "backlog", "revenue"))
+        if ":" not in instrument:
+            continue
+        kind = instrument.split(":", 1)[0]
+        segmented.add((
+            row.get("ticker") or "",
+            row.get("figure_type") or "",
+            kind,
+            round(float(row.get("value") or 0), 2),
+        ))
+    kept = []
+    for row in rows:
+        instrument = row.get("instrument") or ""
+        if instrument in {"orders", "backlog", "revenue"}:
+            kind = instrument
+            mark = (
+                row.get("ticker") or "",
+                row.get("figure_type") or "",
+                kind,
+                round(float(row.get("value") or 0), 2),
+            )
+            if mark in segmented:
+                continue
+        kept.append(row)
+    grouped = {}
+    order = []
+    for row in kept:
+        instrument = row.get("instrument") or ""
+        prose = ":" in instrument or instrument in {"orders", "backlog", "revenue"}
         if not prose:
+            order.append(row)
             continue
         key = (
             row.get("ticker") or "",
             row.get("figure_type") or "",
             instrument,
-            row.get("period") or "",
+            round(float(row.get("value") or 0), 2),
         )
-        value = round(float(row.get("value") or 0), 2)
-        prior = seen.get(key)
-        if prior is None:
-            seen[key] = value
-            continue
-        if prior != value:
-            row["instrument"] = f"{instrument}|{value:.0f}"
-    return figures
+        grouped.setdefault(key, []).append(row)
+    result = list(order)
+    for group in grouped.values():
+        quarter = [
+            row
+            for row in group
+            if (row.get("period") or "")[:10] != (row.get("announced_on") or "")[:10]
+        ]
+        result.extend(quarter or group)
+    return result
 
 
 def stale_latest_periods(records, as_of, max_age_days=DEFAULT_STALE_DAYS):

@@ -19,7 +19,7 @@ cause-n-effect/
     └── macro/          # cached official macro context; does not emit leads
 ```
 
-`Scouts/capex` pulls SEC companyfacts, EDGAR full-text capex guidance, and ASX announcements into the shared figures table. Each lead scout keeps its fetcher, parser, and tests in its own folder. `Scouts/macro` is documented only: a cached official dataset, with no fetcher yet.
+`Scouts/capex` pulls SEC companyfacts, EDGAR full-text capex guidance, and ASX announcements into the shared figures table. Each lead scout keeps its fetcher, parser, and tests in its own folder. `Scouts/macro` caches official series in `macro_series` and `macro_observations`. It does not write figures or leads.
 
 ## Environment
 
@@ -27,9 +27,13 @@ SEC requests need a contact address in `SEC_CONTACT_EMAIL`. `shared/nethttp.py` 
 
 Export it in the shell before a live SEC pull. Do not commit the address. `.env` is gitignored, and so are local databases (`*.db`, `*.sqlite`, `*.sqlite3`) and `cache/`.
 
+The macro scout reads `FRED_API_KEY` and `EIA_API_KEY` the same way: from the environment, at request time, never from the tree. If either variable is unset, that source is skipped and no request is sent. The keys are not printed.
+
 ## HTTP
 
 Every SEC and ASX request goes through `shared/nethttp.py`. The client spaces requests per host (0.15s for SEC, under the 10 requests/second fair-access cap; 2s for ASX, including `asx.api.markitdigital.com`), retries HTTP 403, 429, and 5xx with exponential backoff while honouring `Retry-After`, and sends an identifying User-Agent on SEC requests. See `shared/README.md` for the client API.
+
+Macro requests use the same client, with one second between calls to the same host (FRED, BLS, ABS, RBA, the NY Fed, and EIA).
 
 ## Tests
 
@@ -44,6 +48,7 @@ python3 Scouts/orders_backlog/tests/test_orders_backlog.py
 python3 Scouts/debt_raise/tests/test_debt_raise.py
 python3 Scouts/insider_buying/tests/test_insider_buying.py
 python3 Scouts/capex/tests/test_capex.py
+python3 -m unittest discover -s Scouts/macro/tests -t .
 ```
 
 ## Lead pipeline
@@ -75,6 +80,14 @@ python3 -m Scouts.accumulation.live --db /tmp/cause-n-effect.sqlite
 ```
 
 `--since` and `--until` bound the debt-raise SEC window. `--tickers` is a comma-separated list and also filters that scout's ASX watchlist. Capex `--quarters` keeps companyfacts whose period end falls in the last N quarters (default 8). Insider buying `--limit` caps Form 4 filings (default 50). Every live command accepts `--help` and `-h`, prints usage, and exits before any request.
+
+Macro does not write figures or leads. It refreshes `macro_series` and `macro_observations` when the newest `fetched_at` is older than that series' `stale_after_hours`. `--force` refreshes the selection anyway. `--series` is a comma-separated list of series ids. FRED is skipped until `FRED_API_KEY` is set, and EIA until `EIA_API_KEY` is set. `--help` exits before any request.
+
+```bash
+python3 -m Scouts.macro.live --help
+python3 -m Scouts.macro.live --db /tmp/cause-n-effect.sqlite
+python3 -m Scouts.macro.live --db /tmp/cause-n-effect.sqlite --fixture-dir Scouts/macro/fixtures
+```
 
 Offline SEC checks use a fixture instead of EDGAR and do not open a network connection:
 

@@ -48,7 +48,7 @@ That second pass includes a priced-in check on any prior price run. The Centurio
 3. **orders_backlog**: customer-reported backlog plus supplier order announcements.
 4. **Accumulation**: 13D/13G filings and ASX substantial holder notices.
 5. **Insider buying**: Form 4s and ASX 3Ys, with CEO buys and cluster buying flagged.
-6. **Macro**: official macro context (rates and yields, inflation, central-bank policy, credit and funding, the dollar, oil and energy, fiscal spending, supply chains, geopolitics, election and regulatory risk), cached per series and refreshed only when stale. It does not emit leads.
+6. **Macro**: cached rates, inflation, central-bank balance sheets, credit spreads, the dollar, oil and gas, fiscal balances, and supply-chain pressure, plus a placeholder for geopolitics, election, and regulatory notes. It does not emit leads. The second-pass Centurion reads `macro_series` and `macro_observations`.
 
 ## Roles
 - **Scouts** find leads. They do not merge them. The Macro scout caches context and does not emit leads.

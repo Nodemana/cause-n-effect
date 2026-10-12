@@ -123,7 +123,7 @@ def main(argv=None):
     finally:
         conn.close()
     print(f"run {run_id} figures {len(figures)}")
-    _print_rows(db_path, run_id)
+    _print_rows(db_path, run_id, figures)
     return 0
 
 
@@ -154,6 +154,7 @@ def _releases(documents, source_side):
                 "filing_date": document.get("filing_date"),
                 "source_side": source_side,
                 "source_type": "asx_announcement" if document.get("form") == "ASX" else "filing",
+                "accession": document.get("accession") or "",
             }
         )
     return rows
@@ -244,12 +245,39 @@ def _figures(records, seen):
                 "source_url": record.get("source_url"),
                 "source_type": "asx_announcement" if record.get("source_type") == "asx_announcement" else "filing",
                 "verified": 0 if record.get("flags") else 1,
+                "accession": _accession(record),
             }
         )
     return rows
 
 
-def _print_rows(db_path, run_id):
+def _accession(record):
+    for note in record.get("notes") or []:
+        text = str(note)
+        if text.startswith("accession:"):
+            return text.split(":", 1)[1].strip()
+    return _accession_from_url(record.get("source_url"))
+
+
+def _accession_from_url(url):
+    text = url or ""
+    dashed = re.search(r"\d{10}-\d{2}-\d{6}", text)
+    if dashed:
+        return dashed.group(0)
+    folder = re.search(r"/(\d{18})/", text)
+    if not folder:
+        return ""
+    raw = folder.group(1)
+    return f"{raw[:10]}-{raw[10:12]}-{raw[12:]}"
+
+
+def _print_key(row):
+    value = row["value"] if isinstance(row, dict) else row["value"]
+    number = None if value is None else round(float(value), 2)
+    return (row["ticker"], row["instrument"], row["period"], number)
+
+
+def _print_rows(db_path, run_id, figures=None):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     stored = conn.execute(
@@ -260,11 +288,16 @@ def _print_rows(db_path, run_id):
         (run_id,),
     ).fetchall()
     conn.close()
+    accessions = {}
+    for figure in figures or []:
+        accessions[_print_key(figure)] = figure.get("accession") or ""
     for row in stored:
+        key = _print_key(row)
         print(
             f"  {row['ticker']} {row['figure_type']} {row['instrument']} "
             f"period={row['period']} value={row['value']} {row['currency'] or ''} "
-            f"verified={row['verified']} source_type={row['source_type']}"
+            f"verified={row['verified']} source_type={row['source_type']} "
+            f"accession={accessions.get(key) or ''}"
         )
     print(f"db {db_path}")
 

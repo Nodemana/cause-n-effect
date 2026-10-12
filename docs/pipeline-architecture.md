@@ -58,7 +58,7 @@ Research, the second pass, the critiques, and the ranking stay inside the run. T
 
 Each scout pulls official findings (SEC, ASX, company releases) with the code already in its folder. That pull is not a lead. Deterministic gates run first: the scout's own thresholds, then a dedupe of the pull. What remains is a shortlist. A small LLM pass, inside a per-run token budget, reads that shortlist and applies four judgments. It emits a row into `leads` only when the item is genuinely interesting. A reject is written to `lead_rejects` and is not inserted into `leads`. The aim is that a Centurion never receives a run of low-value leads, such as hundreds of routine bond issues.
 
-A lodged lead is one finding: ticker, lead type, source link, the figure it rests on, and a significance assessment. Lead types match the scout folders: `capex`, `debt_raise`, `orders_backlog`, `accumulation`, `insider_buying`.
+A lodged lead is one finding: ticker, lead type, source link, the figure it rests on, and a significance assessment. Lead types match the scout folders: `capex`, `debt_raise`, `orders_backlog`, `accumulation`, `insider_buying`. The macro scout is not in that list. It does not lodge leads. It refreshes `macro_series` and `macro_observations`, and the second-pass Centurion reads that cache.
 
 Each dimension is a short label plus a one-line rationale, not necessarily a number:
 
@@ -103,7 +103,7 @@ That second pass includes a priced-in check on any prior price run. The Centurio
 
 The Macro scout is not a lead scout. It does not emit a row into `leads` and it does not write `lead_rejects`. It caches official macro context for the second-pass Centurion: rates and yields, inflation and CPI, central-bank policy (QE, QT, forward guidance), credit spreads and funding conditions, the US dollar, oil and energy prices, fiscal policy and government spending, supply-chain disruptions, geopolitics, and election and regulatory risk. Sources are central banks, statistics agencies, and treasuries, including FRED, the BLS, the ABS, the RBA, and the US Treasury. Media is not a source.
 
-Each series has `fetched_at` and `staleness_seconds`. A run fetches the series only when `fetched_at` is empty or older than that threshold, or when a stated official release time has arrived. The second-pass Centurion reads `macro_observations` and does not re-pull. The first pass does not read the cache. The series list, the proposed defaults, and the table sketch are in [Scouts/macro/README.md](../Scouts/macro/README.md). The tables below are not created by `shared/migrations/001_pipeline.sql` or `002_lead_pipeline.sql`. When the tables have rows, the sweep uses them. When they do not, it falls back to `cache/macro.json`.
+Each series has `stale_after_hours` on `macro_series`. A run fetches the series only when the newest `macro_observations.fetched_at` is missing or older than that threshold. The second-pass Centurion reads the latest observation and does not re-pull. The first pass does not read the cache. The series list is in [Scouts/macro/README.md](../Scouts/macro/README.md). The tables are created by `Scouts/macro/migrations/001_macro.sql`, not by `shared/migrations/001_pipeline.sql` or `002_lead_pipeline.sql`. When those tables have rows, the sweep uses them. When they do not, it falls back to `cache/macro.json`.
 
 ## Assign
 
@@ -265,33 +265,25 @@ CREATE INDEX ix_lead_rejects_cik ON lead_rejects(cik);
 CREATE INDEX ix_reject_cp_ticker ON lead_reject_counterparties(ticker);
 CREATE INDEX ix_reject_cp_name ON lead_reject_counterparties(name_normalised);
 
--- Follow-up migration. Not in 001_pipeline.sql yet.
--- Macro scout cache. Not a lead. See Scouts/macro/README.md.
+-- Applied by Scouts/macro/migrations/001_macro.sql, not by 001 or 002.
+-- The second pass reads series_id, name, source, unit, obs_date, and value.
 CREATE TABLE macro_series (
-  series_id TEXT PRIMARY KEY,            -- stable id, publisher plus series code
+  series_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  category TEXT NOT NULL,                -- rates, inflation, policy, credit, fx, energy, fiscal, supply_chain, geopolitics, regulatory
-  source TEXT NOT NULL,                  -- official publisher
-  source_url TEXT,
-  unit TEXT,
-  frequency TEXT,
-  staleness_seconds INTEGER NOT NULL,
-  fetched_at TEXT,                       -- UTC of the last successful fetch; empty until then
-  updated_at TEXT NOT NULL
+  source TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  frequency TEXT NOT NULL,
+  stale_after_hours INTEGER NOT NULL
 );
 
 CREATE TABLE macro_observations (
   series_id TEXT NOT NULL REFERENCES macro_series(series_id),
   obs_date TEXT NOT NULL,
-  value REAL,                            -- null when the release is a statement
-  value_text TEXT,                       -- official wording when there is no single number
-  source_url TEXT NOT NULL,
+  value REAL NOT NULL,
   fetched_at TEXT NOT NULL,
-  PRIMARY KEY (series_id, obs_date),
-  CHECK (value IS NOT NULL OR value_text IS NOT NULL)
+  UNIQUE (series_id, obs_date)
 );
-
-CREATE INDEX ix_macro_series_fetched_at ON macro_series(fetched_at);
 
 -- Written by the Legate after individual theses exist.
 -- rationale is the official-source link from that research.
@@ -311,7 +303,7 @@ CREATE TABLE legate_merges (
 
 ## Implemented schema
 
-Applied. `shared/pipeline_store.py` (`ensure_pipeline`, or `connect`) runs `shared/migrations/001_pipeline.sql` and records `001_pipeline.sql` in `schema_migrations`. Running it again does not duplicate rows. `lodge_lead`, `record_criterion_result`, and `compute_quality_score` write leads and scores. `quality_score` is the count of criteria with `passed = 1`. `outcome` stays empty until it is set on its own.
+Applied. `shared/pipeline_store.py` (`ensure_pipeline`, or `connect`) runs `shared/migrations/001_pipeline.sql` and then `002_lead_pipeline.sql`, and records each filename in `schema_migrations`. Running them again does not duplicate rows. `lodge_lead`, `record_criterion_result`, and `compute_quality_score` write leads and scores. `quality_score` is the count of criteria with `passed = 1`. `outcome` stays empty until it is set on its own.
 
 The migration sits on a database that already has `runs`, `figures`, and the earlier `leads` table, and it does not modify `scout_tests`, `debt_scout_runs`, or `debt_scout_filing_scores`. When `leads` has no `lead_id` column, the helper renames it, creates the table below, and copies every row. `rank` becomes `priority`. The old status was a pricing label (`underappreciated`, `partly`, `priced_in`, `crowded`), so that text is kept in `summary` and the pipeline status starts at `fresh`. `lead_type` comes from the scout on `runs` (`debt-raise` maps to `debt_raise`, and the same for the other scouts).
 
@@ -325,4 +317,4 @@ Beyond the sketch:
 - `critiques` stores the Praetorian `run_id`, `critique`, `verdict` (`revise`, `accept`, or `reject`), and `round`.
 - `legate_merges` stores the rationale, `priority_rank`, and `bias_audit`. `rationale` is the official-source evidence from the Centurions' research that links the two theses. The row is written when the Legate merges, after the individual theses and before Praetorian critique. Only that merged finding goes back to a Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians. The merged finding goes to the Praetorians after its second-pass thesis. On that second pass the Centurion classifies any prior price run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, notes that call as a concern where relevant, and the Praetorians state whether they agree or disagree, with counter-evidence. Constituent lead ids are rows in `legate_merge_leads`.
 - Significance on `leads`, plus `lead_rejects` and `lead_reject_counterparties`, is applied by `shared/migrations/002_lead_pipeline.sql`. That migration also adds `evidence_refs` on `legate_merges`, return-pass columns on `theses` (`price_run`, `macro_context`, `pass_number`), `praetorian_reviews` (including the price-run agree or disagree), `rankings`, `decisions` (`acted_on`, `not_acted_on`, `pending`), and `pipeline_runs` for the token count. The sweep writes a pending decision for each presented lead. `002_lead_pipeline.sql` does not create `macro_series` or `macro_observations`.
-- `macro_series` and `macro_observations` are the Macro scout cache. The sketch above is the documented shape. The Macro scout's own migration creates the tables and records `001_macro.sql` in `schema_migrations`, which does not collide with `002_lead_pipeline.sql`. When those tables have observations, the second pass reads them and does not re-pull. Otherwise it uses `cache/macro.json` or `--macro-cache`, and skips macro context when neither is present. The first pass does not read the cache. The Macro scout does not emit leads.
+- `macro_series` and `macro_observations` are the Macro scout cache, created by `Scouts/macro/migrations/001_macro.sql`. That name does not collide with `002_lead_pipeline.sql`. Either migration can be applied first. The second pass reads `series_id`, `name`, `source`, `unit`, `obs_date`, and `value` (and `value_text` only if that column is present). When those tables have observations, the second pass reads them and does not re-pull. Otherwise it uses `cache/macro.json` or `--macro-cache`, and skips macro context when neither is present. The first pass does not read the cache. The Macro scout does not emit leads.

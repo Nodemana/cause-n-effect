@@ -4,6 +4,7 @@ No transcripts. No deferred-revenue or contract-liability proxies.
 """
 
 import calendar
+import html
 import re
 import sys
 from datetime import date, datetime
@@ -27,7 +28,7 @@ from Scouts.orders_backlog.tags import (
 _MONEY = re.compile(
     r"(?P<cur>A\$|US\$|USD|AUD|EUR|GBP|€|£|\$)\s*"
     r"(?P<num>\d[\d,]*(?:\.\d+)?)\s*"
-    r"(?P<scale>billion|million|thousand|bn|\bb\b|mn|\bm\b)?",
+    r"(?P<scale>billion|million|thousand|bn|b|mn|m)?",
     re.I,
 )
 _SCALE = {
@@ -64,6 +65,10 @@ _ENDED = re.compile(
 )
 _AS_OF = re.compile(
     r"\bas of\s+([A-Z][a-z]+ \d{1,2}, \d{4}|\d{4}-\d{2}-\d{2})",
+    re.I,
+)
+_AT_DATE = re.compile(
+    r"\bat\s+([A-Z][a-z]+ \d{1,2}, \d{4}|\d{4}-\d{2}-\d{2})",
     re.I,
 )
 _QUARTER_TOKEN = re.compile(
@@ -145,13 +150,13 @@ def parse_company_facts(payload, company, source_side, max_quarters=DEFAULT_RECE
                 source_type="xbrl_company_facts",
                 disclosure=disclosure,
                 flags=flags,
-                notes=[concept, *notes],
+                notes=[concept, *notes, *([f"accession:{point.get('accn')}"] if point.get("accn") else [])],
             )
         )
     return _recent_periods(rows, max_quarters)
 
 
-def parse_release(text, company, source_side, source_type, source_url, filing_date):
+def parse_release(text, company, source_side, source_type, source_url, filing_date, accession=None):
     """Parse an 8-K exhibit, ASX announcement, or IR release."""
     if not text or not text.strip():
         return [
@@ -182,8 +187,21 @@ def parse_release(text, company, source_side, source_type, source_url, filing_da
             )
         ]
     if source_side == "customer_backlog":
-        return _backlog_text(text, company, source_type, source_url, filing_date)
-    return _supplier_text(text, company, source_type, source_url, filing_date)
+        rows = _backlog_text(text, company, source_type, source_url, filing_date)
+    else:
+        rows = _supplier_text(text, company, source_type, source_url, filing_date)
+    return _stamp_accession(rows, accession)
+
+
+def _stamp_accession(rows, accession):
+    if not accession:
+        return rows
+    note = f"accession:{accession}"
+    for row in rows:
+        notes = row.setdefault("notes", [])
+        if note not in notes:
+            notes.append(note)
+    return rows
 
 
 def _backlog_text(text, company, source_type, source_url, filing_date):
@@ -241,7 +259,7 @@ _METRIC_AMOUNT = re.compile(
     r"(?:approximately\s+|about\s+|over\s+)?"
     r"(?P<cur>A\$|US\$|USD|AUD|EUR|GBP|€|£|\$)\s*"
     r"(?P<num>\d[\d,]*(?:\.\d+)?)\s*"
-    r"(?P<scale>billion|million|thousand|bn|\bb\b|mn|\bm\b)?",
+    r"(?P<scale>billion|million|thousand|bn|b|mn|m)?",
     re.I,
 )
 _METRIC_KIND = {
@@ -294,18 +312,89 @@ def _metric_label(kind, segment):
     return base
 
 
+# Longer aliases first so "Power Transmission" is Electrification, not Power.
+_SEGMENT_ALIASES = (
+    ("Electrical Americas", "Electrical Americas"),
+    ("Electrical Global", "Electrical Global"),
+    ("Power Transmission", "Electrification"),
+    ("Grid Systems", "Electrification"),
+    ("grid equipment", "Electrification"),
+    ("Onshore Wind", "Wind"),
+    ("Offshore Wind", "Wind"),
+    ("Prolec GE", "Electrification"),
+    ("data center", "data center"),
+    ("Electrification", "Electrification"),
+    ("Aerospace", "Aerospace"),
+    ("Gas Power", "Power"),
+    ("Nuclear Power", "Power"),
+    ("Wind", "Wind"),
+    ("Power", "Power"),
+)
+
+
+def _segments_named(text):
+    """Reporting segments named in text. Overlapping aliases count once."""
+    hits = []
+    for alias, label in _SEGMENT_ALIASES:
+        for match in re.finditer(rf"\b{re.escape(alias)}\b", text or "", re.I):
+            hits.append((match.start(), match.end(), label, len(alias)))
+    hits.sort(key=lambda item: (item[0], -item[3]))
+    occupied = -1
+    labels = []
+    for start, end, label, _length in hits:
+        if start < occupied:
+            continue
+        occupied = end
+        if label not in labels:
+            labels.append(label)
+    return labels
+
+
 def _metric_segment(sentence, start, heading):
-    """The section closest to the figure. A heading covers a later performance line."""
-    window_at = max(0, start - 80)
-    window = sentence[window_at : start + 48]
-    best = None
-    best_at = -1
-    for name in _SECTION:
-        match = re.search(rf"\b{re.escape(name)}\b", window, re.I)
-        if match and match.start() >= best_at:
-            best = name
-            best_at = match.start()
-    return best or heading
+    """The segment this figure belongs to. A company total names more than one.
+
+    The word next to the metric wins ('data center orders'). One name in the
+    sentence is that segment. Power and Electrification together are the total.
+    A heading covers a later line that does not name a segment.
+    """
+    window = (sentence or "")[max(0, start - 48) : start]
+    adjacent = _segments_named(window)
+    if adjacent:
+        return adjacent[-1]
+    names = _segments_named(sentence)
+    if len(names) == 1:
+        return names[0]
+    if len(names) > 1:
+        return None
+    return heading
+
+
+def _explicit_period(sentence):
+    """A period-end or balance-sheet date. A press dateline is not one."""
+    for pattern in (_ENDED, _AS_OF, _AT_DATE):
+        match = pattern.search(sentence or "")
+        if not match:
+            continue
+        parsed = _parse_date(match.group(1))
+        if parsed:
+            return parsed
+    return None
+
+
+def _release_period(sentence, document_period, filing_date):
+    """Quarter end is the period. The filing date is stored separately."""
+    explicit = _explicit_period(sentence)
+    filed = (filing_date or "")[:10]
+    if explicit and explicit != filed:
+        return explicit
+    if document_period and document_period != filed:
+        return document_period
+    if explicit:
+        return explicit
+    bare = _period(sentence)
+    if bare and bare != filed:
+        return bare
+    return document_period or None
 
 
 def _section_headings(text):
@@ -337,16 +426,25 @@ def _metric_rows(sentence, company, source_type, source_url, filing_date, filed_
         middle = match.group("mid") or ""
         if _CHANGE.search(middle) or re.search(r"\b(?:intangible|assets?|amortiz)\b", middle, re.I):
             continue
+        if re.search(r"\b(?:guidance|expects?|outlook)\b", (sentence or "")[: match.start()], re.I):
+            continue
+        if re.match(r"\s*(?:-|to)\s*\$", (sentence or "")[match.end() : match.end() + 12], re.I):
+            continue
         scale = _SCALE.get((match.group("scale") or "").casefold(), 1)
         value = float(match.group("num").replace(",", "")) * scale
         if value < 1_000_000:
             continue
         kind = match.group("kind").casefold()
-        if kind in {"revenue", "revenues"} and not _mentions_order(sentence) and "backlog" not in sentence.casefold():
+        if (
+            kind in {"revenue", "revenues"}
+            and not _mentions_order(sentence)
+            and "backlog" not in sentence.casefold()
+            and not _segments_named(sentence)
+        ):
             continue
         segment = None if kind == "total backlog" else _metric_segment(sentence, match.start(), heading)
         label = _metric_label(kind, segment)
-        period = _period(sentence) or filed_period
+        period = _release_period(sentence, filed_period, filing_date)
         found.append(
             record(
                 source_side="supplier_order",
@@ -370,29 +468,29 @@ def _metric_rows(sentence, company, source_type, source_url, filing_date, filed_
 
 
 def _table_backlogs(text, company, source_type, source_url, filing_date, filed_period):
-    """'Backlog | $15,175' under a '($ in millions)' heading is millions, not dollars."""
-    if not re.search(r"\(\$\s*in millions\)", text or "", re.I):
+    """A backlog row under '($ in millions)' is millions, in a pipe table or HTML cells."""
+    if not re.search(r"\(\$?\s*in millions\)|\(\s*dollars in millions\b", text or "", re.I):
         return []
     rows = []
     lines = text.splitlines()
     section = None
     million = False
     for index, line in enumerate(lines):
-        if re.search(r"\(\$\s*in millions\)", line, re.I):
+        if re.search(r"\(\$?\s*in millions\)|\(\s*dollars in millions\b", line, re.I):
             million = True
-        stripped = line.strip()
+        stripped = line.strip(" |")
         for name in _SECTION:
             if stripped.casefold() == name.casefold() or stripped.casefold().endswith(name.casefold()):
                 section = name
-        if not million or not re.search(r"^\s*\|?\s*Backlog\s*\|", line, re.I):
+        if not million or not re.match(r"\s*\|?\s*Backlog\b", line, re.I):
             continue
-        if re.search(r"organic|book-to-bill", line, re.I):
+        if re.search(r"organic|book-to-bill|intangible", line, re.I):
             continue
-        amounts = re.findall(r"\$\s*([\d,]+)", line)
+        amounts = _first_dollars(lines, index)
         if not amounts:
             continue
         value = float(amounts[0].replace(",", "")) * 1_000_000
-        period = _nearby_period(lines, index) or filed_period
+        period = _nearby_period(lines, index, filed_period, filing_date) or filed_period
         label = f"backlog:{section}" if section else "backlog"
         rows.append(
             record(
@@ -413,26 +511,43 @@ def _table_backlogs(text, company, source_type, source_url, filing_date, filed_p
     return rows
 
 
-def _nearby_period(lines, index):
+def _first_dollars(lines, index):
+    """The first dollar amount on a backlog row, or on the next cell."""
+    for line in lines[index : index + 4]:
+        amounts = re.findall(r"\$\s*([\d,]+(?:\.\d+)?)", line)
+        if amounts:
+            return amounts
+        if line is not lines[index] and line.strip(" |") and not line.strip().startswith("$"):
+            break
+    return []
+
+
+def _nearby_period(lines, index, document_period=None, filing_date=None):
     window = " ".join(lines[max(0, index - 8) : index + 1])
     dates = []
     for match in _BARE_DATE.finditer(window):
         parsed = _parse_date(match.group(1))
         if parsed:
             dates.append(parsed)
-    if not dates:
-        return None
-    return max(dates)
+    if document_period and document_period in dates:
+        return document_period
+    filed = (filing_date or "")[:10]
+    rest = [item for item in dates if item != filed]
+    if rest:
+        return max(rest)
+    return document_period or (max(dates) if dates else None)
 
 
 def _supplier_text(text, company, source_type, source_url, filing_date):
     rows = []
-    filed_period = _document_period(text)
-    rows.extend(_table_backlogs(text, company, source_type, source_url, filing_date, filed_period))
+    plain = _plain_filing(text)
+    filed_period = _document_period(plain)
+    rows.extend(_table_backlogs(plain, company, source_type, source_url, filing_date, filed_period))
+    text = _reflow_prose(plain)
     headings = _section_headings(text)
     equipment_words = [item.casefold() for item in company.get("equipment") or []]
     cursor = 0
-    for sentence in _sentences(text):
+    for sentence in _split_sentences(text):
         at = text.find(sentence, cursor)
         if at < 0:
             at = cursor
@@ -601,10 +716,66 @@ def _fiscal_label(point):
     return None
 
 
+def _plain_filing(text):
+    """HTML from a filing, with dates and table cells still on their own lines."""
+    raw = html.unescape(text or "")
+    raw = raw.replace("\xa0", " ").replace("\u200b", "")
+    raw = re.sub(r"(?i)<br\s*/?>", "\n", raw)
+    raw = re.sub(r"(?i)</(?:p|div|tr|li|h[1-6]|table|section)>", "\n", raw)
+    raw = re.sub(r"(?i)</t[dh]>", "\n", raw)
+    raw = re.sub(r"<[^>]+>", " ", raw)
+    raw = re.sub(r"[ \t]+", " ", raw)
+    raw = re.sub(r" *\n *", "\n", raw)
+    return raw
+
+
+_HEADING_LINE = re.compile(
+    r"^(?:Electrical Americas|Electrical Global|Aerospace|Electrification|Power|Wind)$",
+    re.I,
+)
+
+
+def _reflow_prose(text):
+    """Join a wrapped line to the one before it. A heading or a table row stays put.
+
+    A press release breaks 'Gas Power' and 'data center orders' onto the next
+    line. Those words still name the segment. HTML table cells stay on their
+    own lines so a backlog row can be read from the next cell.
+    """
+    paragraphs = []
+    buf = []
+
+    def flush():
+        if buf:
+            paragraphs.append(" ".join(buf))
+            buf.clear()
+
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            flush()
+            continue
+        if "|" in stripped or _HEADING_LINE.match(stripped):
+            flush()
+            paragraphs.append(stripped)
+            continue
+        buf.append(stripped)
+    flush()
+    return "\n".join(paragraphs)
+
+
+_ABBREV = re.compile(r"\b(?:U\.S|U\.K|Inc|Corp|Ltd|Mr|Ms|No|vs|Fig)\.")
+
+
+def _split_sentences(text):
+    """Split on a sentence end. 'U.S. GAAP' is not one."""
+    protected = _ABBREV.sub(lambda match: match.group(0).replace(".", "\0"), text or "")
+    parts = re.split(r"(?<=[.!?])\s+|\n+", protected)
+    return [part.replace("\0", ".").strip() for part in parts if part.strip()]
+
+
 def _sentences(text):
-    cleaned = re.sub(r"<[^>]+>", " ", text)
-    parts = re.split(r"(?<=[.!?])\s+|\n+", cleaned)
-    return [part.strip() for part in parts if part.strip()]
+    return _split_sentences(_reflow_prose(_plain_filing(text)))
 
 
 def _moneys(sentence):

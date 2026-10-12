@@ -1,0 +1,14 @@
+F1 INTEREST RATES
+Title,Cash Rate Target,"Australian Government 10 year bond, interpolated",Total assets,A$1=USD
+Description,"Cash rate, target",Yield,Assets,AUDUSD
+Frequency,Daily,Daily,Weekly,Daily
+Type,Original,Original,Original,Original
+Units,Per cent,Per cent per annum,$ million,USD
+
+
+Source,RBA,RBA,RBA,RBA
+Publication date,12-Oct-2026,12-Oct-2026,12-Oct-2026,12-Oct-2026
+Series ID,FIRMMCRTD,FCMYGBAG10D,ARBAATAW,FXRUSD
+04-Jan-2011,4.75,5.55,1000,1.0000
+05-Jan-2011,4.75,,1001,0.9900
+06-Jan-2011,4.50,5.50,1002,
