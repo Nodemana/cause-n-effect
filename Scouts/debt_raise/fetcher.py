@@ -29,7 +29,6 @@ _DEBT_HEADLINE = re.compile(
 )
 FORMS = (
     "8-K",
-    "8-K/A",
     "424B1",
     "424B2",
     "424B3",
@@ -42,14 +41,17 @@ EIGHT_K_ITEMS = frozenset({"1.01", "2.03"})
 _PAGE = 100
 
 
-def collect(start, end, client=None, ticker_map=None, limit=None):
+def collect(start, end, client=None, ticker_map=None, limit=None, tickers=None):
     """In-scope filings for the window. Summary text is the index description."""
     client = client or sec_client()
     ticker_map = ticker_map or {}
+    wanted = _ticker_set(tickers)
     filings = []
     for hit in iter_hits(client, start, end):
         filing = filing_from_hit(hit.get("_source") or {}, ticker_map)
         if filing is None:
+            continue
+        if wanted and (filing.get("ticker") or "").upper() not in wanted:
             continue
         filings.append(filing)
         if limit is not None and len(filings) >= limit:
@@ -73,9 +75,9 @@ def iter_hits(client, start, end):
 
 
 def efts_url(start, end, offset=0):
+    """EDGAR full-text search. A `q=*` term and an `8-K/A` form both return no hits."""
     query = urllib.parse.urlencode(
         {
-            "q": "*",
             "dateRange": "custom",
             "startdt": start,
             "enddt": end,
@@ -113,17 +115,44 @@ def filing_from_hit(source, ticker_map=None):
 
 def fetch_primary_text(client, cik, accession):
     """Download the primary filing text. Called only from the full-document pass."""
+    name, index = _primary_from_index(client, cik, accession)
+    if not name:
+        return None
+    url = archive_base(cik, accession) + "/" + name
+    _require_sec(url)
+    body, _content_type = client.get(url, accept="text/html,text/plain")
+    return _decode(body)
+
+
+def fetch_phrase_text(client, cik, accession):
+    """Index descriptions, or the first page of the primary document.
+
+    EFTS `file_description` is often only the form name, which the phrase
+    stage cannot score. Returns `(phrase, full_body_or_none)`.
+    """
+    name, index = _primary_from_index(client, cik, accession)
+    descriptions = []
+    for item in _index_items(index):
+        desc = (item.get("description") or "").strip()
+        if desc and not summary_is_form_label(desc, ""):
+            descriptions.append(desc)
+    if descriptions:
+        return " ".join(descriptions), None
+    if not name:
+        return "", None
+    url = archive_base(cik, accession) + "/" + name
+    _require_sec(url)
+    body, _content_type = client.get(url, accept="text/html,text/plain")
+    text = _decode(body)
+    return first_page(text), text
+
+
+def _primary_from_index(client, cik, accession):
     base = archive_base(cik, accession)
     index_url = base + "/index.json"
     _require_sec(index_url)
     index = client.json(index_url)
-    name = choose_primary_name(_index_names(index))
-    if not name:
-        return None
-    url = base + "/" + name
-    _require_sec(url)
-    body, _content_type = client.get(url, accept="text/html,text/plain")
-    return _decode(body)
+    return choose_primary_name(_index_names(index)), index
 
 
 def collect_asx(companies, client=None, count=5):
@@ -220,8 +249,31 @@ def ticker_from_display(display_names):
     return None
 
 
+_REPORT_PAGE = re.compile(r"(?:^|/)r\d+\.html?$", re.I)
+_SUBMISSION_TXT = re.compile(r"(?:^|/)(?:\d{10}-\d{2}-\d{6}|\d{18})\.txt$", re.I)
+_FORM_LABEL = re.compile(r"^(?:FORM)?(?:8K|424B\d+)$")
+
+
+def summary_is_form_label(summary, form):
+    """True when the text is empty or only the form name EFTS returns."""
+    compact = re.sub(r"[^A-Za-z0-9]", "", summary or "").upper()
+    if not compact:
+        return True
+    form_compact = re.sub(r"[^A-Za-z0-9]", "", form or "").upper()
+    if form_compact and compact in {form_compact, "FORM" + form_compact}:
+        return True
+    return _FORM_LABEL.fullmatch(compact) is not None
+
+
+def first_page(text, limit=4000):
+    plain = re.sub(r"<[^>]+>", " ", text or "")
+    plain = re.sub(r"\s+", " ", plain).strip()
+    return plain[:limit]
+
+
 def choose_primary_name(names):
-    files = [name for name in names if name.lower().endswith((".htm", ".html", ".txt"))]
+    """Primary HTML/text, skipping index pages, R<n>.htm renders, and the submission txt."""
+    files = [name for name in names if _keep_primary_name(name)]
     for name in files:
         if "primary" in name.lower():
             return name
@@ -236,6 +288,28 @@ def choose_primary_name(names):
     return files[0] if files else None
 
 
+def _keep_primary_name(name):
+    lower = name.lower()
+    if "-index" in lower:
+        return False
+    if _REPORT_PAGE.search(lower) or _SUBMISSION_TXT.search(lower):
+        return False
+    return lower.endswith((".htm", ".html", ".txt"))
+
+
+def _ticker_set(tickers):
+    if not tickers:
+        return None
+    wanted = set()
+    for ticker in tickers:
+        token = str(ticker).strip().upper()
+        if token.endswith(".AX"):
+            token = token[:-3]
+        if token:
+            wanted.add(token)
+    return wanted or None
+
+
 def archive_base(cik, accession):
     cik_path = str(int(str(cik).lstrip("0") or "0"))
     return f"https://www.sec.gov/Archives/edgar/data/{cik_path}/{accession.replace('-', '')}"
@@ -246,12 +320,16 @@ def archive_index_url(cik, accession):
     return f"{archive_base(cik, acc)}/{acc}-index.html"
 
 
-def _index_names(index):
+def _index_items(index):
     directory = (index or {}).get("directory") or {}
     items = directory.get("item") or []
     if isinstance(items, dict):
         items = [items]
-    return [item.get("name") or "" for item in items]
+    return items
+
+
+def _index_names(index):
+    return [item.get("name") or "" for item in _index_items(index)]
 
 
 def _require_sec(url):

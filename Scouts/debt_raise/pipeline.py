@@ -10,7 +10,14 @@ for _entry in (str(_REPO), str(_HERE)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from fetcher import fetch_asx_text, fetch_primary_text, in_scope
+from fetcher import (
+    fetch_asx_text,
+    fetch_phrase_text,
+    fetch_primary_text,
+    first_page,
+    in_scope,
+    summary_is_form_label,
+)
 from score import figure_kind, first_amount, histogram, load_config, needs_full_document, score_text
 from shared.nethttp import EndpointError, asx_client, sec_client
 from store import open_db, save_run, utc_now
@@ -34,13 +41,14 @@ def run(filings, db_path, threshold=None, client=None, documents=None, config=No
     for filing in filings:
         if not in_scope(filing.get("form"), filing.get("items")):
             continue
-        cheap = score_text(filing.get("summary") or "", rules)
+        phrase, cached_body = _phrase_text(filing, client, documents)
+        cheap = score_text(phrase, rules)
         flags = []
         body = None
         if needs_full_document(cheap, used):
             stage = "full_document"
             try:
-                body = _full_text(filing, client, documents)
+                body = cached_body if cached_body is not None else _full_text(filing, client, documents)
             except EndpointError:
                 body = None
             if not body:
@@ -55,7 +63,7 @@ def run(filings, db_path, threshold=None, client=None, documents=None, config=No
         else:
             stage = "cheap_filter"
             final = cheap
-            scored_text = filing.get("summary") or ""
+            scored_text = phrase
         row = {
             "accession": filing["accession"],
             "ticker": filing.get("ticker"),
@@ -102,11 +110,36 @@ def run(filings, db_path, threshold=None, client=None, documents=None, config=No
     }
 
 
+def _phrase_text(filing, client, documents):
+    """Return (text for the phrase stage, full body if that fetch already happened).
+
+    SEC index descriptions that are only the form name cannot settle the
+    phrase stage. Use a filing-index description or the first page instead.
+    """
+    summary = filing.get("summary") or ""
+    if _is_asx(filing) or not summary_is_form_label(summary, filing.get("form")):
+        return summary, None
+    accession = filing.get("accession")
+    if accession in documents:
+        text = documents[accession] or ""
+        return first_page(text), text
+    try:
+        if client is None:
+            client = sec_client()
+        return fetch_phrase_text(client, filing.get("cik"), accession)
+    except EndpointError:
+        return summary, None
+
+
+def _is_asx(filing):
+    return (filing.get("form") or "").upper() == "ASX" or filing.get("market") == "ASX"
+
+
 def _full_text(filing, client, documents):
     accession = filing["accession"]
     if accession in documents:
         return documents[accession]
-    asx = (filing.get("form") or "").upper() == "ASX" or filing.get("market") == "ASX"
+    asx = _is_asx(filing)
     if client is None:
         client = asx_client() if asx else sec_client()
     if asx:
@@ -125,7 +158,7 @@ def _figure(filing, text, started_at):
         "company": filing.get("company") or ticker,
         "figure_type": figure_type,
         "instrument": instrument,
-        "period": filing.get("filed") or "",
+        "period": _period(filing),
         "value": amount["value"],
         "value_text": amount["text"],
         "currency": amount["currency"],
@@ -135,3 +168,10 @@ def _figure(filing, text, started_at):
         "source_type": filing.get("source_type") or "filing",
         "verified": 1,
     }
+
+
+def _period(filing):
+    """Same-day filings share a filed date. The accession keeps the figures key unique."""
+    filed = filing.get("filed") or ""
+    accession = filing.get("accession") or ""
+    return f"{filed} {accession}".strip()
