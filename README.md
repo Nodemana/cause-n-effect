@@ -10,7 +10,7 @@ flowchart LR
   S[Scouts] --> C1[Centurions] --> M[Legate: merge] --> C2[Centurion return pass] --> P[Praetorians] --> R[Legate: rank] --> I[Imperator]
 ```
 
-**Scouts.** Scouts surface leads from each dataset. Each lead is one-to-one with a Centurion, and scouts do not merge leads.
+**Scouts.** Scouts are the cheap filter: thresholds and dedupe run first, then a small per-run token budget judges magnitude, novelty, attention, and timing, and only a surviving lead is stored. Each of those leads is one-to-one with a Centurion, and scouts do not merge them.
 
 **Centurions.** One Centurion takes one lead and the rules file for that lead's type, researches only that lead, and writes one thesis ([Centurions/README.md](Centurions/README.md)). A capex Centurion works out what the spending is on and which suppliers it reaches; an orders_backlog Centurion works out which customers the orders came from.
 
@@ -27,10 +27,12 @@ flowchart LR
 ## Data
 - SQLite history DB: time-stamped figures with source links and a verified flag, diffed run to run.
 - How to open a read-only snapshot is in [docs/database-access.md](docs/database-access.md).
-- Official sources only: SEC EDGAR, ASX announcements, company releases. Blogs and media are banned. Prices come from quote data.
+- Figures come only from SEC EDGAR, ASX announcements, and company releases. Media and aggregators may be checked only to judge whether a lead was already noticed. Prices come from quote data.
 - Access: free SEC API throttled to 0.15s per request with an email User-Agent, ASX website feed with 2s gaps and health checks. All requests go through `shared/nethttp.py`.
 
 ## Scouts
+Pulling a filing is not a lead: each survivor stores a short label and a one-line reason for magnitude, novelty, attention, and timing, and a reject is logged with those fields so it can be found later by ticker or by a named buyer, supplier, or customer. Media may be checked only to see whether anyone has already noticed the item; the figures stay on official sources.
+
 1. **Capex**: big spenders' capex, traced to tier-2 and tier-3 suppliers.
 2. **Debt raises**: loans, facilities and bonds, run through a two-stage use-of-proceeds filter with threshold analytics.
 3. **orders_backlog**: customer-reported backlog plus supplier order announcements.
