@@ -2,33 +2,33 @@
 
 Shares come from an SEC companyfacts tag already in the figures table
 (`dei:EntityCommonStockSharesOutstanding` or `CommonStockSharesOutstanding`).
-The price is used only when that figure is an official filing or announcement.
-There is no FX conversion and no live quote.
+The pipeline caches that share count. An official price source is TODO.
+This module does not call an unofficial price feed, and it does not convert
+FX. Shares without an official USD price leave the cap unknown. The caller
+records that as the surviving issue "market cap unverified" instead of a
+reject. A cap that is known and below the rubric threshold is still a reject.
 """
 
-SHARES_TYPES = (
-    "EntityCommonStockSharesOutstanding",
-    "CommonStockSharesOutstanding",
-)
+from shared.shares import SHARES_TYPES
 PRICE_TYPES = ("share_price", "closing_price", "stock_price")
 _OFFICIAL_TYPES = {"filing", "company_release", "asx_announcement"}
 _OFFICIAL_HOSTS = ("sec.gov", "asx.com.au")
+
+
+UNVERIFIED = "market cap unverified"
 
 
 def resolve_market_cap(conn, ticker):
     """Return (usd_cap, reason).
 
     `usd_cap` is None when shares or an official USD price are missing.
-    `reason` is the sentence stored on a reject.
+    That reason is the surviving issue, not a reject. A known cap is
+    shares times an official USD price.
     """
     shares = _latest_value(conn, ticker, SHARES_TYPES, official_only=False)
-    if shares is None:
-        return None, "min_market_cap: market cap is not in the stored figure"
     price = _latest_value(conn, ticker, PRICE_TYPES, official_only=True)
-    if price is None:
-        return None, (
-            "min_market_cap: shares outstanding are stored but no official price is available"
-        )
+    if shares is None or price is None:
+        return None, UNVERIFIED
     cap = shares * price
     return cap, f"min_market_cap: {cap:g} from shares outstanding times an official price"
 

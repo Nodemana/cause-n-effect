@@ -331,27 +331,14 @@ def search_rejects(conn, ticker=None, counterparty=None):
     if ticker:
         clauses.append("upper(r.ticker) = upper(?)")
         params.append(ticker.strip())
-    if counterparty:
-        clauses.append(
-            """
-            EXISTS (
-                SELECT 1 FROM lead_reject_counterparties AS c
-                WHERE c.reject_id = r.reject_id
-                  AND (
-                    c.name_normalised = ?
-                    OR upper(COALESCE(c.ticker, '')) = upper(?)
-                  )
-            )
-            """
-        )
-        params.extend([normalise_name(counterparty), counterparty.strip()])
-    if not clauses:
+    if not ticker and not counterparty:
         raise ValueError("ticker or counterparty is required")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = conn.execute(
         f"""
         SELECT r.*
         FROM lead_rejects AS r
-        WHERE {" AND ".join(clauses)}
+        {where}
         ORDER BY r.filing_date, r.ticker, r.reject_id
         """,
         params,
@@ -367,8 +354,42 @@ def search_rejects(conn, ticker=None, counterparty=None):
             """,
             (row["reject_id"],),
         ).fetchall()
+        if counterparty and not any(_party_matches(party, counterparty) for party in parties):
+            continue
         results.append((row, parties))
     return results
+
+
+def _party_matches(party, query):
+    """Case-insensitive token prefix on the name, or a ticker prefix.
+
+    `north` matches Northwind. `wind` does not match inside that token.
+    `amz` matches ticker AMZN.
+    """
+    needle = normalise_name(query)
+    if not needle:
+        return False
+    if _token_prefixes(needle.split(), (party["name_normalised"] or "").split()):
+        return True
+    ticker = (party["ticker"] or "").casefold()
+    compact = needle.replace(" ", "")
+    return bool(ticker and compact and ticker.startswith(compact))
+
+
+def _token_prefixes(query_tokens, name_tokens):
+    if not query_tokens:
+        return False
+    start = 0
+    for token in query_tokens:
+        matched = False
+        for index in range(start, len(name_tokens)):
+            if name_tokens[index].startswith(token):
+                start = index + 1
+                matched = True
+                break
+        if not matched:
+            return False
+    return True
 
 
 def _rating_attr(rating, name):

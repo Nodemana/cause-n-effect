@@ -14,11 +14,13 @@ priced-in, and includes macro text only when a macro cache is present.
 import json
 
 from shared.pipeline_store import connect
+from shared.shares import cache_shares_outstanding, companies_from_figures
 from shared.store import utc_now
 
 from pipeline.budget import TokenBudget
 from pipeline.llm import parse_json_object, resolve_provider
 from pipeline.load import load_latest_figures
+from pipeline.marketcap import UNVERIFIED
 from pipeline.names import normalise_name
 from pipeline.prefilter import (
     PlannedReject,
@@ -102,6 +104,7 @@ def run_pipeline(
     provider=None,
     macro_cache=None,
     now=None,
+    shares_client=None,
 ):
     """Run one sweep. `dry_run` computes the result and writes nothing."""
     if limit is not None and int(limit) < 1:
@@ -114,9 +117,16 @@ def run_pipeline(
     conn = connect(db_path)
     try:
         macro = load_macro(conn, macro_cache)
-        figures = load_latest_figures(conn)
+        figures = load_latest_figures(conn, as_of=started)
+        if shares_client is not None and not dry_run:
+            cache_shares_outstanding(
+                conn,
+                companies_from_figures(figures),
+                client=shares_client,
+                fetched_at=started,
+            )
         names, _ciks = party_index(figures)
-        candidates, rejects = prefilter(conn, figures, limit=limit)
+        candidates, rejects, used = prefilter(conn, figures, limit=limit)
         leads = _rate(conn, provider, budget, candidates, rejects)
         _research(conn, provider, budget, leads, names, macro)
         leads = _drop_hard_failures(leads, rejects)
@@ -136,7 +146,7 @@ def run_pipeline(
         "provider": provider.name,
         "tokens_used": budget.used,
         "token_budget": budget.limit,
-        "figures": len(figures),
+        "figures": used,
         "leads": len(leads) + len(merged),
         "rejects": len(rejects),
         "merges": len(merged),
@@ -213,6 +223,7 @@ def _lead_from_candidate(candidate, rating):
     lead.rating = rating
     lead.grade_types = [candidate.lead_type]
     lead.parties = list(candidate.parties)
+    lead.market_cap_unverified = bool(getattr(figure, "market_cap_unverified", False))
     return lead
 
 
@@ -269,6 +280,8 @@ def _hard_grade_reason(lead):
         if name not in HARD_CRITERIA:
             continue
         seen.add(name)
+        if _unverified_grade(lead, name, grade.get("evidence")):
+            continue
         if grade.get("passed"):
             evidence = _text(grade.get("evidence")).lower()
             if evidence in {"", "missing", "missing evidence", "not graded"}:
@@ -279,8 +292,22 @@ def _hard_grade_reason(lead):
     for criterion in thesis.criteria or []:
         name = criterion.get("name")
         if name in HARD_CRITERIA and name not in seen:
+            if _unverified_grade(lead, name, ""):
+                continue
             failed.append(f"failed {name}: missing evidence")
     return "; ".join(failed)
+
+
+def _unverified_grade(lead, name, evidence):
+    """An unknown market cap is a surviving issue, not a hard reject."""
+    if not getattr(lead, "market_cap_unverified", False):
+        return False
+    if name not in {"min_market_cap", "raise_vs_company"}:
+        return False
+    text = _text(evidence).lower()
+    if text in {"", "market cap unverified", UNVERIFIED}:
+        return True
+    return UNVERIFIED in text
 
 
 def _merge(conn, provider, budget, leads, macro):
@@ -309,6 +336,10 @@ def _merge(conn, provider, budget, leads, macro):
         lead.members = members
         lead.link_kind = kind
         lead.summary = _rationale(kind, members)
+        lead.market_cap_unverified = bool(
+            getattr(primary, "market_cap_unverified", False)
+            or getattr(primary.figure, "market_cap_unverified", False)
+        )
         criteria = store.criteria_for(conn, lead.grade_types)
         constituents = [_constituent_payload(member) for member in members]
         prompt = centurion_prompt(lead, criteria, 2, constituents=constituents, macro=macro)
@@ -349,8 +380,18 @@ def _critique(provider, budget, final):
             "price_run_stance": stance if stance in {"agree", "disagree"} else "",
             "price_run_counterevidence": _text(data.get("price_run_counterevidence")),
         }
+        _note_unverified_cap(lead, review)
         lead.thesis.review = review
         lead.thesis.surviving_issues = review["surviving_issues"]
+
+
+def _note_unverified_cap(lead, review):
+    if not getattr(lead, "market_cap_unverified", False):
+        return
+    if UNVERIFIED in review["assumptions_that_fail"].casefold():
+        return
+    review["assumptions_that_fail"] = (review["assumptions_that_fail"] + " " + UNVERIFIED).strip()
+    review["surviving_issues"] += 1
 
 
 def _rank(final):
@@ -466,6 +507,9 @@ def _thesis_from_model(data, lead, criteria, pass_number, macro):
     thesis.buyers = _party_list(data.get("buyers"))
     risks = [str(item).strip() for item in (data.get("risks") or []) if str(item).strip()]
     assumptions = [str(item).strip() for item in (data.get("assumptions") or []) if str(item).strip()]
+    if getattr(lead, "market_cap_unverified", False):
+        if not any(UNVERIFIED in item.casefold() for item in assumptions):
+            assumptions.append(UNVERIFIED)
     thesis.risk_count = len(risks)
     thesis.risks_text = "\n".join(risks)
     thesis.assumptions_text = "\n".join(f"- {item}" for item in assumptions)

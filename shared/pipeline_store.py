@@ -1,7 +1,8 @@
 """Pipeline tables on top of the shared scout history.
 
 ensure_pipeline applies shared/migrations/001_pipeline.sql, then
-002_lead_pipeline.sql, and records each filename in schema_migrations.
+002_lead_pipeline.sql, then 003_holder_role.sql, and records each
+filename in schema_migrations.
 An older leads table (no lead_id) is rebuilt and its rows are kept.
 lodge_lead, record_criterion_result, and compute_quality_score are the
 write path. quality_score is the number of criteria with passed = 1.
@@ -18,6 +19,7 @@ MIGRATION_PATH = HERE / "migrations" / MIGRATION_NAME
 MIGRATIONS = (
     "001_pipeline.sql",
     "002_lead_pipeline.sql",
+    "003_holder_role.sql",
 )
 
 LEAD_TYPES = (

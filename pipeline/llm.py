@@ -277,9 +277,10 @@ def _centurion(prompt):
         price_run = None
     risks = _risks(lead_type, price_run)
     assumptions = [
-        "Market cap is not in the stored figure.",
         "The figures used here are the ones stored from the filing or the announcement.",
     ]
+    if not _field(prompt, "MARKET_CAP"):
+        assumptions.insert(0, "market cap unverified")
     macro = _field(prompt, "MACRO")
     if pass_number == "2" and macro and macro != "none":
         assumptions.append(f"Macro context used: {macro}")
@@ -327,19 +328,25 @@ def _grades(prompt):
             continue
         threshold = _optional_float(parts[1]) if len(parts) > 1 else None
         if "market_cap" in name:
-            if market is not None and threshold is not None and market >= threshold:
+            if market is None:
+                passed = False
+                evidence = "market cap unverified"
+            elif threshold is not None and market >= threshold:
                 passed = True
                 evidence = "shares outstanding times an official price"
             else:
                 passed = False
-                evidence = "market cap is not in the stored figure"
+                evidence = "market cap is below the threshold"
         elif name == "raise_vs_company":
-            if market and value is not None and threshold is not None and (100.0 * value / market) >= threshold:
+            if market is None:
+                passed = True
+                evidence = "market cap unverified"
+            elif value is not None and threshold is not None and (100.0 * value / market) >= threshold:
                 passed = True
                 evidence = "the raise clears the percent of the official market cap"
             else:
                 passed = False
-                evidence = "market cap is not in the stored figure" if market is None else "the raise is below the percent of market cap"
+                evidence = "the raise is below the percent of market cap"
         elif "growth" in name:
             passed = "PRIOR_COMPARISON: yes" in prompt
             evidence = "prior comparison in the figures table" if passed else "no prior comparison in the figures table"
@@ -529,6 +536,9 @@ def _praetorian(prompt):
         issues += len(grade_issues)
         listed = " ".join(grade_issues)
         assumptions = (assumptions + " " + listed).strip()
+    elif "market cap unverified" in (thesis or "").casefold():
+        issues += 1
+        assumptions = (assumptions + " market cap unverified").strip()
     return {
         "assumptions_that_fail": assumptions,
         "bad_sources": bad_sources,
