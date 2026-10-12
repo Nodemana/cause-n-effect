@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS lead_rejects (
 
 CREATE TABLE IF NOT EXISTS lead_reject_counterparties (
   reject_id INTEGER NOT NULL REFERENCES lead_rejects(reject_id),
-  role TEXT NOT NULL CHECK (role IN ('buyer', 'supplier', 'customer')),
+  role TEXT NOT NULL CHECK (role IN ('buyer', 'supplier', 'customer', 'holder')),
   name TEXT NOT NULL CHECK (length(trim(name)) > 0),
   name_normalised TEXT NOT NULL CHECK (length(trim(name_normalised)) > 0),
   ticker TEXT,

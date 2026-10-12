@@ -17,6 +17,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from pipeline.cli import main  # noqa: E402
+import pipeline.flow as flow  # noqa: E402
 from pipeline.flow import run_pipeline  # noqa: E402
 from pipeline.llm import (  # noqa: E402
     OpenAICompatibleProvider,
@@ -47,8 +48,11 @@ class RecordingProvider:
 class PipelineFlowTests(unittest.TestCase):
     def setUp(self):
         self._saved_key = os.environ.pop("LLM_API_KEY", None)
+        self._utc_now = flow.utc_now
+        flow.utc_now = lambda: "2026-10-12T18:00:00Z"
 
     def tearDown(self):
+        flow.utc_now = self._utc_now
         if self._saved_key is not None:
             os.environ["LLM_API_KEY"] = self._saved_key
 
@@ -537,7 +541,7 @@ class PipelineFlowTests(unittest.TestCase):
             with _capture(stdout):
                 code = main(["rejects", "--db", path, "--counterparty", "Northwind Capital"])
             self.assertEqual(code, 0)
-            self.assertIn("buyer:Northwind Capital", stdout.getvalue())
+            self.assertIn("holder:Northwind Capital", stdout.getvalue())
             self.assertIn("ticker=NWT", stdout.getvalue())
 
             stdout = io.StringIO()
@@ -581,6 +585,7 @@ class PipelineFlowTests(unittest.TestCase):
     def _assert_migration_once(self, conn):
         names = [row["name"] for row in conn.execute("SELECT name FROM schema_migrations")]
         self.assertEqual(names.count("002_lead_pipeline.sql"), 1)
+        self.assertEqual(names.count("003_holder_role.sql"), 1)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}
         for name in (
             "significance_magnitude",

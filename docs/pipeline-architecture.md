@@ -71,11 +71,11 @@ Per-type guidance for those four judgments is in each scout README.
 
 ### Reject log
 
-`lead_rejects` is the searchable record of what a scout saw and did not emit. The use case is a look-back: a small company's stock jumps because a large buyer spent heavily with it, the owner missed it, and the log should show why. Search is by the lead's ticker and by any named counterparty (buyer, supplier, or customer).
+`lead_rejects` is the searchable record of what a scout saw and did not emit. The use case is a look-back: a small company's stock jumps because a large buyer spent heavily with it, the owner missed it, and the log should show why. Search is by the lead's ticker and by any named counterparty (buyer, supplier, customer, or holder). A counterparty query is a case-insensitive token prefix (`north` matches Northwind Capital; `wind` does not match inside a token) or a ticker prefix (`amz` matches AMZN).
 
 Each reject row stores the scout, the ticker and the CIK when known, the filing date, the source URL, and the accession. `rejection_stage` is `deterministic` (threshold or dedupe) or `llm` (the token-budget judgment). `reason` is the one-line cause. The four significance labels and their rationales are on the same row. An LLM reject fills all four. A deterministic reject fills the dimensions that gate used and leaves the others empty.
 
-Named counterparties from the source text are child rows in `lead_reject_counterparties`: a normalised name, a ticker and CIK where they resolve, and a role of `buyer`, `supplier`, or `customer`. A capex filing that names a supplier, or a supplier order that names Amazon as the buyer, is findable without reading the filing again.
+Named counterparties from the source text are child rows in `lead_reject_counterparties`: a normalised name, a ticker and CIK where they resolve, and a role of `buyer`, `supplier`, `customer`, or `holder`. An accumulation filer is a holder. A capex filing that names a supplier, or a supplier order that names Amazon as the buyer, is findable without reading the filing again.
 
 ```sql
 -- All rejects that name AMZN as the buyer.

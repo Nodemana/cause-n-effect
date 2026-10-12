@@ -1,26 +1,46 @@
-"""Gates exposed by the first live stub sweep. No network."""
+"""Gates exposed by the live stub sweeps. No network."""
 
 import json
+import os
+import socket
 import sqlite3
 import sys
 import tempfile
 import unittest
+import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+import pipeline.flow as flow  # noqa: E402
 from pipeline.flow import run_pipeline  # noqa: E402
 from pipeline.llm import Completion, StubProvider  # noqa: E402
+from pipeline.load import load_latest_figures  # noqa: E402
 from pipeline.marketcap import resolve_market_cap  # noqa: E402
 from pipeline.prefilter import extract_parties  # noqa: E402
 from pipeline.prompts import praetorian_prompt  # noqa: E402
+from pipeline.store import search_rejects  # noqa: E402
 from shared.pipeline_store import connect  # noqa: E402
+from shared.shares import cache_shares_outstanding, shares_from_companyfacts  # noqa: E402
 from shared.store import save_run  # noqa: E402
+
+SWEEP_AT = "2026-10-12T18:00:00Z"
 
 
 class GateTests(unittest.TestCase):
+    def setUp(self):
+        self._utc_now = flow.utc_now
+        flow.utc_now = lambda: SWEEP_AT
+        self._email = os.environ.pop("SEC_CONTACT_EMAIL", None)
+
+    def tearDown(self):
+        flow.utc_now = self._utc_now
+        if self._email is None:
+            os.environ.pop("SEC_CONTACT_EMAIL", None)
+        else:
+            os.environ["SEC_CONTACT_EMAIL"] = self._email
     def test_scout_modules_do_not_shadow_the_pipeline_package(self):
         import pipeline
         from Scouts.accumulation import scout_pipeline as accumulation
@@ -55,11 +75,13 @@ class GateTests(unittest.TestCase):
                     [
                         _figure("AAA", "Alpha", "quarter", "2026-07-01/2026-09-30", 5_000_000_000, announced_on="2026-01-01"),
                         _figure("ZZZ", "Zulu", "quarter", "2026-07-01/2026-09-30", 5_000_000_000, announced_on="2026-10-01"),
+                        _shares("AAA"),
                     ],
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), limit=1, token_budget=80000)
+            result = run_pipeline(path, provider=StubProvider(), limit=1, token_budget=80000)
+            self.assertEqual(result["figures"], 1)
             conn = connect(path)
             try:
                 tickers = {row["ticker"] for row in conn.execute("SELECT ticker FROM lead_rejects")}
@@ -141,24 +163,47 @@ class GateTests(unittest.TestCase):
             run_pipeline(path, provider=StubProvider(), token_budget=80000)
             conn = connect(path)
             try:
-                reasons = {
-                    row["ticker"]: row["reason"]
+                reasons = {}
+                for row in conn.execute(
+                    "SELECT ticker, reason FROM lead_rejects WHERE rejection_stage = 'deterministic'"
+                ):
+                    reasons.setdefault(row["ticker"], []).append(row["reason"])
+                leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
+                carried = {
+                    row["ticker"]: row
                     for row in conn.execute(
-                        "SELECT ticker, reason FROM lead_rejects WHERE rejection_stage = 'deterministic'"
+                        """
+                        SELECT l.ticker, t.thesis_text, t.assumptions,
+                               r.assumptions_that_fail, r.surviving_issues,
+                               k.surviving_issues AS ranked_issues
+                        FROM leads AS l
+                        JOIN theses AS t ON t.lead_id = l.lead_id
+                        JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
+                        JOIN rankings AS k ON k.lead_id = l.lead_id
+                        WHERE l.ticker IN ('NONE', 'SHR')
+                        """
                     )
                 }
-                leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
             finally:
                 conn.close()
-        self.assertIn("capex_growth_yoy", reasons["FLAT"])
-        self.assertIn("below", reasons["FLAT"])
-        self.assertIn("market cap is not in the stored figure", reasons["NONE"])
-        self.assertIn("no official price", reasons["SHR"])
-        self.assertIn("is below", reasons["SMALL"])
+        self.assertTrue(any("capex_growth_yoy" in reason and "below" in reason for reason in reasons["FLAT"]))
+        self.assertTrue(any("is below" in reason for reason in reasons["SMALL"]))
         self.assertNotIn("FLAT", leads)
-        self.assertNotIn("NONE", leads)
-        self.assertNotIn("SHR", leads)
         self.assertNotIn("SMALL", leads)
+        self.assertTrue(any("older period" in reason for reason in reasons["NONE"]))
+        self.assertTrue(any("older period" in reason for reason in reasons["SHR"]))
+        self.assertFalse(any("unverified" in reason or "official price" in reason for reason in reasons["NONE"]))
+        self.assertFalse(any("official price" in reason or "unverified" in reason for reason in reasons["SHR"]))
+        self.assertFalse(any("is below" in reason for reason in reasons["NONE"] + reasons["SHR"]))
+        self.assertIn("NONE", leads)
+        self.assertIn("SHR", leads)
+        for ticker in ("NONE", "SHR"):
+            row = carried[ticker]
+            self.assertIn("market cap unverified", row["thesis_text"])
+            self.assertIn("market cap unverified", row["assumptions"])
+            self.assertIn("market cap unverified", row["assumptions_that_fail"])
+            self.assertGreaterEqual(row["surviving_issues"], 1)
+            self.assertGreaterEqual(row["ranked_issues"], 1)
 
     def test_market_cap_is_shares_times_an_official_price(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -331,6 +376,286 @@ class GateTests(unittest.TestCase):
         self.assertEqual(ranked, 0)
         self.assertEqual(leads, 0)
 
+    def test_recent_window_keeps_an_earlier_run_for_the_same_scout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "debt-raise",
+                    "2026-08-01T12:00:00Z",
+                    [_debt("OLD", "facility", 80_000_000)],
+                )
+                save_run(
+                    conn,
+                    "debt-raise",
+                    "2026-09-20T12:00:00Z",
+                    [
+                        _debt("SCG.AX", "facility", 1_000_000),
+                        _debt("SCG.AX", "bond", 90_000_000),
+                    ],
+                )
+                save_run(
+                    conn,
+                    "debt-raise",
+                    "2026-10-05T12:00:00Z",
+                    [_debt("SCG.AX", "facility", 2_000_000), _debt("AAPL", "facility", 1_000_000)],
+                )
+                loaded = load_latest_figures(conn, as_of=SWEEP_AT)
+            finally:
+                conn.close()
+            by_key = {(figure.ticker, figure.instrument): figure.value for figure in loaded}
+            self.assertEqual(by_key[("SCG.AX", "facility")], 2_000_000)
+            self.assertEqual(by_key[("SCG.AX", "bond")], 90_000_000)
+            self.assertIn(("AAPL", "facility"), by_key)
+            self.assertNotIn("OLD", {figure.ticker for figure in loaded})
+            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            conn = connect(path)
+            try:
+                tickers = {row["ticker"] for row in conn.execute("SELECT ticker FROM lead_rejects")}
+            finally:
+                conn.close()
+        self.assertIn("SCG.AX", tickers)
+        self.assertNotIn("OLD", tickers)
+
+    def test_counterparty_search_is_a_token_prefix_and_holders_are_not_buyers(self):
+        holder = _figure(
+            "NWT",
+            "North West",
+            "SC 13D",
+            "2026-10-01|0001234567-26-000009|Northwind Capital",
+            2,
+            value_text="2%",
+        )
+        holder["figure_type"] = "substantial_holding"
+        missing = _figure("ZZZ", "Small Supplier", "Amazon", "2026-10-01", None, value_text="buyer: Amazon")
+        missing["figure_type"] = "supplier_order"
+        parties = extract_parties(_view(holder), "accumulation", {}, {})
+        self.assertEqual(parties[0]["role"], "holder")
+        self.assertEqual(parties[0]["name"], "Northwind Capital")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(conn, "accumulation", "2026-10-12T14:34:00Z", [holder])
+                save_run(
+                    conn,
+                    "orders-backlog",
+                    "2026-10-12T14:31:00Z",
+                    [missing, _figure("AMZN", "Amazon", "quarter", "2026-07-01/2026-09-30", 5_000_000_000)],
+                )
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000)
+            conn = connect(path)
+            try:
+                roles = {
+                    row["name"]: row["role"]
+                    for row in conn.execute("SELECT name, role FROM lead_reject_counterparties")
+                }
+                self.assertEqual(roles["Northwind Capital"], "holder")
+                self.assertEqual(
+                    [row["ticker"] for row, _parties in search_rejects(conn, counterparty="north")],
+                    ["NWT"],
+                )
+                self.assertEqual(
+                    [row["ticker"] for row, _parties in search_rejects(conn, counterparty="NORTH")],
+                    ["NWT"],
+                )
+                self.assertEqual(search_rejects(conn, counterparty="wind"), [])
+                self.assertEqual(
+                    [row["ticker"] for row, _parties in search_rejects(conn, counterparty="Northwind Capital")],
+                    ["NWT"],
+                )
+                amz = search_rejects(conn, counterparty="amz")
+                self.assertEqual([row["ticker"] for row, _parties in amz], ["ZZZ"])
+                self.assertEqual(amz[0][1][0]["ticker"], "AMZN")
+            finally:
+                conn.close()
+
+    def test_implausible_company_total_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "orders-backlog",
+                    "2026-10-12T14:31:00Z",
+                    [
+                        _orders("HUBB", "RevenueRemainingPerformanceObligation", "2026-04-01/2026-06-30", 1_000_000_000),
+                        _orders("HUBB", "RevenueRemainingPerformanceObligation", "2026-07-01/2026-09-30", 11_000_000),
+                        _orders("LOW", "backlog", "2026-04-01/2026-06-30", 1_000_000_000),
+                        _orders("LOW", "backlog", "2026-07-01/2026-09-30", 90_000_000),
+                        _orders("EDGE", "backlog", "2026-04-01/2026-06-30", 1_000_000_000),
+                        _orders("EDGE", "backlog", "2026-07-01/2026-09-30", 100_000_000),
+                        _orders("SEG", "backlog:Power", "2026-04-01/2026-06-30", 1_000_000_000),
+                        _orders("SEG", "backlog:Power", "2026-07-01/2026-09-30", 11_000_000),
+                        _orders("NAM", "Amazon", "2026-04-01/2026-06-30", 1_000_000_000, figure_type="supplier_order"),
+                        _orders("NAM", "Amazon", "2026-07-01/2026-09-30", 11_000_000, figure_type="supplier_order"),
+                    ],
+                )
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000)
+            conn = connect(path)
+            try:
+                reasons = {}
+                for row in conn.execute(
+                    "SELECT ticker, reason FROM lead_rejects WHERE rejection_stage = 'deterministic'"
+                ):
+                    reasons.setdefault(row["ticker"], []).append(row["reason"])
+            finally:
+                conn.close()
+        self.assertTrue(any("implausible backlog" in reason and "10%" in reason for reason in reasons["HUBB"]))
+        self.assertTrue(any("implausible backlog" in reason for reason in reasons["LOW"]))
+        self.assertFalse(any("implausible" in reason for reason in reasons["EDGE"]))
+        self.assertFalse(any("implausible" in reason for reason in reasons["SEG"]))
+        self.assertFalse(any("implausible" in reason for reason in reasons["NAM"]))
+
+    def test_shares_helper_caches_companyfacts_without_a_price_or_a_socket(self):
+        payload = {
+            "entityName": "NO CAP CO",
+            "facts": {
+                "dei": {
+                    "EntityCommonStockSharesOutstanding": {
+                        "units": {
+                            "shares": [
+                                {"end": "2025-12-31", "val": 500, "filed": "2026-02-01"},
+                                {"end": "2026-09-30", "val": 54_000_000, "filed": "2026-10-01"},
+                                {"end": "2026-09-30", "val": -1, "filed": "2026-10-02"},
+                            ]
+                        }
+                    }
+                },
+                "us-gaap": {
+                    "CommonStockSharesOutstanding": {
+                        "units": {"shares": [{"end": "2026-10-01", "val": 1, "filed": "2026-10-02"}]}
+                    }
+                },
+            },
+        }
+        parsed = shares_from_companyfacts(payload)
+        self.assertEqual(parsed["value"], 54_000_000)
+        self.assertEqual(parsed["figure_type"], "dei:EntityCommonStockSharesOutstanding")
+        self.assertNotIn("price", parsed)
+
+        class Fake:
+            def __init__(self):
+                self.urls = []
+
+            def json(self, url):
+                self.urls.append(url)
+                return payload
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            fake = Fake()
+            try:
+                os.environ["SEC_CONTACT_EMAIL"] = "research@example.com"
+                real_socket = socket.socket
+                real_open = urllib.request.urlopen
+                socket.socket = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("socket opened"))
+                urllib.request.urlopen = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("socket opened"))
+                try:
+                    cached = cache_shares_outstanding(
+                        conn,
+                        [{"ticker": "NCP", "cik": "1018724", "company": "No Cap Co"}],
+                        client=None,
+                        fetched_at=SWEEP_AT,
+                    )
+                finally:
+                    socket.socket = real_socket
+                    urllib.request.urlopen = real_open
+                self.assertEqual(cached, [])
+                rows = cache_shares_outstanding(
+                    conn,
+                    [{"ticker": "NCP", "cik": "1018724", "company": "No Cap Co"}],
+                    client=fake,
+                    fetched_at=SWEEP_AT,
+                )
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["figure_type"], "dei:EntityCommonStockSharesOutstanding")
+                self.assertEqual(rows[0]["value"], 54_000_000)
+                self.assertNotIn("share_price", {row["figure_type"] for row in rows})
+                self.assertIn("CIK0001018724", fake.urls[0])
+                again = Fake()
+                again.json = lambda url: (_ for _ in ()).throw(AssertionError("refetched"))
+                self.assertEqual(
+                    cache_shares_outstanding(
+                        conn,
+                        [{"ticker": "NCP", "cik": "1018724"}],
+                        client=again,
+                        fetched_at=SWEEP_AT,
+                    ),
+                    [],
+                )
+                cap, reason = resolve_market_cap(conn, "NCP")
+                self.assertIsNone(cap)
+                self.assertEqual(reason, "market cap unverified")
+                save_run(
+                    conn,
+                    "capex",
+                    "2026-10-12T14:30:52Z",
+                    [
+                        _figure(
+                            "NCP",
+                            "No Cap Co",
+                            "quarter",
+                            "2026-07-01/2026-09-30",
+                            5_000_000_000,
+                            value_text="5000000000",
+                        ),
+                        _figure(
+                            "NCP",
+                            "No Cap Co",
+                            "quarter",
+                            "2025-07-01/2025-09-30",
+                            1_000_000_000,
+                        ),
+                    ],
+                )
+            finally:
+                conn.close()
+            dry = Fake()
+            run_pipeline(path, provider=StubProvider(), dry_run=True, token_budget=80000, shares_client=dry)
+            self.assertEqual(dry.urls, [])
+            live = Fake()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000, shares_client=live)
+            self.assertEqual(live.urls, [])
+            conn = connect(path)
+            try:
+                stored = conn.execute(
+                    """
+                    SELECT figure_type, value FROM figures
+                    WHERE ticker = 'NCP' AND figure_type = 'dei:EntityCommonStockSharesOutstanding'
+                    """
+                ).fetchall()
+                prices = conn.execute(
+                    "SELECT COUNT(*) FROM figures WHERE ticker = 'NCP' AND figure_type = 'share_price'"
+                ).fetchone()[0]
+                thesis = conn.execute(
+                    """
+                    SELECT t.thesis_text, r.assumptions_that_fail, k.surviving_issues
+                    FROM leads AS l
+                    JOIN theses AS t ON t.lead_id = l.lead_id
+                    JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
+                    JOIN rankings AS k ON k.lead_id = l.lead_id
+                    WHERE l.ticker = 'NCP'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["value"], 54_000_000)
+        self.assertEqual(prices, 0)
+        self.assertIn("market cap unverified", thesis["thesis_text"])
+        self.assertIn("market cap unverified", thesis["assumptions_that_fail"])
+        self.assertGreaterEqual(thesis["surviving_issues"], 1)
+
 
 class _FailMarketCap(StubProvider):
     def complete(self, prompt, *, max_tokens):
@@ -424,6 +749,23 @@ def _price(
         "source_type": source_type,
         "verified": 1,
     }
+
+
+def _debt(ticker, instrument, value):
+    row = _figure(ticker, ticker, instrument, "2026-10-01", value)
+    row["figure_type"] = "bond_amount" if instrument == "bond" else "facility_amount"
+    row["currency"] = "USD"
+    return row
+
+
+def _orders(ticker, instrument, period, value, figure_type="backlog"):
+    row = _figure(ticker, ticker, instrument, period, value)
+    row["figure_type"] = figure_type
+    return row
+
+
+def _view(row):
+    return type("Row", (), dict(row))()
 
 
 def _order(ticker, instrument, value_text, figure_type="supplier_order"):

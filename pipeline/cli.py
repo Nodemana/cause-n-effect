@@ -13,7 +13,9 @@ import argparse
 from shared.pipeline_store import connect
 
 from pipeline.flow import run_pipeline
+from pipeline.load import FIGURE_WINDOW_DAYS
 from pipeline.store import search_rejects
+from shared.nethttp import sec_client, sec_contact_email
 
 DEFAULT_TOKEN_BUDGET = 80000
 
@@ -44,7 +46,8 @@ def build_parser():
         "run",
         help="Filter, research, merge, critique, rank, and record pending decisions",
         description=(
-            "Read the latest run of each scout from the figures table. "
+            f"Read each scout's figures from the last {FIGURE_WINDOW_DAYS} days, "
+            "the latest row per ticker, figure type, instrument, and period. "
             "Thresholds and dedupe run first. A per-run token budget then rates "
             "magnitude, novelty, market attention, and timing. Surviving leads "
             "each get one Centurion thesis from Centurions/rules/<type>.md. "
@@ -60,7 +63,11 @@ def build_parser():
             "cache/macro.json or --macro-cache. "
             "LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL configure the live client. "
             "When LLM_API_KEY is unset the offline stub runs the same stages and "
-            "does not open a network connection. The key is never printed."
+            "does not open a network connection. The key is never printed. "
+            "Shares outstanding are cached from SEC companyfacts when "
+            "SEC_CONTACT_EMAIL is set. An official price source is TODO; "
+            "the sweep does not call an unofficial price feed. "
+            "The figures summary is the lead figures used after --limit."
         ),
     )
     run.add_argument("--db", required=True, help="SQLite database that holds scout figures")
@@ -73,7 +80,7 @@ def build_parser():
         "--limit",
         type=int,
         default=None,
-        help="Use only the first N latest figures, newest announced_on first",
+        help="Use only the first N lead figures, newest announced_on first. The figures summary is that count",
     )
     run.add_argument(
         "--token-budget",
@@ -92,7 +99,8 @@ def build_parser():
         help="Search the reject log by issuer ticker or counterparty",
         description=(
             "Print lead_rejects rows. --ticker matches the issuer. "
-            "--counterparty matches a buyer, supplier, or customer by normalised name or ticker. "
+            "--counterparty matches a buyer, supplier, customer, or holder by "
+            "case-insensitive token prefix (north matches Northwind) or ticker prefix (amz matches AMZN). "
             "Pass either flag, or both to require a match on each."
         ),
     )
@@ -107,12 +115,14 @@ def _run(parser, args):
         parser.error("--limit must be a positive integer")
     if args.token_budget < 0:
         parser.error("--token-budget must be zero or positive")
+    shares_client = sec_client() if sec_contact_email() else None
     result = run_pipeline(
         args.db,
         dry_run=args.dry_run,
         limit=args.limit,
         token_budget=args.token_budget,
         macro_cache=args.macro_cache,
+        shares_client=shares_client,
     )
     for key in (
         "run_id",

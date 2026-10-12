@@ -3,7 +3,7 @@
 import re
 from datetime import date
 
-from pipeline.load import as_of, classify, exchange_for, extract_cik, filing_date, period_end
+from pipeline.load import ORDER_TYPES, as_of, classify, exchange_for, extract_cik, filing_date, period_end
 from pipeline.marketcap import criterion_threshold, resolve_market_cap
 from pipeline.names import normalise_name
 
@@ -16,11 +16,17 @@ STAKE_MIN_PCT = 5
 DEBT_MIN_DOLLARS = 50_000_000
 CAPEX_GROWTH_PCT = 10
 BACKLOG_GROWTH_PCT = 10
+IMPLAUSIBLE_RATIO = 0.10
 ACCUMULATION_WINDOW_DAYS = 90
 STALE_PERIOD_DAYS = 120
 SIMILAR_VALUE_BAND = 0.20
 _SPAN_RANK = {"quarter": 0, "ttm": 1, "ytd": 2, "annual": 3, "instant": 4}
 _METRIC_LABELS = {"orders", "order", "backlog", "revenue"}
+_COMPANY_TOTALS = _METRIC_LABELS | {
+    "",
+    "revenueremainingperformanceobligation",
+    "backlogoforders",
+}
 
 _STOP_PARTIES = {
     "quarter",
@@ -104,16 +110,18 @@ class Candidate:
 
 
 def prefilter(conn, figures, limit=None):
-    """Return (candidates, rejects) from the latest figures.
+    """Return (candidates, rejects, used) from the latest figures.
 
     `limit` keeps the first N lead figures in newest-announced order before
-    the gates run. Balance-sheet tags that are not a lead type are skipped
-    and are not rejects, and they do not consume `limit`. Older periods and
-    extra capex spans are not rated.
+    the gates run. `used` is that count: lead figures after the limit, not
+    the rows loaded before it. Balance-sheet tags that are not a lead type
+    are skipped and are not rejects, and they do not consume `limit`. Older
+    periods and extra capex spans are not rated.
     """
     ordered = [figure for figure in figures if classify(figure.scout, figure.figure_type) is not None]
     if limit is not None:
         ordered = ordered[: int(limit)]
+    used = len(ordered)
     by_name, cik_by_ticker = party_index(figures)
     candidates = []
     rejects = []
@@ -176,7 +184,7 @@ def prefilter(conn, figures, limit=None):
             )
             continue
         kept.append(candidate)
-    return kept, rejects
+    return kept, rejects, used
 
 
 def interesting(rating):
@@ -229,7 +237,7 @@ def extract_parties(figure, lead_type, by_name, cik_by_ticker):
     if lead_type == "accumulation":
         parts = (figure.period or "").split("|")
         if len(parts) >= 3:
-            add("buyer", parts[-1])
+            add("holder", parts[-1])
     unique = []
     seen = set()
     for party in found:
@@ -277,12 +285,14 @@ def _threshold(conn, figure, lead_type):
         window = _outside_window(figure)
         if window:
             return window, Rating(timing="outside window", timing_rationale=window)
-    cap, cap_note = resolve_market_cap(conn, figure.ticker)
+    implausible = _implausible_total(conn, figure, lead_type)
+    if implausible:
+        return implausible, _magnitude(implausible)
+    cap, _cap_note = resolve_market_cap(conn, figure.ticker)
     figure.market_cap = cap
     threshold = criterion_threshold(conn, lead_type, "min_market_cap")
-    if threshold is not None and (cap is None or cap < threshold):
-        if cap is None:
-            return cap_note, _magnitude(cap_note)
+    figure.market_cap_unverified = cap is None and threshold is not None
+    if threshold is not None and cap is not None and cap < threshold:
         reason = f"min_market_cap: {cap:g} is below {threshold:g}"
         return reason, _magnitude(reason)
     if lead_type == "debt_raise" and cap:
@@ -303,6 +313,46 @@ def _threshold(conn, figure, lead_type):
     figure.earlier_similar = _earlier_similar(conn, figure)
     figure.period_age_days = _period_age_days(figure)
     return None, None
+
+
+def _is_company_total(instrument):
+    text = instrument or ""
+    if ":" in text:
+        return False
+    return text.casefold() in _COMPANY_TOTALS
+
+
+def _implausible_total(conn, figure, lead_type):
+    """Reject a company-total backlog far below the company's other periods.
+
+    Segment rows (an instrument containing `:`) and named counterparties
+    are not company totals. The comparison uses every other company-total
+    orders figure for the ticker, including periods outside the load window.
+    """
+    if lead_type != "orders_backlog" or not _is_company_total(figure.instrument):
+        return None
+    if figure.value is None or figure.value <= 0:
+        return None
+    rows = conn.execute(
+        """
+        SELECT figure_id, figure_type, instrument, value
+        FROM figures
+        WHERE ticker = ? AND figure_id != ?
+          AND value IS NOT NULL AND value > 0
+        """,
+        (figure.ticker, figure.figure_id),
+    ).fetchall()
+    ceiling = 0.0
+    for row in rows:
+        if row["figure_type"] not in ORDER_TYPES:
+            continue
+        if not _is_company_total(row["instrument"] or ""):
+            continue
+        ceiling = max(ceiling, float(row["value"]))
+    # 10% exactly is kept. Scale by 100 so the boundary does not depend on binary fractions.
+    if ceiling and figure.value * 100 < ceiling * round(IMPLAUSIBLE_RATIO * 100):
+        return f"implausible backlog: {figure.value:g} is below 10% of {ceiling:g}"
+    return None
 
 
 def _prefer_spans(classified):

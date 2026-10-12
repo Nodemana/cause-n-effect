@@ -1,7 +1,7 @@
-"""Latest figure from each scout run."""
+"""Latest figure from each scout, across a recent window of runs."""
 
 import re
-from datetime import date
+from datetime import date, timedelta
 
 SCOUT_LEAD_TYPES = {
     "capex": "capex",
@@ -37,6 +37,8 @@ _TYPES_FOR_LEAD = {
     "insider_buying": INSIDER_TYPES,
 }
 
+FIGURE_WINDOW_DAYS = 30
+
 _ACCESSION = re.compile(r"\d{10}-\d{2}-\d{6}")
 _CIK = re.compile(r"/data/(\d+)/")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -60,6 +62,8 @@ class Figure:
         self.source_url = row["source_url"] or ""
         self.source_type = row["source_type"] or ""
         self.verified = int(row["verified"])
+        self.market_cap = None
+        self.market_cap_unverified = False
 
     @property
     def lead_type(self):
@@ -77,32 +81,59 @@ def classify(scout, figure_type):
     return lead_type
 
 
-def load_latest_figures(conn):
-    """Figures from the latest run of each scout, oldest run id losing a tie."""
+def load_latest_figures(conn, *, as_of=None, window_days=FIGURE_WINDOW_DAYS):
+    """Latest figure per ticker, type, instrument, and period for each scout.
+
+    The window is `window_days` back from `as_of` (a UTC timestamp or date).
+    A later run that names only some tickers does not hide figures from an
+    earlier run that started inside the window. Period stays in the key so a
+    prior quarter is still loaded for the growth comparison. The same key in
+    two runs keeps the later `started_at`, then the higher figure id.
+    """
+    cutoff = _window_start(as_of, window_days)
     scouts = tuple(SCOUT_LEAD_TYPES)
     placeholders = ", ".join("?" * len(scouts))
     rows = conn.execute(
         f"""
-        WITH ranked AS (
-            SELECT run_id, scout, started_at,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY scout
-                       ORDER BY started_at DESC, run_id DESC
-                   ) AS n
+        WITH recent AS (
+            SELECT run_id, scout, started_at
             FROM runs
             WHERE scout IN ({placeholders})
+              AND started_at >= ?
+        ),
+        ranked AS (
+            SELECT f.figure_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY recent.scout, f.ticker, f.figure_type, f.instrument, f.period
+                       ORDER BY recent.started_at DESC, f.figure_id DESC
+                   ) AS n
+            FROM figures AS f
+            JOIN recent ON recent.run_id = f.run_id
         )
         SELECT f.figure_id, f.run_id, f.ticker, f.company, f.figure_type,
                f.instrument, f.period, f.value, f.value_text, f.currency,
                f.seen_at, f.announced_on, f.source_url, f.source_type, f.verified,
-               ranked.scout AS scout
+               recent.scout AS scout
         FROM figures AS f
-        JOIN ranked ON ranked.run_id = f.run_id AND ranked.n = 1
+        JOIN recent ON recent.run_id = f.run_id
+        JOIN ranked ON ranked.figure_id = f.figure_id AND ranked.n = 1
         ORDER BY COALESCE(f.announced_on, '') DESC, f.figure_id DESC
         """,
-        scouts,
+        (*scouts, cutoff),
     ).fetchall()
     return [Figure(row) for row in rows]
+
+
+def _window_start(as_of, window_days):
+    if as_of is None:
+        from shared.store import utc_now
+
+        as_of = utc_now()
+    try:
+        day = date.fromisoformat(str(as_of)[:10])
+    except ValueError:
+        day = date.today()
+    return (day - timedelta(days=int(window_days))).isoformat()
 
 
 def exchange_for(figure):
