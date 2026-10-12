@@ -20,6 +20,15 @@ Open-market purchases only. Form 4 keeps transaction code `P` marked acquired. A
 
 Insider buying excludes sales, option exercises, grants, and gifts. Form 4 code `P` is an open-market or private purchase, and the XML does not split those. A 3Y that says neither on-market nor off-market is flagged for review. The ASX feed is undocumented, returns only the latest five announcements per company (enough for a weekly run), and is health-checked.
 
+## Run
+
+The live command writes this run into the shared figures table and exits nonzero when it stores no figure. SEC Form 4 requests wait until `SEC_CONTACT_EMAIL` is set. The offline check uses the Form 4 fixture.
+
+```bash
+python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite
+python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/insider-buying/fixtures/sec_form4_ceo.xml --no-asx
+```
+
 ## Status
 
-Structure and tests only, no live runs.
+Fixture tests, plus an ASX live pull from the command above. SEC live runs where `SEC_CONTACT_EMAIL` is set.

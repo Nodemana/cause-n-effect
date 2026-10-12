@@ -53,8 +53,12 @@ def collect_sec(start, end, client=None, ticker_map=None, limit=None):
 
 
 def collect_asx(companies, client=None, count=5):
-    """Appendix 3Y notices. The document body is downloaded here."""
+    """Appendix 3Y notices. The document body is downloaded here.
+
+    The feed returns only the latest five announcements per company.
+    """
     client = client or asx_client()
+    count = min(int(count), 5)
     documents = []
     for company in companies:
         code = (company.get("ticker") or "").strip().upper()
@@ -63,7 +67,9 @@ def collect_asx(companies, client=None, count=5):
         url = f"{ASX_API}/companies/{code.lower()}/announcements?count={int(count)}"
         _require_asx(url)
         payload = client.json(url)
-        data = payload.get("data") or {}
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict) or "items" not in data:
+            raise EndpointError(f"ASX announcements feed for {code} failed the health check")
         name = data.get("displayName") or company.get("name") or code
         for item in (data.get("items") or [])[:count]:
             headline = (item.get("headline") or "").strip()

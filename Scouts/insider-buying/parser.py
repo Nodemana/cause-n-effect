@@ -95,7 +95,28 @@ def parse_date(value):
     local = re.match(r"(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})", text)
     if local:
         return _safe_date(int(local.group(3)), int(local.group(2)), int(local.group(1)))
+    named = re.match(r"(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})", text)
+    if named:
+        month = _MONTHS.get(named.group(2).casefold())
+        if month:
+            return _safe_date(int(named.group(3)), month, int(named.group(1)))
     return None
+
+
+_MONTHS = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
 
 
 def local(tag):
@@ -196,7 +217,9 @@ def _3y_row(part, director, company, header_title, ticker, source_url, filing_da
     disposed = _int_field(part, "Number disposed")
     nature = _label(part, "Nature of change") or ""
     consideration = _label(part, "Value/Consideration") or ""
-    blob = f"{nature} {consideration}"
+    # The form's example line mentions both on-market and off-market, and the
+    # "For personal use only" watermark can sit between the label and the value.
+    blob = " ".join(_notice_lines(part))
     on_market = bool(_ON_MARKET.search(blob))
     off_market = bool(_OFF_MARKET.search(blob))
     if on_market and off_market:
@@ -360,6 +383,22 @@ def _3y_parts(text):
     return director, entity, position, bodies
 
 
+def _notice_lines(text):
+    """Notice lines, without the watermark or the form's example sentence."""
+    kept = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        folded = stripped.casefold()
+        if folded == "for personal use only":
+            continue
+        if folded.startswith("example:"):
+            continue
+        kept.append(stripped)
+    return kept
+
+
 def _label(text, label):
     lines = text.splitlines()
     pattern = re.compile(rf"^{re.escape(label)}\s*[:.]?\s*(.*)$", re.I)
@@ -397,7 +436,7 @@ def _consideration(raw):
     folded = (raw or "").casefold()
     if "usd" in folded or "us$" in folded:
         currency = "USD"
-    per_share = bool(re.search(r"per share", raw or "", re.I))
+    per_share = bool(re.search(r"per\s+(?:share|security|unit)\b", raw or "", re.I))
     match = _MONEY.search(raw or "")
     amount = None
     if match:

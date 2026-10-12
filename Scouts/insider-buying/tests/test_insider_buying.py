@@ -2,7 +2,9 @@
 
 import json
 import os
+import sqlite3
 import sys
+import tempfile
 import unittest
 import urllib.request
 from pathlib import Path
@@ -106,6 +108,43 @@ class InsiderBuyingTests(unittest.TestCase):
         self.assertEqual(figure["verified"], 1)
         parsed = json.loads(pipeline.to_json(table))
         self.assertEqual(parsed["records"][0]["is_ceo"], True)
+
+    def test_month_name_date_and_per_security_price(self):
+        body = "\n".join([
+            "Name of entity: Example Ltd",
+            "Name of Director: Ada North",
+            "Date of change: 2 October 2026",
+            "Number acquired: 10,000",
+            "Value/Consideration: $13.17 per security",
+            "Nature of change: On-market acquisition",
+        ])
+        table = pipeline.build_table([
+            {"source": "asx", "body": body, "url": "https://asx.api.markitdigital.com/asx-research/1.0/file/example", "filing_date": "2026-10-03", "ticker": "EX.AX", "company": "Example Ltd"},
+        ])
+        self.assertEqual(len(table["records"]), 1)
+        self.assertEqual(table["review"], [])
+        self.assertEqual(table["records"][0]["transaction_date"], "2026-10-02")
+        self.assertEqual(table["records"][0]["shares"], 10000)
+        self.assertAlmostEqual(table["records"][0]["value"], 131700.0)
+        self.assertEqual(table["figures"][0]["currency"], "AUD")
+        laid_out = "\n".join([
+            "Name of Director: Ada North",
+            "Date of change                                                        2 October 2026",
+            "Number acquired                                                       10,000",
+            "Value/Consideration                                                   $13.17 per security",
+            "Nature of change",
+            "For personal use only",
+            "On-market acquisition",
+            "Example: on-market trade, off-market trade, exercise of options,",
+        ])
+        laid = pipeline.build_table([
+            {"source": "asx", "body": laid_out, "url": "https://asx.api.markitdigital.com/asx-research/1.0/file/example", "filing_date": "2026-10-03", "ticker": "TCL.AX"},
+        ])
+        self.assertEqual(len(laid["records"]), 1)
+        self.assertEqual(laid["review"], [])
+        self.assertAlmostEqual(laid["records"][0]["value"], 131700.0)
+        self.assertEqual(parser.parse_date("29 September 2026"), "2026-09-29")
+        self.assertEqual(parser.parse_date("15/03/2026"), "2026-03-15")
 
     def test_sales_grants_exercises_and_small_buys_are_excluded(self):
         documents = [
@@ -283,6 +322,38 @@ Nature of change:
         os.environ.pop("SEC_CONTACT_EMAIL", None)
         with self.assertRaises(EndpointError):
             fetcher.collect_sec("2026-03-01", "2026-03-31")
+
+    def test_live_fixture_stores_a_figure_and_empty_run_exits_nonzero(self):
+        import live
+
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = str(Path(tmp) / "history.sqlite")
+                code = live.main(
+                    [
+                        "--db",
+                        db,
+                        "--sec-fixture",
+                        str(FIX / "sec_form4_ceo.xml"),
+                        "--no-asx",
+                    ]
+                )
+                self.assertEqual(code, 0)
+                conn = sqlite3.connect(db)
+                row = conn.execute(
+                    "SELECT ticker, figure_type, value, source_type FROM figures"
+                ).fetchone()
+                conn.close()
+                self.assertEqual(row[0], "NWT")
+                self.assertEqual(row[1], "insider_purchase")
+                self.assertEqual(row[2], 80000)
+                self.assertEqual(row[3], "filing")
+                empty = live.main(["--db", str(Path(tmp) / "empty.sqlite"), "--no-asx"])
+                self.assertEqual(empty, 1)
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
 
 
 if __name__ == "__main__":

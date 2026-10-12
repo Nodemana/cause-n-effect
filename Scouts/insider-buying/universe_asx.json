@@ -1,0 +1,13 @@
+{
+  "description": "ASX codes scanned for Appendix 3Y notices in the latest five announcements. Edit when those headlines move on.",
+  "companies": [
+    {"ticker": "CBA", "name": "Commonwealth Bank"},
+    {"ticker": "NAB", "name": "National Australia Bank"},
+    {"ticker": "WES", "name": "Wesfarmers"},
+    {"ticker": "FMG", "name": "Fortescue"},
+    {"ticker": "TCL", "name": "Transurban"},
+    {"ticker": "MIN", "name": "Mineral Resources"},
+    {"ticker": "ORG", "name": "Origin Energy"},
+    {"ticker": "QAN", "name": "Qantas"}
+  ]
+}
