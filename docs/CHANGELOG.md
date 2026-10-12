@@ -10,6 +10,12 @@ Every pull request adds an entry at the top of this file before it merges. Each 
 
 **Why.** The reader should open one thesis at a time, with the objections attached to that thesis. A decision row read like an instruction to act.
 
+### 2026-10-13 08:24 AEST — [PR #32](https://github.com/Nodemana/cause-n-effect/pull/32)
+
+**What changed.** ASX quotes come from the Markit company header. The last price and the market cap are in Australian dollars. The pipeline does not call Interactive Brokers. For a US ticker that needs a quote, the sweep writes `data/agent_queue/<run>/prices/needed.json`. The agent returns the last price, contract id, status, and time. A quote is stored when the status is realtime or delayed, the price is positive, and the quote is no older than three trading days. Any other result leaves that ticker unverified. A US market cap is SEC shares outstanding times that price. An ASX market cap is the Markit figure. `python -m pipeline cleanup` prints what it would remove and writes nothing. `--apply` copies the database first, then in one transaction removes unofficial sources, prior-year comparatives, implausible figures, duplicates, superseded figures, and orphan leads and theses. Each removal is written to `cleanup_log`. Running it again removes nothing new.
+
+**Why.** Price and market-cap checks need an official quote, and a bad row needs a cleanup that can be reviewed before it writes and that is safe to run twice.
+
 ### 2026-10-13 08:22 AEST — [PR #31](https://github.com/Nodemana/cause-n-effect/pull/31)
 
 **What changed.** Ranking writes every candidate thesis to `data/reports/<run>-candidates.md` and one Legate task. Each section includes that thesis's full Praetorian flaw list. The Legate selects at most five of those leads and writes a reason for each pick. `pipeline ingest` checks that the list has at most five ids and that each id is a candidate in this run, then writes `data/reports/<run>-final.md` with only the selected theses.
