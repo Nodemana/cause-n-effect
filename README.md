@@ -3,9 +3,20 @@
 Finds investment leads early: spending signals (capex, debt raises, orders, stake building, insider buying) that the market hasn't priced in yet.
 
 ## Architecture
-A Portfolio Manager agent (the Legate) orchestrates the scouts. Python scripts do the deterministic work: fetching, parsing, storing and diffing. Agents only handle judgment, which keeps token spend low.
+Python scripts do the deterministic work: fetching, parsing, storing and diffing. Agents only handle judgment, which keeps token spend low. The sweep from scouts to the weekly shortlist is designed in [docs/pipeline-architecture.md](docs/pipeline-architecture.md).
 
-The sweep from scouts to the weekly shortlist is designed in [docs/pipeline-architecture.md](docs/pipeline-architecture.md).
+```mermaid
+flowchart LR
+  S[Scouts] --> M[Legate: merge] --> C[Centurions] --> P[Praetorians] --> R[Legate: rank] --> I[Imperator]
+```
+
+**Scouts to Centurions.** Scouts surface leads from each dataset, and supportive leads may be merged. Each Centurion gets a lead-matched rules file and autonomously grades the lead, then writes a thesis with potential ROI, risks, timeframe, and stated assumptions ([Centurions/README.md](Centurions/README.md)).
+
+**Praetorians.** Praetorians only critique, attacking the stated assumptions, weak sources, and conclusions with counter-evidence ([Praetorians/README.md](Praetorians/README.md)). They state no assumptions of their own.
+
+**Legate.** The Legate ranks the critiqued findings: fewest surviving issues, highest ROI, and shortest timeframe first, then by remaining risk count and size, lower return, or longer time. The ranked list goes to the Imperator, who decides.
+
+**After the decision.** Each lead is tracked as acted on, not acted on, or pending. Acted-on leads are monitored against their thesis using live brokerage portfolio data (position and profit and loss), and those outcomes feed back.
 
 ## Data
 - SQLite history DB: time-stamped figures with source links and a verified flag, diffed run to run.
@@ -21,31 +32,11 @@ The sweep from scouts to the weekly shortlist is designed in [docs/pipeline-arch
 5. **Insider buying**: Form 4s and ASX 3Ys, with CEO buys and cluster buying flagged.
 
 ## Roles
-```mermaid
-flowchart LR
-  S[Scouts] --> M[Legate: merge] --> C[Centurions] --> P[Praetorians] --> R[Legate: rank] --> I[Imperator]
-```
 - **Scouts** find leads.
-- **Centurions** research one lead into a thesis and a recommendation. Spin-up is in [Centurions/README.md](Centurions/README.md).
+- **Centurions** research one lead. Spin-up is in [Centurions/README.md](Centurions/README.md).
 - **Praetorians** critique that output. The job is in [Praetorians/README.md](Praetorians/README.md).
 - **Legate** is the AI Portfolio Manager. It merges supporting leads before research, then ranks what survives critique.
 - **Imperator** is the human who decides and places trades himself.
-
-Lead merging is part of the workflow the Centurions work inside. The Legate combines two or more leads that support each other, for example a capex lead and an orders_backlog lead on the same company, and records the merge in `legate_merges`. The Centurion treats that merged lead as one lead.
-
-## Praetorians
-
-Praetorians receive the Centurion's output: the recommendation (where to put the money, the expected return, the risks, and the timeframe) and the stated assumptions. Critique is their only job.
-
-They have no assumptions section. The assumptions under attack are the Centurion's.
-
-They challenge:
-
-- An assumption that does not make sense, and why.
-- Research taken from a bad source, or from any source other than an SEC filing, an ASX announcement, or a company release.
-- Further research that contradicts the Centurion's findings.
-
-They argue the other side of every claim. Counter-evidence is aimed at the Centurion's stated assumptions, sources, and conclusions, so the thesis is pulled apart before the Legate ranks it.
 
 ## Legate
 
