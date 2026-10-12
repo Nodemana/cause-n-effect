@@ -256,13 +256,45 @@ def extract_accession(figure):
 
 
 def period_end(period):
-    found = _DATE.findall(period or "")
+    """The period's end date.
+
+    A slash span (`2025-07-01/2025-09-30`) ends on the last date. A
+    companyfacts row stored as `end|filed` ends on the first date; the
+    second date is when it was filed.
+    """
+    text = period or ""
+    found = _DATE.findall(text)
     if not found:
         return None
+    chosen = found[0] if "|" in text and "/" not in text else found[-1]
     try:
-        return date.fromisoformat(found[-1])
+        return date.fromisoformat(chosen)
     except ValueError:
         return None
+
+
+def period_span_days(period):
+    """Days covered by a start/end span.
+
+    A single date has none. A companyfacts `end|filed` row has none: the
+    second date is the filing date. Two dates written without a slash
+    (`from 2025-07-01 to 2025-09-30`) still count.
+    """
+    text = period or ""
+    if "|" in text and "/" not in text:
+        return None
+    found = _DATE.findall(text)
+    if len(found) < 2:
+        return None
+    try:
+        start = date.fromisoformat(found[0])
+        end = date.fromisoformat(found[-1])
+    except ValueError:
+        return None
+    days = (end - start).days
+    if days < 0:
+        return None
+    return days
 
 
 def as_of(figure):

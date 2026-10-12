@@ -18,7 +18,7 @@ if str(REPO) not in sys.path:
 import pipeline.flow as flow  # noqa: E402
 from pipeline.flow import run_pipeline  # noqa: E402
 from pipeline.llm import Completion, StubProvider  # noqa: E402
-from pipeline.load import _collapse_identical, event_date, load_latest_figures  # noqa: E402
+from pipeline.load import _collapse_identical, event_date, load_latest_figures, period_span_days  # noqa: E402
 from pipeline.marketcap import resolve_market_cap  # noqa: E402
 from pipeline.prefilter import _period_age_days, extract_parties  # noqa: E402
 from pipeline.prompts import praetorian_prompt  # noqa: E402
@@ -103,9 +103,10 @@ class GateTests(unittest.TestCase):
                     "2026-10-12T14:30:52Z",
                     [
                         _figure("CAT", "Caterpillar", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
-                        _figure("CAT", "Caterpillar", "quarter", "2026-04-01/2026-06-30", 2_000_000_000),
-                        _figure("CAT", "Caterpillar", "quarter", "2025-07-01/2025-09-30", 1_000_000_000),
-                        _figure("CAT", "Caterpillar", "ttm", "2025-10-01/2026-09-30", 9_000_000_000),
+                        _other_capex(_figure("CAT", "Caterpillar", "quarter", "2026-04-01/2026-06-30", 2_000_000_000)),
+                        _other_capex(_figure("CAT", "Caterpillar", "quarter", "2025-07-01/2025-09-30", 1_000_000_000)),
+                        _other_capex(_figure("CAT", "Caterpillar", "quarter", "2024-07-01/2024-09-30", 800_000_000)),
+                        _other_capex(_figure("CAT", "Caterpillar", "ttm", "2025-10-01/2026-09-30", 9_000_000_000)),
                         *_caps("CAT"),
                     ],
                 )
@@ -147,9 +148,11 @@ class GateTests(unittest.TestCase):
                         _figure("FLAT", "Flat Co", "quarter", "2026-07-01/2026-09-30", 1_050_000_000),
                         _figure("FLAT", "Flat Co", "quarter", "2025-07-01/2025-09-30", 1_000_000_000),
                         _figure("NONE", "No Cap", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
-                        _figure("NONE", "No Cap", "quarter", "2025-07-01/2025-09-30", 1_000_000_000),
+                        _other_capex(_figure("NONE", "No Cap", "quarter", "2025-07-01/2025-09-30", 1_000_000_000)),
+                        _other_capex(_figure("NONE", "No Cap", "quarter", "2024-07-01/2024-09-30", 800_000_000)),
                         _figure("SHR", "Shares Only", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
-                        _figure("SHR", "Shares Only", "quarter", "2025-07-01/2025-09-30", 1_000_000_000),
+                        _other_capex(_figure("SHR", "Shares Only", "quarter", "2025-07-01/2025-09-30", 1_000_000_000)),
+                        _other_capex(_figure("SHR", "Shares Only", "quarter", "2024-07-01/2024-09-30", 800_000_000)),
                         _shares("SHR"),
                         _price("SHR", source_type="media", source_url="https://example.com/quote"),
                         _figure("SMALL", "Small Cap", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
@@ -247,16 +250,14 @@ class GateTests(unittest.TestCase):
             path = str(Path(tmp) / "history.sqlite")
             conn = _history(path)
             try:
-                save_run(
-                    conn,
-                    "orders-backlog",
-                    "2026-10-12T14:31:00Z",
-                    [
-                        _order("GEV", "orders", "40600000000"),
-                        _order("GEV", "backlog|40600000000", "40600000000", figure_type="backlog"),
-                        _order("GEV", "Amazon", "2000000000 buyer: Amazon"),
-                    ],
-                )
+                labels = [
+                    _order("GEV", "orders", "40600000000"),
+                    _order("GEV", "backlog|40600000000", "40600000000", figure_type="backlog"),
+                    _order("GEV", "Amazon", "2000000000 buyer: Amazon"),
+                ]
+                for row in labels:
+                    row["value"] = 20_000_000
+                save_run(conn, "orders-backlog", "2026-10-12T14:31:00Z", labels)
             finally:
                 conn.close()
             run_pipeline(path, provider=StubProvider(), token_budget=80000)
@@ -285,7 +286,7 @@ class GateTests(unittest.TestCase):
                         _figure("SIM", "Similar Co", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
                         _figure("SIM", "Similar Co", "quarter", "2025-07-01/2025-09-30", 4_500_000_000),
                         _figure("OLD", "Stale Co", "quarter", "2026-02-01/2026-05-01", 5_000_000_000),
-                        _figure("OLD", "Stale Co", "quarter", "2025-02-01/2025-05-01", 1_000_000_000),
+                        _other_capex(_figure("OLD", "Stale Co", "quarter", "2025-02-01/2025-05-01", 1_000_000_000)),
                         *_caps("SIM", "OLD"),
                     ],
                 )
@@ -355,7 +356,7 @@ class GateTests(unittest.TestCase):
                     "2026-10-12T14:30:52Z",
                     [
                         _figure("AMZN", "Amazon", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
-                        _figure("AMZN", "Amazon", "quarter", "2025-07-01/2025-09-30", 1_000_000_000),
+                        _other_capex(_figure("AMZN", "Amazon", "quarter", "2025-07-01/2025-09-30", 1_000_000_000)),
                         *_caps("AMZN"),
                     ],
                 )
@@ -475,7 +476,7 @@ class GateTests(unittest.TestCase):
                     "2026-09-01T12:00:00Z",
                     [
                         _figure("AMZN", "Amazon", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
-                        _figure("AMZN", "Amazon", "quarter", "2025-07-01/2025-09-30", 1_000_000_000),
+                        _other_capex(_figure("AMZN", "Amazon", "quarter", "2025-07-01/2025-09-30", 1_000_000_000)),
                         *_caps("AMZN"),
                     ],
                 )
@@ -485,7 +486,7 @@ class GateTests(unittest.TestCase):
                     "2026-10-12T12:00:00Z",
                     [
                         _figure("AMZN", "Amazon", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
-                        _figure("AMZN", "Amazon", "quarter", "2025-07-01/2025-09-30", 1_000_000_000),
+                        _other_capex(_figure("AMZN", "Amazon", "quarter", "2025-07-01/2025-09-30", 1_000_000_000)),
                         *_caps("AMZN"),
                     ],
                 )
@@ -583,16 +584,35 @@ class GateTests(unittest.TestCase):
                             announced_on="2026-05-02",
                             seen_at="2026-05-02",
                         ),
-                        _figure(
-                            "SEEN",
-                            "Seen Co",
-                            "quarter",
-                            "2025-02-01/2025-05-01",
-                            1_000_000_000,
-                            announced_on="2025-05-02",
-                            seen_at="2025-05-02",
+                        _other_capex(
+                            _figure(
+                                "SEEN",
+                                "Seen Co",
+                                "quarter",
+                                "2025-02-01/2025-05-01",
+                                1_000_000_000,
+                                announced_on="2025-05-02",
+                                seen_at="2025-05-02",
+                            )
                         ),
                         *_caps("SEEN"),
+                        _figure(
+                            "ONTIME",
+                            "On Time Co",
+                            "quarter",
+                            "2026-05-02/2026-08-01",
+                            5_000_000_000,
+                        ),
+                        _other_capex(
+                            _figure(
+                                "ONTIME",
+                                "On Time Co",
+                                "quarter",
+                                "2025-05-02/2025-08-01",
+                                1_000_000_000,
+                            )
+                        ),
+                        *_caps("ONTIME"),
                     ],
                 )
                 save_run(
@@ -609,25 +629,30 @@ class GateTests(unittest.TestCase):
             run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
             conn = connect(path)
             try:
-                rows = {
-                    row["ticker"]: row
-                    for row in conn.execute(
-                        """
-                        SELECT ticker, rejection_stage, reason, significance_timing
-                        FROM lead_rejects
-                        """
-                    )
-                }
+                rejects = conn.execute(
+                    """
+                    SELECT ticker, rejection_stage, reason, significance_timing
+                    FROM lead_rejects
+                    """
+                ).fetchall()
                 leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
             finally:
                 conn.close()
+        seen = [row for row in rejects if row["ticker"] == "SEEN" and "timing late" in (row["reason"] or "")]
+        trade = [row for row in rejects if row["ticker"] == "TRADE"]
+        on_time = [row for row in rejects if row["ticker"] == "ONTIME" and "timing on_time" in (row["reason"] or "")]
         self.assertNotIn("SEEN", leads)
         self.assertNotIn("TRADE", leads)
-        self.assertEqual(rows["SEEN"]["significance_timing"], "late")
-        self.assertIn("timing late", rows["SEEN"]["reason"])
-        self.assertEqual(rows["TRADE"]["significance_timing"], "late")
-        self.assertIn("timing late", rows["TRADE"]["reason"])
-        self.assertEqual(rows["TRADE"]["rejection_stage"], "llm")
+        self.assertNotIn("ONTIME", leads)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["significance_timing"], "late")
+        self.assertEqual(len(trade), 1)
+        self.assertEqual(trade[0]["significance_timing"], "late")
+        self.assertIn("timing late", trade[0]["reason"])
+        self.assertEqual(trade[0]["rejection_stage"], "llm")
+        self.assertEqual(len(on_time), 1)
+        self.assertEqual(on_time[0]["significance_timing"], "on_time")
+        self.assertEqual(on_time[0]["rejection_stage"], "llm")
 
     def test_counterparty_search_is_a_token_prefix_and_holders_are_not_buyers(self):
         holder = _figure(
@@ -819,12 +844,14 @@ class GateTests(unittest.TestCase):
                             5_000_000_000,
                             value_text="5000000000",
                         ),
-                        _figure(
-                            "NCP",
-                            "No Cap Co",
-                            "quarter",
-                            "2025-07-01/2025-09-30",
-                            1_000_000_000,
+                        _other_capex(
+                            _figure(
+                                "NCP",
+                                "No Cap Co",
+                                "quarter",
+                                "2025-07-01/2025-09-30",
+                                1_000_000_000,
+                            )
                         ),
                     ],
                 )
@@ -907,14 +934,15 @@ class GateTests(unittest.TestCase):
                 self.assertEqual([row["ticker"] for row in rows], ["NCP"])
                 self.assertEqual(len(fake.urls), 2)
                 self.assertTrue(any("CIK0002121401" in url for url in fake.urls))
-                self.assertTrue(any("CINT" in line and "CIK0002121401" in line for line in caught.output))
+                self.assertTrue(any("CINT" in line and "no companyfacts" in line for line in caught.output))
+                self.assertFalse(any("HTTP 404" in line for line in caught.output))
                 cap, reason = resolve_market_cap(conn, "CINT")
                 self.assertIsNone(cap)
                 self.assertEqual(reason, "market cap unverified")
                 ncp = _figure("NCP", "No Cap Co", "quarter", "2026-07-01/2026-09-30", 5_000_000_000)
-                ncp_prior = _figure("NCP", "No Cap Co", "quarter", "2025-07-01/2025-09-30", 1_000_000_000)
+                ncp_prior = _other_capex(_figure("NCP", "No Cap Co", "quarter", "2025-07-01/2025-09-30", 1_000_000_000))
                 cint = _figure("CINT", "Cint", "quarter", "2026-07-01/2026-09-30", 5_000_000_000)
-                cint_prior = _figure("CINT", "Cint", "quarter", "2025-07-01/2025-09-30", 1_000_000_000)
+                cint_prior = _other_capex(_figure("CINT", "Cint", "quarter", "2025-07-01/2025-09-30", 1_000_000_000))
                 for row, cik in ((ncp, 1018724), (ncp_prior, 1018724), (cint, 2121401), (cint_prior, 2121401)):
                     row["source_url"] = f"https://www.sec.gov/Archives/edgar/data/{cik}/{row['ticker'].lower()}.htm"
                 save_run(conn, "capex", "2026-10-12T14:30:52Z", [ncp, ncp_prior, cint, cint_prior])
@@ -948,6 +976,263 @@ class GateTests(unittest.TestCase):
         self.assertIsNotNone(thesis)
         self.assertIn("market cap unverified", thesis["thesis_text"])
 
+    def test_capex_yoy_matches_span_and_period_end_not_the_label(self):
+        self.assertEqual(period_span_days("from 2025-07-01 to 2025-09-30"), 91)
+        self.assertIsNone(period_span_days("2026-06-30|2026-07-22"))
+        self.assertEqual(period_span_days("2026-07-01/2026-09-30"), 91)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "capex",
+                    "2026-10-12T14:30:52Z",
+                    [
+                        _figure("HIT", "Hit Co", "quarter", "2026-07-01/2026-09-30", 1_200_000_000),
+                        _other_capex(
+                            _figure(
+                                "HIT",
+                                "Hit Co",
+                                "CY2025Q3",
+                                "from 2025-07-01 to 2025-09-30",
+                                1_000_000_000,
+                            )
+                        ),
+                        _other_capex(
+                            _figure("HIT", "Hit Co", "annual", "2024-10-01/2025-09-30", 5_000_000_000)
+                        ),
+                        _figure("MISS", "Miss Co", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
+                        _other_capex(
+                            _figure("MISS", "Miss Co", "annual", "2024-10-01/2025-09-30", 1_000_000_000)
+                        ),
+                        *_caps("HIT", "MISS"),
+                    ],
+                )
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            conn = connect(path)
+            try:
+                leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
+                reasons = {
+                    row["ticker"]: row["reason"]
+                    for row in conn.execute(
+                        """
+                        SELECT ticker, reason FROM lead_rejects
+                        WHERE ticker = 'MISS' AND rejection_stage = 'deterministic'
+                          AND reason LIKE '%no prior comparison%'
+                        """
+                    )
+                }
+            finally:
+                conn.close()
+        self.assertIn("HIT", leads)
+        self.assertNotIn("MISS", leads)
+        self.assertIn("MISS", reasons)
+        self.assertIn("capex_growth_yoy", reasons["MISS"])
+
+    def test_backlog_growth_uses_history_and_a_large_gap_survives(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "orders-backlog",
+                    "2026-10-12T14:31:00Z",
+                    [
+                        _orders("QTR", "Amazon", "2026-10-01", 110_000_000, figure_type="supplier_order"),
+                        _orders(
+                            "QTR",
+                            "RevenueRemainingPerformanceObligation",
+                            "2026-06-30|2026-07-22",
+                            100_000_000,
+                            figure_type="customer_backlog",
+                        ),
+                        _orders(
+                            "QTR",
+                            "RevenueRemainingPerformanceObligation",
+                            "2025-10-01|2025-10-15",
+                            200_000_000,
+                            figure_type="customer_backlog",
+                        ),
+                        _orders("YAG", "Amazon", "2026-10-01", 2_000_000_000, figure_type="supplier_order"),
+                        _orders(
+                            "YAG",
+                            "backlog",
+                            "2025-10-01|2025-10-20",
+                            500_000_000,
+                            figure_type="RevenueRemainingPerformanceObligation",
+                        ),
+                        _orders("FACTS", "Amazon", "2026-10-01", 110_000_000, figure_type="supplier_order"),
+                        _facts_backlog("FACTS", "2026-07-03", 200_000_000),
+                        _orders("LARGE", "Amazon", "2026-10-01", 250_000_000, figure_type="supplier_order"),
+                        _orders("SMALL", "Amazon", "2026-10-01", 20_000_000, figure_type="supplier_order"),
+                        *_caps("QTR", "YAG", "FACTS", "LARGE", "SMALL"),
+                    ],
+                )
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            conn = connect(path)
+            try:
+                leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
+                reasons = {}
+                for row in conn.execute("SELECT ticker, rejection_stage, reason FROM lead_rejects"):
+                    reasons.setdefault(row["ticker"], []).append(row)
+                large = conn.execute(
+                    """
+                    SELECT t.thesis_text, r.assumptions_that_fail, r.surviving_issues, k.rank
+                    FROM leads AS l
+                    JOIN theses AS t ON t.lead_id = l.lead_id
+                    JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
+                    JOIN rankings AS k ON k.lead_id = l.lead_id
+                    WHERE l.ticker = 'LARGE'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+        self.assertIn("QTR", leads)
+        self.assertIn("YAG", leads)
+        self.assertNotIn("FACTS", leads)
+        self.assertTrue(any("below" in row["reason"] and "backlog_qoq_growth" in row["reason"] for row in reasons["FACTS"]))
+        self.assertIn("LARGE", leads)
+        self.assertNotIn("SMALL", leads)
+        self.assertTrue(
+            any(
+                row["rejection_stage"] == "deterministic" and "no prior comparison" in row["reason"]
+                for row in reasons["SMALL"]
+            )
+        )
+        self.assertIn("no prior comparison", large["thesis_text"])
+        self.assertIn("no prior", large["assumptions_that_fail"])
+        self.assertGreaterEqual(large["surviving_issues"], 1)
+        self.assertGreaterEqual(large["rank"], 1)
+
+    def test_markitdigital_is_an_official_asx_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "capex",
+                    "2026-10-12T14:30:52Z",
+                    [
+                        _shares("ASX", value=1_000_000),
+                        _price(
+                            "ASX",
+                            value=8,
+                            source_type="media",
+                            source_url="https://asx.api.markitdigital.com/asx-research/1.0/file/2924-123",
+                        ),
+                        _shares("ANN"),
+                        _price(
+                            "ANN",
+                            value=4,
+                            source_type="asx_announcement",
+                            source_url="https://example.com/announcement",
+                        ),
+                        _shares("WEB"),
+                        _price("WEB", value=3, source_type="media", source_url="https://example.com/quote"),
+                    ],
+                )
+                markit, markit_reason = resolve_market_cap(conn, "ASX")
+                announced, announced_reason = resolve_market_cap(conn, "ANN")
+                web, web_reason = resolve_market_cap(conn, "WEB")
+            finally:
+                conn.close()
+        self.assertEqual(markit, 8_000_000)
+        self.assertIn("official price", markit_reason)
+        self.assertEqual(announced, 4_000_000_000)
+        self.assertIn("official price", announced_reason)
+        self.assertIsNone(web)
+        self.assertEqual(web_reason, "market cap unverified")
+        provider = StubProvider()
+        cited = json.loads(
+            provider.complete(
+                praetorian_prompt(
+                    "Source: https://asx.api.markitdigital.com/asx-research/1.0/file/2924-123",
+                    "new",
+                ),
+                max_tokens=400,
+            ).text
+        )
+        named = json.loads(
+            provider.complete(
+                praetorian_prompt("The figure is an ASX announcement.", "new"),
+                max_tokens=400,
+            ).text
+        )
+        unofficial = json.loads(
+            provider.complete(
+                praetorian_prompt("Source: https://example.com/quote", "new"),
+                max_tokens=400,
+            ).text
+        )
+        self.assertEqual(cited["bad_sources"], "")
+        self.assertEqual(named["bad_sources"], "")
+        self.assertIn("does not cite", unofficial["bad_sources"])
+
+    def test_stub_novelty_timing_and_return_follow_the_figure(self):
+        provider = StubProvider()
+
+        def significance(earlier, age, value="5000000000", lead_type="capex"):
+            prompt = "\n".join(
+                [
+                    "TASK: significance",
+                    f"LEAD_TYPE: {lead_type}",
+                    "VALUE: " + value,
+                    "VALUE_TEXT: stored",
+                    f"EARLIER_FIGURE: {earlier}",
+                    "EARLIER_SIMILAR: no",
+                    f"PERIOD_AGE_DAYS: {age}",
+                ]
+            )
+            return json.loads(provider.complete(prompt, max_tokens=400).text)
+
+        def centurion(lead_type, value, pass_number="1", constituents=None):
+            lines = [
+                "TASK: centurion",
+                f"PASS: {pass_number}",
+                f"LEAD_TYPE: {lead_type}",
+                "TICKER: AMZN",
+                f"VALUE: {value}",
+                "VALUE_TEXT: stored",
+                "PRIOR_COMPARISON: yes",
+                "MARKET_CAP: 10000000000",
+            ]
+            if constituents:
+                lines.append("CONSTITUENTS_BEGIN")
+                lines.extend(constituents)
+                lines.append("CONSTITUENTS_END")
+            return json.loads(provider.complete("\n".join(lines), max_tokens=800).text)
+
+        first = significance("no", "10")
+        self.assertEqual(first["novelty"], "first")
+        self.assertIn("No earlier figure", first["novelty_rationale"])
+        self.assertEqual(first["timing"], "early")
+        routine = significance("yes", "10")
+        self.assertEqual(routine["novelty"], "routine")
+        self.assertIn("earlier figure of this type", routine["novelty_rationale"])
+        self.assertEqual(significance("no", "60")["timing"], "on_time")
+        self.assertEqual(significance("no", "150")["timing"], "late")
+        self.assertEqual(centurion("capex", "5000000000")["roi_pct"], 24)
+        self.assertEqual(centurion("orders_backlog", "2000000000")["roi_pct"], 24)
+        self.assertEqual(centurion("capex", "200000000")["roi_pct"], 12)
+        self.assertEqual(centurion("capex", "50000000")["roi_pct"], 6)
+        merged = centurion(
+            "capex",
+            "5000000000",
+            pass_number="2",
+            constituents=[
+                '{"lead_type": "capex", "value": 5000000000}',
+                '{"lead_type": "orders_backlog", "value": 2000000000}',
+            ],
+        )
+        self.assertEqual(merged["roi_pct"], 27)
+
 
 class _FailMarketCap(StubProvider):
     def complete(self, prompt, *, max_tokens):
@@ -971,6 +1256,12 @@ def _history(path):
 
     ensure_history(conn)
     return conn
+
+
+def _other_capex(row):
+    """A different capex tag, so the row can be a growth prior without making the latest print routine."""
+    row["figure_type"] = "PaymentsToAcquirePropertyPlantAndEquipment"
+    return row
 
 
 def _figure(ticker, company, instrument, period, value, announced_on="2026-10-01", value_text=None, seen_at="2026-10-12"):
@@ -1067,6 +1358,12 @@ def _debt(ticker, instrument, value):
 def _orders(ticker, instrument, period, value, figure_type="backlog"):
     row = _figure(ticker, ticker, instrument, period, value)
     row["figure_type"] = figure_type
+    return row
+
+
+def _facts_backlog(ticker, period, value):
+    row = _orders(ticker, "note", period, value, figure_type="unclassified")
+    row["source_type"] = "xbrl_company_facts"
     return row
 
 

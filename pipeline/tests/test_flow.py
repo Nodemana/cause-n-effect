@@ -114,7 +114,7 @@ class PipelineFlowTests(unittest.TestCase):
                         _figure(
                             "AMZN",
                             "Amazon",
-                            "PaymentsToAcquireProductiveAssets",
+                            "PaymentsToAcquirePropertyPlantAndEquipment",
                             "quarter",
                             "2025-07-01/2025-09-30",
                             1_000_000_000,
@@ -142,11 +142,11 @@ class PipelineFlowTests(unittest.TestCase):
                         _figure(
                             "GEV",
                             "Globex Power",
-                            "supplier_order",
-                            "Amazon",
-                            "2026-07-03",
-                            500_000_000,
-                            "500000000",
+                            "customer_backlog",
+                            "RevenueRemainingPerformanceObligation",
+                            "2026-06-30|2026-07-22",
+                            40_000_000,
+                            "40000000",
                             GEV_URL + "#prior",
                         ),
                     ],
@@ -215,7 +215,7 @@ class PipelineFlowTests(unittest.TestCase):
                         _figure(
                             "AMZN",
                             "Amazon",
-                            "PaymentsToAcquireProductiveAssets",
+                            "PaymentsToAcquirePropertyPlantAndEquipment",
                             "quarter",
                             "2025-07-01/2025-09-30",
                             1_000_000_000,
@@ -243,11 +243,11 @@ class PipelineFlowTests(unittest.TestCase):
                         _figure(
                             "GEV",
                             "Globex Power",
-                            "supplier_order",
-                            "Amazon",
-                            "2026-07-03",
-                            500_000_000,
-                            "500000000",
+                            "customer_backlog",
+                            "RevenueRemainingPerformanceObligation",
+                            "2026-06-30|2026-07-22",
+                            40_000_000,
+                            "40000000",
                             GEV_URL + "#prior",
                         ),
                     ],
@@ -368,7 +368,7 @@ class PipelineFlowTests(unittest.TestCase):
                             _figure(
                                 "AMZN",
                                 "Amazon",
-                                "PaymentsToAcquireProductiveAssets",
+                                "PaymentsToAcquirePropertyPlantAndEquipment",
                                 "quarter",
                                 "2025-07-01/2025-09-30",
                                 1_000_000_000,
@@ -396,11 +396,11 @@ class PipelineFlowTests(unittest.TestCase):
                             _figure(
                                 "GEV",
                                 "Globex Power",
-                                "supplier_order",
-                                "Amazon",
-                                "2026-07-03",
-                                500_000_000,
-                                "500000000",
+                                "customer_backlog",
+                                "RevenueRemainingPerformanceObligation",
+                                "2026-06-30|2026-07-22",
+                                40_000_000,
+                                "40000000",
                                 GEV_URL + "#prior",
                             ),
                         ],
@@ -447,6 +447,115 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertTrue(first)
         for row in first:
             self.assertIsNone(row["macro_context"])
+
+    def test_capex_buyer_and_supplier_backlog_merge_end_to_end(self):
+        summary = "Treasury yields are the macro context for this pass."
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            cache = Path(tmp) / "macro.json"
+            cache.write_text(json.dumps({"summary": summary}), encoding="utf-8")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "capex",
+                    "2026-10-12T15:00:00Z",
+                    [
+                        _figure(
+                            "AMZN",
+                            "Amazon",
+                            "PaymentsToAcquireProductiveAssets",
+                            "quarter",
+                            "2026-07-01/2026-09-30",
+                            5_000_000_000,
+                            "5000000000 supplier: Globex Power",
+                            AMZN_URL,
+                        ),
+                        _figure(
+                            "AMZN",
+                            "Amazon",
+                            "PaymentsToAcquirePropertyPlantAndEquipment",
+                            "quarter",
+                            "2025-07-01/2025-09-30",
+                            1_000_000_000,
+                            "1000000000",
+                            AMZN_URL + "#prior",
+                        ),
+                        *_caps("AMZN", "GEV"),
+                    ],
+                )
+                save_run(
+                    conn,
+                    "orders-backlog",
+                    "2026-10-12T15:01:00Z",
+                    [
+                        _figure(
+                            "GEV",
+                            "Globex Power",
+                            "supplier_order",
+                            "Amazon",
+                            "2026-10-01",
+                            2_000_000_000,
+                            "2000000000 buyer: Amazon",
+                            GEV_URL,
+                        ),
+                        _figure(
+                            "GEV",
+                            "Globex Power",
+                            "customer_backlog",
+                            "RevenueRemainingPerformanceObligation",
+                            "2026-06-30|2026-07-22",
+                            40_000_000,
+                            "40000000",
+                            GEV_URL + "#prior",
+                        ),
+                    ],
+                )
+            finally:
+                conn.close()
+            result = run_pipeline(path, provider=StubProvider(), macro_cache=str(cache), token_budget=80000)
+            conn = connect(path)
+            try:
+                self.assertEqual(result["merges"], 1)
+                merged = conn.execute(
+                    """
+                    SELECT t.thesis_text, t.macro_context, t.pass_number, t.roi, l.source_scout
+                    FROM theses AS t
+                    JOIN leads AS l ON l.lead_id = t.lead_id
+                    WHERE t.pass_number = 2
+                    """
+                ).fetchone()
+                review = conn.execute(
+                    """
+                    SELECT r.surviving_issues
+                    FROM praetorian_reviews AS r
+                    JOIN theses AS t ON t.thesis_id = r.thesis_id
+                    WHERE t.pass_number = 2
+                    """
+                ).fetchone()
+                ranking = conn.execute(
+                    """
+                    SELECT k.rank, l.source_scout
+                    FROM rankings AS k
+                    JOIN leads AS l ON l.lead_id = k.lead_id
+                    """
+                ).fetchone()
+                evidence = json.loads(
+                    conn.execute("SELECT evidence_refs FROM legate_merges").fetchone()["evidence_refs"]
+                )
+            finally:
+                conn.close()
+        self.assertEqual(merged["source_scout"], "legate")
+        self.assertEqual(merged["macro_context"], summary)
+        self.assertIn("Globex Power", merged["thesis_text"])
+        self.assertIn("Amazon", merged["thesis_text"])
+        self.assertEqual(merged["roi"], "27%")
+        self.assertIsNotNone(review)
+        self.assertGreaterEqual(review["surviving_issues"], 0)
+        self.assertEqual(ranking["rank"], 1)
+        self.assertEqual(ranking["source_scout"], "legate")
+        self.assertEqual({item["source_url"] for item in evidence}, {AMZN_URL, GEV_URL})
+        self.assertEqual({item["ticker"] for item in evidence}, {"AMZN", "GEV"})
 
     def test_token_budget_stops_before_the_model(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -743,11 +852,12 @@ def _seed(path):
             "2026-10-12T14:30:52Z",
             [
                 _figure("AMZN", "Amazon", "PaymentsToAcquireProductiveAssets", "quarter", "2026-07-01/2026-09-30", 5_000_000_000, "5000000000 supplier: Globex Power", AMZN_URL),
-                _figure("AMZN", "Amazon", "PaymentsToAcquireProductiveAssets", "quarter", "2025-07-01/2025-09-30", 1_000_000_000, "1000000000", AMZN_URL),
-                _figure("AMZN", "Amazon", "PaymentsToAcquireProductiveAssets", "ttm", "2025-10-01/2026-09-30", 9_000_000_000, "9000000000", AMZN_URL),
+                _figure("AMZN", "Amazon", "PaymentsToAcquirePropertyPlantAndEquipment", "quarter", "2025-07-01/2025-09-30", 1_000_000_000, "1000000000", AMZN_URL),
+                _figure("AMZN", "Amazon", "PaymentsToAcquirePropertyPlantAndEquipment", "quarter", "2024-07-01/2024-09-30", 800_000_000, "800000000", AMZN_URL),
+                _figure("AMZN", "Amazon", "PaymentsToAcquirePropertyPlantAndEquipment", "ttm", "2025-10-01/2026-09-30", 9_000_000_000, "9000000000", AMZN_URL),
                 _figure("UNV", "Unverified Co", "PaymentsToAcquireProductiveAssets", "quarter", "2025-01-01/2025-03-31", 3_000_000_000, "3000000000", "https://www.sec.gov/Archives/edgar/data/1/unv.htm", verified=0),
                 _figure("ORCL", "Oracle", "PaymentsToAcquireProductiveAssets", "quarter", "2026-07-01/2026-09-30", 2_000_000_000, "2000000000", ORCL_URL),
-                _figure("ORCL", "Oracle", "PaymentsToAcquireProductiveAssets", "quarter", "2025-07-01/2025-09-30", 500_000_000, "500000000", ORCL_PRIOR),
+                _figure("ORCL", "Oracle", "PaymentsToAcquirePropertyPlantAndEquipment", "quarter", "2025-07-01/2025-09-30", 500_000_000, "500000000", ORCL_PRIOR),
                 *_caps("AMZN", "ORCL", "GEV", "MSFT", "TINY"),
             ],
         )
@@ -757,7 +867,7 @@ def _seed(path):
             "2026-10-12T14:31:00Z",
             [
                 _figure("GEV", "Globex Power", "supplier_order", "Amazon", "2026-10-01", 2_000_000_000, "2000000000 buyer: Amazon", GEV_URL),
-                _figure("GEV", "Globex Power", "supplier_order", "Amazon", "2026-07-03", 500_000_000, "500000000", GEV_URL),
+                _figure("GEV", "Globex Power", "customer_backlog", "RevenueRemainingPerformanceObligation", "2026-06-30|2026-07-22", 40_000_000, "40000000", GEV_URL),
                 _figure("ZZZ", "Small Supplier", "supplier_order", "Amazon", "2026-10-01", None, "buyer: Amazon", "https://www.sec.gov/Archives/edgar/data/9/zzz.htm"),
             ],
         )

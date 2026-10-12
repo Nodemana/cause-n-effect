@@ -96,11 +96,10 @@ def cache_shares_outstanding(conn, companies, *, client=None, fetched_at):
             parsed = shares_from_companyfacts(client.json(url))
         except Exception as exc:
             log.warning(
-                "skipped shares ticker=%s cik=%s url=%s: %s",
+                "skipped shares ticker=%s cik=%s: %s",
                 company.get("ticker") or "",
                 company.get("cik") or "",
-                url,
-                exc,
+                _shares_failure(exc),
             )
             continue
         if not parsed:
@@ -133,6 +132,15 @@ def cache_shares_outstanding(conn, companies, *, client=None, fetched_at):
         notes="companyfacts shares outstanding; official price source TODO; no unofficial price feed",
     )
     return rows
+
+
+def _shares_failure(exc):
+    """A missing companyfacts document is 'no companyfacts', not the raw HTTP error."""
+    text = str(exc)
+    folded = text.casefold()
+    if "404" in text or "not found" in folded:
+        return "no companyfacts"
+    return text
 
 
 def _latest_shares(node):

@@ -31,12 +31,15 @@ def significance_prompt(candidate):
             f"PERIOD: {_one_line(figure.period)}",
             f"SOURCE_URL: {_one_line(figure.source_url)}",
             f"EARLIER_SIMILAR: {'yes' if getattr(figure, 'earlier_similar', False) else 'no'}",
+            f"EARLIER_FIGURE: {'yes' if getattr(figure, 'earlier_type', False) else 'no'}",
             f"PERIOD_AGE_DAYS: {_age(figure)}",
             "Reply with one JSON object and no other text.",
             "Keys: magnitude, magnitude_rationale, novelty, novelty_rationale, "
             "attention, attention_rationale, timing, timing_rationale.",
             "magnitude is large, moderate, or small. novelty is first or routine. "
-            "attention is unnoticed or noticed. timing is early or late.",
+            "novelty is first only when EARLIER_FIGURE is no. "
+            "attention is unnoticed or noticed. "
+            "timing is early (event age at most 45 days), on_time (46 to 120 days), or late (older than 120).",
             "Each rationale is one sentence. Use only the fields above. "
             "Do not invent a figure, a source, or a media article.",
         ]
