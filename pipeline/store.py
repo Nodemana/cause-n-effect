@@ -358,23 +358,11 @@ def insert_ranking(conn, run_id, lead_id, rank, roi, timeframe_days, issues, ris
         )
 
 
-def insert_decision(conn, run_id, lead_id, created_at):
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO decisions (
-                lead_id, run_id, status, created_at, updated_at
-            ) VALUES (?, ?, 'pending', ?, ?)
-            """,
-            (lead_id, run_id, created_at, created_at),
-        )
-
-
 def record_selection(conn, run_id, picks, created_at):
     """Store the Legate's picks, mark them presented, and complete the run.
 
     `picks` is `(lead_id, rationale)` in selection order. An empty list
-    completes the run with no decisions.
+    still completes the run.
     """
     with conn:
         for order, (lead_id, rationale) in enumerate(picks, start=1):
@@ -389,14 +377,6 @@ def record_selection(conn, run_id, picks, created_at):
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (run_id, lead_id, order, rationale, created_at),
-            )
-            conn.execute(
-                """
-                INSERT INTO decisions (
-                    lead_id, run_id, status, created_at, updated_at
-                ) VALUES (?, ?, 'pending', ?, ?)
-                """,
-                (lead_id, run_id, created_at, created_at),
             )
             conn.execute(
                 """

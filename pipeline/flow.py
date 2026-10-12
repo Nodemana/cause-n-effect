@@ -1,17 +1,17 @@
-"""Sweep latest scout figures into pending decisions.
+"""Sweep latest scout figures into thesis files.
 
 `run_pipeline` does the deterministic work, writes significance task files,
 records status awaiting_agents, and returns. `ingest_run` checks result
 files and advances one judgement stage. Combining leads and a leftover Legate
 merge stay in process. Ranking writes the candidate report and one legate task.
 
-Stage order: significance, then one Centurion task per lead, a leftover Legate
+Stages: significance, then one Centurion task per lead, a leftover Legate
 merge, centurion pass 2 only for that leftover, then a Praetorian critique,
 then ranking, then Legate selection. The critique lists every flaw and does
 not drop a lead. Ranking writes every candidate thesis to
 `data/reports/<run_id>-candidates.md` and a legate_selection task.
-The Legate selects at most 5. Ingest writes
-`data/reports/<run_id>-final.md` from that selection. Linkable
+The Legate selects at most 5. Ingest writes one file per selected thesis
+under `data/reports/<run_id>/<rank>-<ticker>.md`. Linkable
 capex, orders backlog, and debt raises become one capex-chain lead before
 that Centurion. Same-ticker insider and accumulation signals inside the
 window become one smart-money lead. Macro stays a lead of its own. Market cap
@@ -73,7 +73,7 @@ from pipeline.prompts import (
     rules_text,
     significance_prompt,
 )
-from pipeline.report import reports_directory, write_candidates_report, write_final_report
+from pipeline.report import reports_directory, write_candidates_report, write_selected_reports
 from pipeline.scout_groups import CHAIN_TYPES, combine
 from pipeline import store
 
@@ -212,7 +212,7 @@ def ingest_run(db_path, run_id, *, queue_dir=None, parties_client=None):
     A missing or malformed result raises AgentResultError and leaves the
     stage where it is. Legate merge and ranking run here when their inputs
     are ready. Ranking writes the candidate report and one legate task.
-    The selection result then writes the final report.
+    The selection result then writes one file per selected thesis.
     """
     conn = connect(db_path)
     try:
@@ -229,8 +229,8 @@ def ingest_run(db_path, run_id, *, queue_dir=None, parties_client=None):
             state = load_state(queue, run_id)
             if _candidates_report_path(state) is None:
                 write_candidates_report(state, _ranked_from_state(state))
-            if _report_path(state) is None:
-                write_final_report(state, _selected_from_state(state))
+            if _selected_report_dir(state) is None:
+                write_selected_reports(state, _selected_from_state(state))
             return _complete_result(conn, state)
         state = load_state(queue, run_id)
         if state.pending_persist:
@@ -305,7 +305,6 @@ def _awaiting_result(state, *, status, tasks, figures, macro, dry_run=False):
         "rejects": 0 if dry_run else state.deterministic_rejects,
         "merges": 0,
         "rankings": 0,
-        "decisions": 0,
         "dry_run": bool(dry_run),
         "macro": _macro_log(macro, []),
         "status": status,
@@ -323,7 +322,6 @@ def _complete_result(conn, state):
     rejects = conn.execute("SELECT COUNT(*) FROM lead_rejects WHERE run_id = ?", (run_id,)).fetchone()[0]
     merges = conn.execute("SELECT COUNT(*) FROM legate_merges WHERE run_id = ?", (run_id,)).fetchone()[0]
     rankings = conn.execute("SELECT COUNT(*) FROM rankings WHERE run_id = ?", (run_id,)).fetchone()[0]
-    decisions = conn.execute("SELECT COUNT(*) FROM decisions WHERE run_id = ?", (run_id,)).fetchone()[0]
     second = conn.execute(
         """
         SELECT COUNT(*) FROM theses
@@ -346,14 +344,13 @@ def _complete_result(conn, state):
         "rejects": rejects,
         "merges": merges,
         "rankings": rankings,
-        "decisions": decisions,
         "dry_run": False,
         "macro": macro,
         "status": "complete",
         "stage": stage["stage"] if stage else "legate_selection",
         "tasks": 0,
         "queue_dir": state.queue_dir,
-        "report": _report_path(state),
+        "report": _selected_report_dir(state),
         "candidates": _candidates_report_path(state),
     }
 
@@ -366,8 +363,13 @@ def _report_file(state, suffix):
     return None
 
 
-def _report_path(state):
-    return _report_file(state, "-final.md")
+def _selected_report_dir(state):
+    directory = Path(
+        getattr(state, "reports_dir", None) or reports_directory(state.queue_dir or "data/agent_queue")
+    ) / str(state.run_id)
+    if directory.is_dir() and any(directory.glob("*.md")):
+        return str(directory)
+    return None
 
 
 def _candidates_report_path(state):
@@ -880,7 +882,7 @@ def _publish_candidates(conn, state):
     _persist(conn, state.run_id, state.judgement_rejects, state.leads, state.merged, ranked)
     write_candidates_report(state, ranked)
     if not ranked:
-        write_final_report(state, [])
+        write_selected_reports(state, [])
         store.complete_run(conn, state.run_id, utc_now())
         state.pending_persist = False
         state.finished = True
@@ -948,7 +950,7 @@ def _apply_legate_selection(conn, state, results):
         selected.append(lead)
     created = utc_now()
     store.record_selection(conn, state.run_id, picks, created)
-    write_final_report(state, selected)
+    write_selected_reports(state, selected)
     state.pending_persist = False
     state.finished = True
     state.stage = "legate_selection"
@@ -1041,7 +1043,7 @@ def _finish(conn, state, leads, merged, ranked):
     if row is None or row["finished_at"] is None:
         _persist(conn, state.run_id, state.judgement_rejects, leads, merged, ranked)
         write_candidates_report(state, ranked)
-        write_final_report(state, [])
+        write_selected_reports(state, [])
         store.complete_run(conn, state.run_id, utc_now())
     state.pending_persist = False
     state.finished = True

@@ -38,11 +38,11 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog="pipeline",
         description=(
-            "Sweep the latest scout figures into pending decisions. "
+            "Sweep the latest scout figures into thesis files. "
             "Deterministic gates run in process. Significance, Centurion theses, "
             "and Praetorian reviews are task files under data/agent_queue. "
             "A run records status awaiting_agents and exits. "
-            "ingest reads result files and advances until the Legate selection writes pending decisions."
+            "ingest reads result files and advances until the Legate selection writes one file per selected thesis."
         ),
     )
     sub = parser.add_subparsers(dest="command")
@@ -55,7 +55,7 @@ def build_parser():
             "A run recorded with a ticker scope replaces only those tickers; "
             "earlier runs stay in the database as comparison history. "
             "Identical figures collapse to the newest row. "
-            "An insider trade more than 30 days before its filing date is dropped. "
+            "An insider purchase more than 30 days before its filing date is dropped. "
             "Thresholds and dedupe run first. Each figure that still needs a "
             "significance judgement is written to "
             "data/agent_queue/<run_id>/significance/figure-<figure_id>.task.json. "
@@ -75,7 +75,7 @@ def build_parser():
             "Ranking later writes every candidate thesis to "
             "data/reports/<run_id>-candidates.md and a legate_selection task. "
             "The Legate selects at most 5 lead ids. "
-            "ingest writes data/reports/<run_id>-final.md from that selection. "
+            "ingest writes one file per selected thesis at data/reports/<run_id>/<rank>-<ticker>.md. "
             "A Praetorian critique lists every flaw in each thesis and does not drop a lead."
         ),
     )
@@ -83,7 +83,7 @@ def build_parser():
     run.add_argument(
         "--dry-run",
         action="store_true",
-        help="Compute the sweep and print the summary without writing leads, rejects, or decisions",
+        help="Compute the sweep and print the summary without writing leads or rejects",
     )
     run.add_argument(
         "--limit",
@@ -120,7 +120,7 @@ def build_parser():
             "A missing file or a value that breaks the output schema is an error "
             "and the stage does not advance. Valid results are stored. "
             "The next stage's task files are written. "
-            "Order: significance, then one Centurion task per lead. "
+            "Stages: significance, then one Centurion task per lead. "
             "Linkable capex, orders backlog, and debt raises are one capex-chain lead. "
             "Same-ticker insider and accumulation signals inside the window are one smart-money lead. "
             "A macro lead stays separate, and its Centurion task lists related findings from those scouts. "
@@ -129,8 +129,8 @@ def build_parser():
             "Ranking then writes every candidate, with its flaw list, to data/reports/<run_id>-candidates.md "
             "and one legate_selection task. The flaw list is shown and does not remove a lead. "
             "The Legate writes legate_selection.result.json with at most 5 lead ids and a rationale for each pick. "
-            "ingest checks that each id is a candidate, then writes data/reports/<run_id>-final.md "
-            "and a pending decision for each selected thesis. "
+            "ingest checks that each id is a candidate, then writes one file per selected thesis "
+            "at data/reports/<run_id>/<rank>-<ticker>.md. "
             "Merge and ranking do not write task files. "
             "When SEC_CONTACT_EMAIL is set, the significance ingest names counterparties "
             "before the Centurion tasks are written. The address is not logged."
@@ -220,7 +220,6 @@ def _print_result(result):
         "rejects",
         "merges",
         "rankings",
-        "decisions",
         "dry_run",
         "macro",
         "report",

@@ -61,12 +61,12 @@ Macro context is a Centurion concern on a capex chain and on that leftover pass.
 
 The recommendation is the conclusion. It answers:
 
-- where to put the money (which instrument or ticker)
+- which instrument or ticker
 - the expected return (the ROI)
 - the risks
 - how long it will take
 
-It is a recommendation for the Imperator. He places the trades himself. The final thesis, recommendation plus assumptions, goes to the Praetorians. An unmerged thesis goes straight there after the first pass and gets no second pass. A merged finding goes there after this second-pass thesis. The Legate ranks after that critique.
+It is a thesis for the Imperator. The final thesis, recommendation plus assumptions, goes to the Praetorians. An unmerged thesis goes straight there after the first pass and gets no second pass. A merged finding goes there after this second-pass thesis. The Legate ranks after that critique.
 
 ## Assumptions
 
@@ -102,7 +102,7 @@ Set out the risks.
 
 ## Recommendation
 
-State where to put the money (instrument or ticker), the expected return, the risks, and the timeframe. This is a recommendation for the Imperator, who places the trades himself.
+Name the instrument or ticker, the expected return, the risks, and the timeframe. This thesis is for the Imperator.
 
 ## Assumptions
 

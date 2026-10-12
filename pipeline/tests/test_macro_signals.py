@@ -229,16 +229,19 @@ def _assert_brent_related(test, queue, run_id):
 
 
 def _assert_brent_report(test, report_path):
-    text = Path(report_path).read_text(encoding="utf-8")
-    test.assertLessEqual(text.count("\n## Rank "), 5)
-    test.assertIn("selected thes", text)
-    test.assertNotIn("Cap ", text)
-    candidates_path = Path(str(report_path).replace("-final.md", "-candidates.md"))
+    directory = Path(report_path)
+    files = sorted(directory.glob("*.md"))
+    test.assertGreaterEqual(len(files), 1)
+    test.assertLessEqual(len(files), 5)
+    test.assertFalse((directory.parent / f"{directory.name}-final.md").exists())
+    candidates_path = directory.parent / f"{directory.name}-candidates.md"
     candidates = candidates_path.read_text(encoding="utf-8")
-    test.assertGreaterEqual(candidates.count("\n## Rank "), text.count("\n## Rank "))
+    test.assertGreaterEqual(candidates.count("\n## Rank "), len(files))
     test.assertIn("### Praetorian", candidates)
     test.assertIn("BRENT", candidates)
-    brent = _report_section(text, "BRENT")
+    brent_path = next(path for path in files if path.name.split("-", 1)[1] == "BRENT.md")
+    brent = brent_path.read_text(encoding="utf-8")
+    test.assertNotIn("Cap ", brent)
     test.assertIn("### Thesis", brent)
     test.assertIn("### Cause → effect", brent)
     test.assertIn("125.44", brent)
@@ -247,22 +250,14 @@ def _assert_brent_report(test, report_path):
     test.assertNotIn("Cloud Software", brent)
     test.assertIn(BRENT_URL, brent)
     test.assertIn("### Evidence", brent)
-    test.assertIn("### Praetorian", brent)
+    test.assertIn("### Praetorian critique", brent)
+    test.assertLess(brent.find("### Price run"), brent.find("### Praetorian critique"))
     test.assertNotIn("Stage skipped.", brent)
     test.assertTrue("No flaws recorded." in brent or "Evidence:" in brent)
     test.assertIn("### Macro context", brent)
     test.assertIn("**Tickers:**", brent)
     test.assertIn("VLO", brent)
     test.assertIn("TNKR", brent)
-
-
-def _report_section(text, ticker):
-    for chunk in text.split("\n## Rank ")[1:]:
-        title = chunk.splitlines()[0]
-        name = title.split(".", 1)[-1].split("—", 1)[0].strip()
-        if name == ticker:
-            return chunk
-    raise AssertionError(f"missing report section for {ticker}")
 
 
 def _seed_related(conn):

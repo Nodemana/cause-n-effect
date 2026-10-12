@@ -25,7 +25,7 @@ Set out the risks.
 
 ## Recommendation
 
-State where to put the money (the winning tickers), the expected return, the risks, and the timeframe. Name the losing tickers as the other side. This is a recommendation for the Imperator, who places the trades himself.
+Name the winning tickers, the expected return, the risks, and the timeframe. Name the losing tickers as the other side. This thesis is for the Imperator.
 
 ## Assumptions
 

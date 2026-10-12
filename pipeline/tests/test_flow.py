@@ -52,17 +52,22 @@ class PipelineFlowTests(unittest.TestCase):
             self.assertEqual(result["macro"], "skipped")
             self.assertFalse(result["dry_run"])
             self.assertEqual(result["merges"], 0)
-            self.assertEqual(result["decisions"], 3)
+            self.assertNotIn("decisions", result)
             self.assertEqual(result["rankings"], 3)
-            report_path = Path(result["report"])
+            report_dir = Path(result["report"])
             candidates_path = Path(result["candidates"])
-            self.assertEqual(report_path.parent.name, "reports")
-            self.assertEqual(report_path.name, f"{result['run_id']}-final.md")
+            self.assertEqual(report_dir.parent.name, "reports")
+            self.assertEqual(report_dir.name, result["run_id"])
+            files = sorted(report_dir.glob("*.md"))
+            self.assertEqual([path.name for path in files if path.name.endswith("-AMZN.md")], ["1-AMZN.md"])
+            self.assertEqual(len(files), 3)
+            self.assertFalse((report_dir.parent / f"{result['run_id']}-final.md").exists())
             self.assertEqual(candidates_path.name, f"{result['run_id']}-candidates.md")
-            report = report_path.read_text(encoding="utf-8")
+            report = "\n".join(path.read_text(encoding="utf-8") for path in files)
             candidates = candidates_path.read_text(encoding="utf-8")
-            self.assertEqual(report.count("\n## Rank "), 3)
+            self.assertEqual(report.count("# Rank "), 3)
             self.assertEqual(candidates.count("\n## Rank "), 3)
+            self.assertLess(report.find("### Price run"), report.find("### Praetorian critique"))
             self.assertIn("Spender AMZN", report)
             self.assertIn("Supplier (backlog) GEV", report)
             self.assertIn(AMZN_URL, report)
@@ -81,14 +86,16 @@ class PipelineFlowTests(unittest.TestCase):
             self.assertTrue(any(prompt.startswith("TASK: praetorian") for prompt in result["prompts"]))
             self.assertTrue(any(prompt.startswith("TASK: legate_selection") for prompt in result["prompts"]))
             self.assertIn("### Macro context", report)
-            self.assertIn("Sweep macro context: none", report)
+            amzn = next(path for path in files if path.name == "1-AMZN.md").read_text(encoding="utf-8")
+            self.assertIn("### Macro context\n\nnone\n", amzn)
+            self.assertIn("### Price run\n\nacceleration\n", amzn)
 
             conn = connect(path)
             try:
                 self._assert_migration_once(conn)
                 self._assert_rejects(conn)
                 self._assert_leads_and_theses(conn, result["prompts"])
-                self._assert_merge_rank_and_decisions(conn)
+                self._assert_merge_and_rank(conn)
                 before = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
             finally:
                 conn.close()
@@ -202,7 +209,8 @@ class PipelineFlowTests(unittest.TestCase):
                 self.assertIn("priced-in", priced["evidence"])
                 self.assertEqual(review["rank"], 1)
                 self.assertEqual(review["surviving_issues"], 0)
-                report = Path(result["report"]).read_text(encoding="utf-8")
+                amzn = next(Path(result["report"]).glob("*-AMZN.md"))
+                report = amzn.read_text(encoding="utf-8")
                 self.assertIn("Policy rates unchanged.", report)
                 self.assertIn("### Macro context", report)
                 self.assertIn("priced-in", report)
@@ -548,7 +556,7 @@ class PipelineFlowTests(unittest.TestCase):
             finally:
                 conn.close()
             result = run_with_fixture(path, macro_cache=str(cache))
-            report_text = Path(result["report"]).read_text(encoding="utf-8")
+            report_text = next(Path(result["report"]).glob("*-AMZN.md")).read_text(encoding="utf-8")
             conn = connect(path)
             try:
                 self.assertEqual(result["merges"], 0)
@@ -671,7 +679,10 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertNotIn("--max-theses", completed.stdout)
         self.assertIn("legate_selection", completed.stdout)
         self.assertIn("-candidates.md", completed.stdout)
-        self.assertIn("-final.md", completed.stdout)
+        self.assertIn("<rank>-<ticker>.md", completed.stdout)
+        self.assertNotIn("-final.md", completed.stdout)
+        self.assertNotIn("pending decision", completed.stdout)
+        self.assertNotIn("decisions", completed.stdout)
         self.assertNotIn("--with-praetorians", completed.stdout)
         self.assertIn("data/reports", completed.stdout)
         self.assertNotIn("TODO", completed.stdout)
@@ -718,7 +729,8 @@ class PipelineFlowTests(unittest.TestCase):
                 return fixture_response(prompt)
 
             result = run_with_fixture(path, responder=choose_two, queue_dir=queue)
-            report = Path(result["report"]).read_text(encoding="utf-8")
+            files = sorted(Path(result["report"]).glob("*.md"))
+            report = "\n".join(path.read_text(encoding="utf-8") for path in files)
             candidates = Path(result["candidates"]).read_text(encoding="utf-8")
             conn = connect(path)
             try:
@@ -737,13 +749,13 @@ class PipelineFlowTests(unittest.TestCase):
             finally:
                 conn.close()
         self.assertEqual(result["rankings"], 6)
-        self.assertEqual(result["decisions"], 2)
-        self.assertEqual(decisions, 2)
+        self.assertNotIn("decisions", result)
+        self.assertEqual(decisions, 0)
         self.assertEqual(len(ranked), 6)
         self.assertEqual(len(picks), 2)
-        self.assertEqual(report.count("\n## Rank "), 2)
+        self.assertEqual(len(files), 2)
+        self.assertEqual([path.name[0] for path in files], ["1", "2"])
         self.assertEqual(candidates.count("\n## Rank "), 6)
-        self.assertIn("2 selected theses.", report)
         self.assertIn("6 candidate theses.", candidates)
         self.assertIn("Kept for the shortlist.", report)
         presented = [row["ticker"] for row in ranked if row["presented"]]
@@ -795,6 +807,7 @@ class PipelineFlowTests(unittest.TestCase):
             self.assertTrue(candidates.is_file())
             self.assertEqual(candidates.read_text(encoding="utf-8").count("\n## Rank "), 6)
             self.assertFalse((Path(tmp) / "reports" / f"{run_id}-final.md").is_file())
+            self.assertFalse((Path(tmp) / "reports" / run_id).is_dir())
 
             result_path.write_text(
                 json.dumps({"lead_ids": [999999], "rationale": {"999999": "missing"}}) + "\n",
@@ -830,10 +843,11 @@ class PipelineFlowTests(unittest.TestCase):
             )
             done = ingest_run(path, run_id, queue_dir=queue)
             self.assertEqual(done["status"], "complete")
-            self.assertEqual(done["decisions"], 2)
+            self.assertNotIn("decisions", done)
             self.assertEqual(done["rankings"], 6)
-            final = Path(done["report"]).read_text(encoding="utf-8")
-            self.assertEqual(final.count("\n## Rank "), 2)
+            final_files = sorted(Path(done["report"]).glob("*.md"))
+            final = "\n".join(path.read_text(encoding="utf-8") for path in final_files)
+            self.assertEqual(len(final_files), 2)
             self.assertIn("Kept after the retry.", final)
             self.assertEqual(Path(done["candidates"]).read_text(encoding="utf-8").count("\n## Rank "), 6)
 
@@ -1045,7 +1059,7 @@ class PipelineFlowTests(unittest.TestCase):
             conn.execute("SELECT COUNT(*) FROM rankings").fetchone()[0],
         )
 
-    def _assert_merge_rank_and_decisions(self, conn):
+    def _assert_merge_and_rank(self, conn):
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM legate_merges").fetchone()[0], 0)
         survivor = conn.execute(
             "SELECT lead_id, ticker, source_scout, status, priority, summary FROM leads WHERE source_scout = 'capex_chain'"
@@ -1082,8 +1096,7 @@ class PipelineFlowTests(unittest.TestCase):
             "Macro context used:",
             conn.execute("SELECT assumptions FROM theses WHERE lead_id = ?", (survivor["lead_id"],)).fetchone()["assumptions"],
         )
-        decisions = conn.execute("SELECT status FROM decisions").fetchall()
-        self.assertEqual([row["status"] for row in decisions], ["pending", "pending", "pending"])
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0], 0)
         rank = conn.execute(
             """
             SELECT l.source_scout FROM rankings AS k

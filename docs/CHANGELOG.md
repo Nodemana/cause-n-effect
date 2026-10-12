@@ -4,6 +4,12 @@ Newest entries are first. Times are AEST (Australian Eastern Standard Time, UTC+
 
 Every pull request adds an entry at the top of this file before it merges. Each entry records the date and time, what changed, why, and the pull request number. Leave out secrets, contact addresses, and personal data.
 
+### 2026-10-13 08:30 AEST — [PR #31](https://github.com/Nodemana/cause-n-effect/pull/31)
+
+**What changed.** After the Legate selects, ingest writes one markdown file per selected thesis at `data/reports/<run>/<rank>-<ticker>.md`. The rank is the selection order. The file has the thesis: the cause to effect chain, the tickers, evidence links from official sources, the macro context, and the price-run classification. The full Praetorian critique follows, with every flaw, its severity, and its evidence. The combined final report is gone. The sweep no longer writes a decision row, and the pipeline has no broker order call.
+
+**Why.** The reader should open one thesis at a time, with the objections attached to that thesis. A decision row read like an instruction to act.
+
 ### 2026-10-13 08:22 AEST — [PR #31](https://github.com/Nodemana/cause-n-effect/pull/31)
 
 **What changed.** Ranking writes every candidate thesis to `data/reports/<run>-candidates.md` and one Legate task. Each section includes that thesis's full Praetorian flaw list. The Legate selects at most five of those leads and writes a reason for each pick. `pipeline ingest` checks that the list has at most five ids and that each id is a candidate in this run, then writes `data/reports/<run>-final.md` with only the selected theses.

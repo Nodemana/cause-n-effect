@@ -26,7 +26,7 @@ Set out the risks.
 
 ## Recommendation
 
-State where to put the money (instrument or ticker), the expected return, the risks, and the timeframe. This is a recommendation for the Imperator, who places the trades himself.
+Name the instrument or ticker, the expected return, the risks, and the timeframe. This thesis is for the Imperator.
 
 ## Assumptions
 

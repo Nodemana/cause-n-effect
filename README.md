@@ -26,9 +26,7 @@ flowchart LR
 
 **Praetorians.** Praetorians critique an unmerged thesis straight from the first pass, and a merged finding only after its second-pass thesis. They write every flaw as flaw, severity, and evidence ([Praetorians/README.md](Praetorians/README.md)). They do not reject, drop, or filter a lead.
 
-**Legate rank.** The Legate ranks every critiqued thesis. The score is expected return, plus growth and magnitude, minus deterministic surviving issues. Praetorian flaws are shown and do not change the score or remove a lead. A merged thesis is one entry. Ranking writes every candidate. The Legate then selects at most five, and that selection is the final report. The Imperator decides.
-
-**After the decision.** Each lead is tracked as acted on, not acted on, or pending. Acted-on leads are monitored against their thesis with live brokerage portfolio data (position and profit and loss), and those outcomes feed back.
+**Legate rank.** The Legate ranks every critiqued thesis. The score is expected return, plus growth and magnitude, minus deterministic surviving issues. Praetorian flaws are shown and do not change the score or remove a lead. A merged thesis is one entry. Ranking writes every candidate. The Legate then selects at most five. Each selected thesis is one file. The Imperator reads those files.
 
 ## Data
 - SQLite history DB: time-stamped figures with source links and a verified flag, diffed run to run.
@@ -55,7 +53,7 @@ That second pass includes a priced-in check on any prior price run. The Centurio
 - **Centurions** research one lead into one thesis. Spin-up is in [Centurions/README.md](Centurions/README.md). Only a merged finding comes back for a second, fresh full thesis pass.
 - **Praetorians** critique theses only: an unmerged thesis straight from the first pass, and a merged finding after its second-pass thesis. They write every flaw, with severity and evidence, and the lead stays in ranking. The job is in [Praetorians/README.md](Praetorians/README.md).
 - **Legate** is the AI Portfolio Manager. After the individual theses exist it merges linked ones, sends only each merge back for a second pass, and ranks after critique.
-- **Imperator** is the human who decides and places trades himself.
+- **Imperator** is the human who reads the selected theses.
 
 ## Praetorians
 
@@ -71,16 +69,13 @@ After each of those Centurions has written an individual thesis, the Legate read
 
 Only a merged finding goes back to one Centurion as a single new lead. That Centurion runs a second, fresh full thesis pass and writes one new thesis: grade, potential ROI, risks, timeframe, and stated assumptions. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis.
 
-After that critique, the Legate ranks every thesis. The score is expected return, plus growth and magnitude, minus deterministic surviving issues. Praetorian flaws are shown and do not change the score or remove a lead. A merged thesis is one entry on the list. The Legate then selects at most five of those candidates. The Imperator reads that selection and places the trades himself.
+After that critique, the Legate ranks every thesis. The score is expected return, plus growth and magnitude, minus deterministic surviving issues. Praetorian flaws are shown and do not change the score or remove a lead. A merged thesis is one entry on the list. The Legate then selects at most five of those candidates. Ingest writes one file per selected thesis at `data/reports/<run>/<rank>-<ticker>.md`.
 
-## After the decision
+## After selection
 
-The Imperator tells the Legate which ranked findings he will act on, or that he will act on none.
+Each selected thesis is its own file: the cause to effect chain, the tickers, evidence links from official sources, the macro context, the price-run classification, and then the full Praetorian critique. The pipeline does not write a decision row and does not submit anything to a broker.
 
-Acting on a lead means he has taken a position in his brokerage account at Interactive Brokers. The Legate reads that portfolio and does not place orders. No account identifiers are stored in this repo.
-
-1. **Track status** on `leads` for every lead. Pending stays `presented` until he answers. Acted on becomes `acted`, and stays `position` while the holding is open. Not acted on, including when he passes on all of them, becomes `rejected`. A later lead about an open holding sets `parent_position_id` to that `acted` or `position` row. When the holding is no longer open, status moves to `closed`.
-2. **Monitor** each acted-on lead against the Centurion's thesis, predicted ROI, stated risks, and timeframe. The comparison uses live portfolio data from that brokerage account: actual position and profit and loss. Those results are written back to the lead's `outcome`. That record is what a later rubric version is tuned from.
+A selected lead is status `presented`. A later lead about one the operator is already watching sets `parent_position_id` so the pass does not open a second competing lead. When that watch ends, status moves to `closed`.
 
 ## Status
-Scouts are fixture-tested. The sweep from figures to pending decisions runs with `python -m pipeline run`, then `python -m pipeline ingest` after an agent writes each stage's result files (see [docs/setup.md](docs/setup.md) and [docs/agent-protocol.md](docs/agent-protocol.md)). A weekly Saturday report is planned.
+Scouts are fixture-tested. The sweep from figures to thesis files runs with `python -m pipeline run`, then `python -m pipeline ingest` after an agent writes each stage's result files (see [docs/setup.md](docs/setup.md) and [docs/agent-protocol.md](docs/agent-protocol.md)). A weekly Saturday report is planned.
