@@ -1,50 +1,25 @@
 # accumulation
 
-Detect early M&A positioning from official ownership filings.
+## What it does
 
-This scout owns its software in this folder. Fetching and parsing are deterministic. The Legate decides which flagged leads pass a threshold. Tests use fixture documents only. They do not open a network connection.
+Finds early stake building in official ownership filings. The scout fetches, parses, and screens. Pattern breaks are flagged for the Legate instead of being treated as clean leads.
 
-## Sources
+## Data sources
 
-Figures come from the filings themselves.
+SEC Schedules 13D and 13G, including amendments, in both the legacy `SC 13D` / `SC 13G` types and the XML `SCHEDULE 13D` / `SCHEDULE 13G` types. ASX substantial holder notices are Form 603 (new), Form 604 (change), and Form 605 (ceasing). Every SEC and ASX request goes through `shared/nethttp.py`.
 
-- SEC Schedule 13D and 13G, including amendments. EDGAR still carries the legacy HTML/ASCII submission types `SC 13D`, `SC 13D/A`, `SC 13G`, and `SC 13G/A`. The structured XML types, required for Schedule 13G from 30 September 2024 and for Schedule 13D from 18 December 2024, are `SCHEDULE 13D`, `SCHEDULE 13D/A`, `SCHEDULE 13G`, and `SCHEDULE 13G/A`. A Schedule 13D/A combined with a tender-offer form can still arrive as non-XML `SC 13D/A`. The text parser covers that case.
-- ASX substantial holder notices: Form 603 (new), Form 604 (change), and Form 605 (ceasing). ASIC's consolidated Substantial holding notice replaces those three forms from 4 December 2026 and is not parsed here.
+## What it captures
 
-Every SEC and ASX request goes through `shared/nethttp.py`. The fetcher refuses a URL whose host is not `sec.gov` or `asx.com.au`.
+Each position records the filer, the target, the stake percent, the share count when the form states one, the event date, and the filing date. A 13D also keeps the Item 4 purpose text. A joint filing stays one position so the same shares are not counted twice.
 
-## What a position records
+## Filters/rules
 
-Filer, target name, target CIK or ACN, ticker when the SEC company-ticker file or the ASX query resolves it, stake percent, share count when the form states one, event date, filing date, and, for a 13D, the Item 4 purpose text. A joint filing stays one position. Co-filers are named on that position so the same shares are not counted twice.
+A filing is a candidate only inside a recent window (default 90 days), only when it is not a ceasing notice, and only when at least one screen matches: a stake at or above the threshold (default 5%), a repeat filer across more than one target, or sector concentration by the same filer. Unparseable stakes and dates, conflicting figures, a 13G-to-13D switch, and control-purpose language are pattern breaks and go to review.
 
-## Filters
+## Constraints and limitations
 
-`ScreenConfig` holds the thresholds. Defaults are a 5% stake, a 90-day window, two targets for a repeat filer, and two positions for sector concentration. Pass `as_of` to pin the window.
+The ASX announcements feed is undocumented, returns only the latest five announcements per company (enough for a weekly run), and is health-checked. Sector is not on the filing; the screen uses a map supplied by the caller. The Legate decides which flagged leads pass a threshold.
 
-A filing is a candidate only when its filing date (or event date, if the filing date is missing) falls in the window, it is not a ceasing notice, it has no review flag, and at least one of these matches:
+## Status
 
-- stake at or above `min_stake_pct`
-- the same filer on at least `repeat_filer_min_targets` distinct targets in the window
-- the same filer on at least `sector_min_positions` distinct targets in one sector
-
-Sector is not read from the filing. Pass a map keyed by 10-digit CIK, ASX ACN, ticker, or normalised target name. With `require_known_sector` left on, a filing that would otherwise be a candidate and has no sector mapping goes to review instead.
-
-## Review, not auto-included
-
-These break the pattern and are withheld from `candidates`:
-
-- unparseable stake, or a date that cannot be read
-- unknown sector, when a quantitative filter would otherwise have included the filing
-- conflicting data (cover percent against Item 5, reporting-person stakes more than one point apart, index form type against `submissionType`)
-- a 13G-to-13D switch for the same filer and target
-- Item 4 language that states a control purpose (board, merger, tender, sale of the issuer, and the other phrases in `ACTIVIST_PHRASES`)
-
-A denial such as "does not have any plans or proposals" is not treated as activist language. Form 605 and a 13G Item 5 exit (`classOwnership5PercentOrLess` = Y) are ceasing notices. A clean one is omitted. An ambiguous one is reviewed.
-
-`analyse()` returns a JSON-ready dict with `candidates` and `review`. `to_json()` serialises it. Each review row carries `flags`, `notes`, and the position, including the filters it would have matched.
-
-## Tests
-
-```bash
-python3 -m unittest discover -s scouts/accumulation/tests -t .
-```
+Structure and tests only, no live runs.

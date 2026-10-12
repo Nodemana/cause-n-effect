@@ -1,45 +1,25 @@
 # debt-raise
 
-Two-stage gate for use of proceeds on new loans, credit facilities, and bond issues. Sources are SEC 8-K items 1.01 and 2.03, 424B prospectus filings, and ASX debt announcements. The old `asx.com.au/asx/1/company/.../announcements` path returns 404. ASX headlines and PDFs come from the ASX research host `asx.api.markitdigital.com`, which shares the ASX throttle in `shared/nethttp.py`. `universe_asx.json` is the editable watchlist. That feed returns only the latest few headlines per code.
+## What it does
 
-Stage 1 scores the filing index description (`file_description` from the EDGAR search hit), or the ASX headline, with the phrase rules in `scoring.json`. General corporate purposes scores 0. Capex, acquisitions, and a named project such as data center construction score higher. The score is the highest matching weight, so boilerplate next to a named project does not wipe the named project out. No matching phrase means the cheap filter cannot decide, and a debt headline in that state is sent to the PDF.
+Spots loans, credit facilities, and bond issues whose proceeds look like spending rather than a generic refinance. A two-stage use-of-proceeds filter scores each filing, and each run stores threshold analytics for the Legate.
 
-Stage 2 reads the primary filing text only when the cheap score is above the configurable threshold, or when stage 1 cannot decide. It uses the same rules on that text. It does not call a model. A filing the full text still cannot score is flagged `undecided` for the Legate. Earnings-call transcripts are not a source.
+## Data sources
 
-This is a spotter for specific uses of proceeds, not a complete list of every borrowing.
+SEC 8-K items 1.01 and 2.03, 424B prospectus filings, and ASX debt announcements. ASX headlines and PDFs come from `asx.api.markitdigital.com`, on the same throttle as other ASX calls in `shared/nethttp.py`. SEC calls need `SEC_CONTACT_EMAIL` and are refused before send when it is missing.
 
-## Analytics
+## What it captures
 
-Each run writes one row to the shared history database:
+A stated money amount, with ticker, value, the literal amount text, currency, and source URL. Each filing also records its cheap score, its final score, and whether the full document was read. The run row records the threshold, how many filings the cheap filter resolved, how many went to the full read, and a score histogram.
 
-- `runs` — `run_id` (text, `YYYY-MM-DD-debt-raise`), `scout`, `started_at` (UTC), `notes`
-- `figures` — a stated money amount from the text that was scored: ticker, figure type, value, the literal `value_text`, currency, source URL, source type, `verified` 1. The first amount is kept, so a parenthetical conversion is not substituted for it. `leads` is the shared judgment table and this scout does not write it.
-- `changes` — the shared view that diffs a figure across runs
-- `debt_scout_runs` — same `run_id`, the threshold used, filings seen, filings resolved by the cheap filter, filings sent to the full-document pass, and the score histogram as bucket counts (`undecided`, `0` … `4`, `5+`)
-- `debt_scout_filing_scores` — accession or ASX document key, ticker, final score, cheap score, and stage reached (`cheap_filter` or `full_document`)
+## Filters/rules
 
-`migrations/001_history.sql` creates those tables. The migration is applied when a run opens the database.
+The scout uses a two-stage use-of-proceeds filter with threshold analytics. Stage 1 scores the filing index description or the ASX headline. The score is the highest matching weight: general corporate purposes scores 0, working capital or refinance scores 1, capex scores 3, an acquisition scores 4, and data center construction scores 5. The full document is read only when that score is above the threshold (default 2) or when no phrase matches. A filing the full text still cannot score is flagged `undecided` for the Legate.
 
-A lower threshold sends more filings to the prospectus read. A higher threshold leaves mid-band scores (see `mid_min` and `mid_max` in `scoring.json`) on the cheap filter, which means those raises are never read in full.
+## Constraints and limitations
 
-```bash
-python3 scouts/debt-raise/report.py --db history.sqlite
-```
+Raising the threshold leaves mid-band scores on the cheap filter, so those raises are never read in full. The ASX feed is undocumented, returns only the latest five announcements per company (enough for a weekly run), and is health-checked. This is a spotter for specific uses of proceeds, not a list of every borrowing. Earnings-call transcripts are not a source.
 
-The report lists every run's threshold, cheap-filter count, full-document count, and histogram, then the mid-band scores that stayed on the cheap filter.
+## Status
 
-## Live pull
-
-```bash
-python3 scouts/debt-raise/live.py
-```
-
-The database is written under `/tmp` and is not committed. If `SEC_CONTACT_EMAIL` is unset, the script prints that and does not send an SEC request. The ASX watchlist still runs.
-
-## Tests
-
-```bash
-python3 scouts/debt-raise/tests/test_debt_raise.py
-```
-
-The unit tests use fixtures and a fake HTTP client. They do not open a network connection. SEC and ASX requests go through `shared/nethttp.py`.
+Structure and tests only, no live runs.
