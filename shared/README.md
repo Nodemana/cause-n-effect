@@ -20,3 +20,5 @@ asx_client().get("https://www.asx.com.au/...")
 ```
 
 `cache/` next to this module is the on-disk cache directory. It is gitignored.
+
+Repository layout, setting `SEC_CONTACT_EMAIL`, and the scout test commands are in `docs/setup.md`.
