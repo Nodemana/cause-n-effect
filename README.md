@@ -15,8 +15,9 @@ cause-n-effect/
 └── scouts/
     ├── accumulation/   # 13D/13G and ASX substantial holder notices
     ├── orders-backlog/ # customer backlog and supplier orders, one table
-    ├── capex/          # big spenders' capex → 2nd/3rd-tier suppliers
-    └── debt-raise/     # new loans, credit facilities, and bond issues
+    ├── debt-raise/     # use-of-proceeds gate for loans, facilities, and bonds
+    ├── insider-buying/ # Form 4 and ASX Appendix 3Y open-market buys
+    └── capex/          # big spenders' capex → 2nd/3rd-tier suppliers
 ```
 
 ## Data rule
@@ -33,5 +34,6 @@ Every SEC and ASX request goes through `shared/nethttp.py`. That module spaces r
 - `scouts/orders-backlog` — one table for customer-side disclosed backlog (defence, industrials, chip equipment) and supplier-side orders (turbines, transformers, switchgear). A spotter's signal, not a full ledger.
 - `scouts/capex` — follow big spenders' capex to 2nd/3rd-tier suppliers.
 - `scouts/debt-raise` — use-of-proceeds gate for SEC 8-K items 1.01/2.03, 424B filings, and ASX debt announcements. A cheap phrase filter scores the index text or headline; the full filing is read only above a configurable threshold or when that filter cannot decide. Run analytics and any stated amount sit in the SQLite history database. SEC calls require `SEC_CONTACT_EMAIL` and are refused before send when it is missing.
+- `scouts/insider-buying` — open-market insider and CEO purchases from SEC Form 4 and 4/A and ASX Appendix 3Y. CEO buys are the same rows with `is_ceo` set. Clusters, a value threshold, and unparseable filings are handled in code.
 
 `scouts/capex` describes purpose only. Scout software is added in the scout's own folder when that scout is built.
