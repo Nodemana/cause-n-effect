@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xmlns="http://www.sec.gov/edgar/schedule13G">
+  <headerData>
+    <submissionType>SCHEDULE 13G</submissionType>
+    <filerInfo>
+      <filer>
+        <filerCredentials>
+          <cik>0000999002</cik>
+        </filerCredentials>
+      </filer>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <coverPageHeader>
+      <securitiesClassTitle>Ordinary Shares</securitiesClassTitle>
+      <eventDateRequiresFilingThisStatement>09/02/2026</eventDateRequiresFilingThisStatement>
+      <issuerInfo>
+        <issuerCik>999102</issuerCik>
+        <issuerName>Bramble Medical Ltd</issuerName>
+      </issuerInfo>
+      <coverPageHeaderReportingPersonDetails>
+        <reportingPersonName>Harbour Lane Capital</reportingPersonName>
+        <reportingPersonBeneficiallyOwnedAggregateNumberOfShares>900000</reportingPersonBeneficiallyOwnedAggregateNumberOfShares>
+        <classPercent>6.20</classPercent>
+      </coverPageHeaderReportingPersonDetails>
+    </coverPageHeader>
+    <items>
+      <item4>
+        <amountBeneficiallyOwned>900000</amountBeneficiallyOwned>
+        <classPercent>6.20</classPercent>
+      </item4>
+      <item5>
+        <classOwnership5PercentOrLess>N</classOwnership5PercentOrLess>
+      </item5>
+    </items>
+  </formData>
+</edgarSubmission>

@@ -1,0 +1,15 @@
+Form 603
+Notice of initial substantial holder
+
+Company name: Northwind Resources Limited
+ACN/ARSN: 123 456 789
+
+1. Details of substantial holder
+Name: Harbour Lane Capital
+The holder became a substantial holder on 02/09/2026
+
+2. Details of voting power
+Class of securities: Ordinary fully paid
+Number of securities: 12,500,000
+Person's votes: 12,500,000
+Voting power: 8.40%

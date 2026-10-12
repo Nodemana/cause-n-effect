@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xmlns="http://www.sec.gov/edgar/schedule13D" xmlns:com="http://www.sec.gov/edgar/common">
+  <headerData>
+    <submissionType>SCHEDULE 13D</submissionType>
+    <filerInfo>
+      <filer>
+        <filerCredentials>
+          <cik>0000999001</cik>
+        </filerCredentials>
+      </filer>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <coverPageHeader>
+      <securitiesClassTitle>Common Stock</securitiesClassTitle>
+      <dateOfEvent>09/15/2026</dateOfEvent>
+      <issuerInfo>
+        <issuerCIK>0000999101</issuerCIK>
+        <issuerName>Northwind Resources Inc</issuerName>
+      </issuerInfo>
+    </coverPageHeader>
+    <reportingPersons>
+      <reportingPersonInfo>
+        <reportingPersonCIK>0000999001</reportingPersonCIK>
+        <reportingPersonName>Northbridge Partners LP</reportingPersonName>
+        <aggregateAmountOwned>1250000</aggregateAmountOwned>
+        <percentOfClass>7.50</percentOfClass>
+      </reportingPersonInfo>
+    </reportingPersons>
+    <items1To7>
+      <item4>
+        <transactionPurpose>The shares were acquired for investment purposes. The reporting person does not have any plans or proposals to seek control of the issuer.</transactionPurpose>
+      </item4>
+      <item5>
+        <percentageOfClassSecurities>1,250,000 shares, or 7.50% of the class.</percentageOfClassSecurities>
+      </item5>
+    </items1To7>
+  </formData>
+</edgarSubmission>
