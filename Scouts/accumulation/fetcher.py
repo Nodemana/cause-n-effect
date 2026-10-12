@@ -4,8 +4,12 @@ Nothing in this module opens a socket itself. Pass a client to tests. When
 client is omitted, the call uses shared.nethttp.sec_client or asx_client.
 """
 
+import json
 import re
+import subprocess
+import tempfile
 import urllib.parse
+from pathlib import Path
 
 from Scouts.accumulation.forms import SEC_FORM_TYPES
 from Scouts.accumulation.model import Document
@@ -14,10 +18,13 @@ from shared.nethttp import EndpointError, asx_client, sec_client
 EFTS_URL = "https://efts.sec.gov/LATEST/search-index"
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 ASX_ANN_URL = "https://www.asx.com.au/asx/1/company/{ticker}/announcements"
+ASX_API = "https://asx.api.markitdigital.com/asx-research/1.0"
+ASX_CAP = 5
+_UNIVERSE = Path(__file__).resolve().parent / "universe_asx.json"
 _EFTS_PAGE = 100
 
 
-def collect_sec(start, end, client=None, form_types=SEC_FORM_TYPES):
+def collect_sec(start, end, client=None, form_types=SEC_FORM_TYPES, limit=None):
     """Search EDGAR for the date window and download each primary document."""
     client = client or sec_client()
     documents = []
@@ -40,6 +47,8 @@ def collect_sec(start, end, client=None, form_types=SEC_FORM_TYPES):
                 accession=accession,
             )
         )
+        if limit is not None and len(documents) >= int(limit):
+            break
     return documents
 
 
@@ -59,9 +68,9 @@ def iter_sec_hits(client, start, end, form_types=SEC_FORM_TYPES):
 
 
 def efts_url(start, end, form_types, offset=0):
+    """A `q=*` term makes this EDGAR search return no hits, so the query is forms and dates only."""
     query = urllib.parse.urlencode(
         {
-            "q": "*",
             "dateRange": "custom",
             "startdt": start,
             "enddt": end,
@@ -90,9 +99,12 @@ def fetch_ticker_map(client=None):
     """Map a 10-digit issuer CIK to a ticker using the SEC company ticker file."""
     client = client or sec_client()
     _require_sec(TICKERS_URL)
-    payload = client.json(TICKERS_URL)
+    return tickers_from_payload(client.json(TICKERS_URL))
+
+
+def tickers_from_payload(payload):
     mapping = {}
-    for row in payload.values():
+    for row in (payload or {}).values():
         try:
             cik = str(int(row["cik_str"])).zfill(10)
         except (KeyError, TypeError, ValueError):
@@ -101,6 +113,14 @@ def fetch_ticker_map(client=None):
         if ticker:
             mapping[cik] = ticker
     return mapping
+
+
+def load_asx(path=None):
+    payload = json.loads(Path(path or _UNIVERSE).read_text(encoding="utf-8"))
+    rows = payload.get("companies") or []
+    if not isinstance(rows, list):
+        raise ValueError("universe_asx.json companies must be a list")
+    return rows
 
 
 def collect_asx(tickers, client=None, count=50):
@@ -126,6 +146,43 @@ def collect_asx(tickers, client=None, count=50):
                     form_type=form,
                     filing_date=_iso_prefix(item.get("date")),
                     ticker=ticker.upper(),
+                )
+            )
+    return documents
+
+
+def collect_asx_markit(companies, client=None, count=ASX_CAP):
+    """Latest 603/604/605 notices from the Markit research feed. The feed returns at most five."""
+    client = client or asx_client()
+    count = min(int(count), ASX_CAP)
+    documents = []
+    for company in companies:
+        code = (company.get("ticker") if isinstance(company, dict) else company or "").strip().upper()
+        if not code:
+            continue
+        url = f"{ASX_API}/companies/{code.lower()}/announcements?count={count}"
+        _require_markit(url)
+        payload = client.json(url)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict) or "items" not in data:
+            raise EndpointError(f"ASX announcements feed for {code} failed the health check")
+        for item in (data.get("items") or [])[:count]:
+            headline = (item.get("headline") or "").strip()
+            form = asx_form_from_headline(headline)
+            key = item.get("documentKey") or ""
+            if not form or not key:
+                continue
+            doc_url = f"{ASX_API}/file/{key}"
+            _require_markit(doc_url)
+            body, _content_type = client.get(doc_url, accept="application/pdf,text/html,text/plain")
+            documents.append(
+                Document(
+                    source="asx",
+                    body=_asx_text(body),
+                    url=doc_url,
+                    form_type=form,
+                    filing_date=_iso_prefix(item.get("date")),
+                    ticker=code,
                 )
             )
     return documents
@@ -199,10 +256,42 @@ def _require_asx(url):
     _require_host(url, ("asx.com.au",))
 
 
+def _require_markit(url):
+    host = (urllib.parse.urlsplit(url).hostname or "").lower().rstrip(".")
+    official = host == "asx.api.markitdigital.com" or host == "asx.com.au" or host.endswith(".asx.com.au")
+    if not official:
+        raise EndpointError(f"refusing non-official host for {url}")
+
+
 def _require_host(url, suffixes):
     host = (urllib.parse.urlsplit(url).hostname or "").lower().rstrip(".")
     if not any(host == suffix or host.endswith("." + suffix) for suffix in suffixes):
         raise EndpointError(f"refusing non-official host for {url}")
+
+
+def _asx_text(body):
+    raw = body.encode("utf-8") if isinstance(body, str) else body
+    if raw.startswith(b"%PDF"):
+        return _pdf_text(raw)
+    return _decode(raw)
+
+
+def _pdf_text(body):
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "announcement.pdf"
+        txt_path = Path(tmp) / "announcement.txt"
+        pdf_path.write_bytes(body)
+        try:
+            completed = subprocess.run(
+                ["pdftotext", "-layout", str(pdf_path), str(txt_path)],
+                check=False,
+                capture_output=True,
+            )
+        except FileNotFoundError as exc:
+            raise EndpointError("pdftotext is not installed") from exc
+        if completed.returncode != 0 or not txt_path.exists():
+            raise EndpointError("pdftotext failed on ASX announcement")
+        return txt_path.read_text(encoding="utf-8", errors="replace")
 
 
 def _decode(body):

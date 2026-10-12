@@ -73,14 +73,25 @@ def collect_window(start, end, tickers=None, client=None, limit=None):
     return filings, missing
 
 
-def collect(start, end, client=None, ticker_map=None, limit=None, ciks=None):
+def collect(start, end, client=None, ticker_map=None, limit=None, ciks=None, tickers=None):
     """In-scope filings for the window. Summary text is the index description.
 
-    ``ciks`` limits the search to those issuers. Hits are kept by CIK, not by
-    the ticker text on the hit.
+    Company scope is the efts ``ciks`` parameter. ``tickers`` is resolved to
+    those CIKs when ``ciks`` is omitted. Hits are kept by CIK, not by the
+    ticker text on the hit.
     """
     client = client or sec_client()
-    ticker_map = ticker_map or {}
+    ticker_map = dict(ticker_map or {})
+    if tickers and not ciks:
+        if ticker_map:
+            ticker_to_cik = {symbol: cik for cik, symbol in ticker_map.items()}
+        else:
+            loaded, ticker_to_cik = fetch_ticker_tables(client)
+            ticker_map.update(loaded)
+        ciks, _missing, preferred = resolve_tickers(_ticker_list(tickers), ticker_to_cik)
+        ticker_map.update(preferred)
+        if not ciks:
+            return []
     filings = []
     for hit in iter_hits(client, start, end, ciks=ciks):
         filing = filing_from_hit(hit.get("_source") or {}, ticker_map, ciks=ciks)
@@ -108,10 +119,10 @@ def iter_hits(client, start, end, ciks=None):
 
 
 def efts_url(start, end, offset=0, ciks=None):
-    """EDGAR search for the window.
+    """EDGAR full-text search for the window.
 
     ``q`` is omitted. A ``q`` of ``*`` is a literal asterisk, not a match-all,
-    and the search comes back empty. Company scope is the ``ciks`` parameter.
+    and an ``8-K/A`` form is not requested. Company scope is the ``ciks`` parameter.
     """
     params = {
         "dateRange": "custom",
@@ -158,8 +169,8 @@ def resolve_tickers(tickers, ticker_to_cik):
     missing = []
     preferred = {}
     seen = set()
-    for ticker in tickers or []:
-        key = (ticker or "").strip().upper()
+    for ticker in _ticker_list(tickers):
+        key = ticker
         if not key:
             continue
         cik = ticker_to_cik.get(key)
@@ -209,17 +220,44 @@ def filing_from_hit(source, ticker_map=None, ciks=None):
 
 def fetch_primary_text(client, cik, accession):
     """Download the primary filing text. Called only from the full-document pass."""
+    name, index = _primary_from_index(client, cik, accession)
+    if not name:
+        return None
+    url = archive_base(cik, accession) + "/" + name
+    _require_sec(url)
+    body, _content_type = client.get(url, accept="text/html,text/plain")
+    return _decode(body)
+
+
+def fetch_phrase_text(client, cik, accession):
+    """Index descriptions, or the first page of the primary document.
+
+    EFTS `file_description` is often only the form name, which the phrase
+    stage cannot score. Returns `(phrase, full_body_or_none)`.
+    """
+    name, index = _primary_from_index(client, cik, accession)
+    descriptions = []
+    for item in _index_items(index):
+        desc = (item.get("description") or "").strip()
+        if desc and not summary_is_form_label(desc, ""):
+            descriptions.append(desc)
+    if descriptions:
+        return " ".join(descriptions), None
+    if not name:
+        return "", None
+    url = archive_base(cik, accession) + "/" + name
+    _require_sec(url)
+    body, _content_type = client.get(url, accept="text/html,text/plain")
+    text = _decode(body)
+    return first_page(text), text
+
+
+def _primary_from_index(client, cik, accession):
     base = archive_base(cik, accession)
     index_url = base + "/index.json"
     _require_sec(index_url)
     index = client.json(index_url)
-    name = choose_primary_name(_index_names(index))
-    if not name:
-        return None
-    url = base + "/" + name
-    _require_sec(url)
-    body, _content_type = client.get(url, accept="text/html,text/plain")
-    return _decode(body)
+    return choose_primary_name(_index_names(index)), index
 
 
 def collect_asx(companies, client=None, count=5):
@@ -316,8 +354,31 @@ def ticker_from_display(display_names):
     return None
 
 
+_REPORT_PAGE = re.compile(r"(?:^|/)r\d+\.html?$", re.I)
+_SUBMISSION_TXT = re.compile(r"(?:^|/)(?:\d{10}-\d{2}-\d{6}|\d{18})\.txt$", re.I)
+_FORM_LABEL = re.compile(r"^(?:FORM)?(?:8K|424B\d+)$")
+
+
+def summary_is_form_label(summary, form):
+    """True when the text is empty or only the form name EFTS returns."""
+    compact = re.sub(r"[^A-Za-z0-9]", "", summary or "").upper()
+    if not compact:
+        return True
+    form_compact = re.sub(r"[^A-Za-z0-9]", "", form or "").upper()
+    if form_compact and compact in {form_compact, "FORM" + form_compact}:
+        return True
+    return _FORM_LABEL.fullmatch(compact) is not None
+
+
+def first_page(text, limit=4000):
+    plain = re.sub(r"<[^>]+>", " ", text or "")
+    plain = re.sub(r"\s+", " ", plain).strip()
+    return plain[:limit]
+
+
 def choose_primary_name(names):
-    files = [name for name in names if name.lower().endswith((".htm", ".html", ".txt"))]
+    """Primary HTML/text, skipping index pages, R<n>.htm renders, and the submission txt."""
+    files = [name for name in names if _keep_primary_name(name)]
     for name in files:
         if "primary" in name.lower():
             return name
@@ -332,6 +393,31 @@ def choose_primary_name(names):
     return files[0] if files else None
 
 
+def _keep_primary_name(name):
+    lower = name.lower()
+    if "-index" in lower:
+        return False
+    if _REPORT_PAGE.search(lower) or _SUBMISSION_TXT.search(lower):
+        return False
+    return lower.endswith((".htm", ".html", ".txt"))
+
+
+def _ticker_list(tickers):
+    """Requested symbols, uppercased, with an ASX suffix removed. Order is kept."""
+    if not tickers:
+        return []
+    rows = []
+    seen = set()
+    for ticker in tickers:
+        token = str(ticker).strip().upper()
+        if token.endswith(".AX"):
+            token = token[:-3]
+        if token and token not in seen:
+            seen.add(token)
+            rows.append(token)
+    return rows
+
+
 def archive_base(cik, accession):
     cik_path = str(int(str(cik).lstrip("0") or "0"))
     return f"https://www.sec.gov/Archives/edgar/data/{cik_path}/{accession.replace('-', '')}"
@@ -342,12 +428,16 @@ def archive_index_url(cik, accession):
     return f"{archive_base(cik, acc)}/{acc}-index.html"
 
 
-def _index_names(index):
+def _index_items(index):
     directory = (index or {}).get("directory") or {}
     items = directory.get("item") or []
     if isinstance(items, dict):
         items = [items]
-    return [item.get("name") or "" for item in items]
+    return items
+
+
+def _index_names(index):
+    return [item.get("name") or "" for item in _index_items(index)]
 
 
 def _require_sec(url):

@@ -8,6 +8,7 @@ when SEC_CONTACT_EMAIL is missing. asx_client spaces requests by 2 seconds.
 import re
 import sys
 import urllib.parse
+from datetime import date
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -37,6 +38,15 @@ CAPEX_TAGS = (
     "FinanceLeaseLiabilityCurrent",
 )
 STATEMENT_FORMS = frozenset({"10-K", "10-Q", "20-F", "10-K/A", "10-Q/A", "20-F/A"})
+RECENT_QUARTERS = 8
+FLOW_TAGS = frozenset(
+    {
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquireProductiveAssets",
+        "PaymentsForCapitalImprovements",
+        "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+    }
+)
 GUIDANCE_QUERY = '"capital expenditure" OR "capital expenditures" OR capex'
 GUIDANCE_FORMS = "8-K,8-K/A,10-K,10-K/A,10-Q,10-Q/A"
 _ASX_CAPEX = re.compile(
@@ -45,7 +55,7 @@ _ASX_CAPEX = re.compile(
 )
 
 
-def collect_companyfacts(companies, client=None, n=4):
+def collect_companyfacts(companies, client=None, n=4, quarters=RECENT_QUARTERS, as_of=None):
     """Latest reported facts for each capex tag. `client` is required in tests."""
     client = client or sec_client()
     found = []
@@ -59,7 +69,7 @@ def collect_companyfacts(companies, client=None, n=4):
                 "ticker": company["ticker"],
                 "cik": cik,
                 "company": payload.get("entityName") or company.get("name") or company["ticker"],
-                "facts": select_facts(payload, n),
+                "facts": select_facts(payload, n, quarters=quarters, as_of=as_of),
             }
         )
     return found
@@ -69,12 +79,25 @@ def companyfacts_url(cik):
     return COMPANYFACTS.format(cik=_cik(cik))
 
 
-def select_facts(payload, n=4):
+def period_cutoff(quarters=RECENT_QUARTERS, as_of=None):
+    """First day of the window covering the last `quarters` quarters."""
+    as_of = as_of or date.today()
+    month = as_of.month - 3 * int(quarters)
+    year = as_of.year
+    while month <= 0:
+        month += 12
+        year -= 1
+    return date(year, month, 1).isoformat()
+
+
+def select_facts(payload, n=4, quarters=RECENT_QUARTERS, as_of=None):
     """One row per tag, unit, and period. The latest filing wins. Non-statements are dropped.
 
-    Cash-flow tags are stored as the year-to-date span SEC reported. A quarter is
-    not derived here.
+    Periods ending before the last `quarters` quarters are dropped, so a tag
+    that SEC last tagged in 2017 does not come back as a current figure.
+    Cash-flow tags stay as the span SEC reported. Quarter values are derived later.
     """
+    cutoff = period_cutoff(quarters, as_of)
     gaap = (payload.get("facts") or {}).get("us-gaap") or {}
     chosen = []
     for tag in CAPEX_TAGS:
@@ -87,7 +110,7 @@ def select_facts(payload, n=4):
                 if row.get("form") not in STATEMENT_FORMS:
                     continue
                 end = row.get("end")
-                if not end:
+                if not end or end < cutoff:
                     continue
                 key = (row.get("start"), end)
                 previous = best.get(key)

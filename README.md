@@ -9,6 +9,7 @@ The sweep from scouts to the weekly shortlist is designed in [docs/pipeline-arch
 
 ## Data
 - SQLite history DB: time-stamped figures with source links and a verified flag, diffed run to run.
+- How to open a read-only snapshot is in [docs/database-access.md](docs/database-access.md).
 - Official sources only: SEC EDGAR, ASX announcements, company releases. Blogs and media are banned. Prices come from quote data.
 - Access: free SEC API throttled to 0.15s per request with an email User-Agent, ASX website feed with 2s gaps and health checks. All requests go through `shared/nethttp.py`.
 

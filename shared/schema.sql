@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS figures(
 CREATE INDEX IF NOT EXISTS ix_fig_key ON figures(ticker,figure_type,instrument,period,run_id);
 CREATE INDEX IF NOT EXISTS ix_fig_run ON figures(run_id);
 
+-- Original shortlist (run, ticker, rank, pricing status, rationale).
+-- shared/migrations/001_pipeline.sql rebuilds this when lead_id is absent
+-- and keeps the rows. Runs and figures stay as they are.
 CREATE TABLE IF NOT EXISTS leads(
   run_id TEXT NOT NULL REFERENCES runs(run_id),
   ticker TEXT NOT NULL,

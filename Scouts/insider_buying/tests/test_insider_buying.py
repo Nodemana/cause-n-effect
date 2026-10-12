@@ -282,6 +282,19 @@ Nature of change:
         self.assertEqual(len(documents), 1)
         self.assertEqual(documents[0]["ticker"], "NWT")
         self.assertIn("doc4.xml", documents[0]["url"])
+        wrapped = (
+            "<SEC-DOCUMENT>\n<XML>\n"
+            + body.replace(
+                "<ownershipDocument>",
+                '<ownershipDocument xmlns="http://www.sec.gov/edgar/document/ownership">',
+                1,
+            )
+            + "\n</XML>\n</SEC-DOCUMENT>"
+        )
+        parsed = parser.parse_form4(wrapped, URL, "2026-03-04")
+        self.assertEqual(parsed[0]["insider"], "Harbour Lane")
+        self.assertTrue(parsed[0]["open_market"])
+        self.assertEqual(parsed[0]["value"], 80000)
         self.assertTrue(all("sec.gov" in url for url in calls))
         table = pipeline.build_table(documents)
         self.assertEqual(table["records"][0]["insider"], "Harbour Lane")
@@ -289,6 +302,35 @@ Nature of change:
             fetcher._require_sec("https://example.com/form4.xml")
         with self.assertRaises(fetcher.EndpointError):
             fetcher._require_asx("https://example.com/3y")
+
+    def test_xsl_render_is_skipped_for_primary_doc(self):
+        body = (FIX / "sec_form4_ceo.xml").read_text(encoding="utf-8")
+        index = {
+            "directory": {
+                "item": [
+                    {"name": "xslF345X05/form4.xml"},
+                    {"name": "0000999001-26-000004-index.html"},
+                    {"name": "0000999001-26-000004.txt"},
+                    {"name": "R1.htm"},
+                ]
+            }
+        }
+
+        class Fake:
+            def json(self, url):
+                return index
+
+            def get(self, url, accept=""):
+                self.url = url
+                if url.endswith("/primary_doc.xml"):
+                    return body, "application/xml"
+                return "<html>rendered form</html>", "text/html"
+
+        client = Fake()
+        url, text = fetcher.fetch_primary(client, "0000999001", "0000999001-26-000004")
+        self.assertTrue(url.endswith("/primary_doc.xml"))
+        self.assertIn("ownershipDocument", text)
+        self.assertIsNone(fetcher.choose_form4_name(["xslF345X05/form4.xml", "R1.htm", "0000999001-26-000004.txt"]))
 
     def test_asx_list_keeps_3y_only(self):
         payload = {

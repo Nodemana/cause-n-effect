@@ -128,12 +128,19 @@ def redact(text):
     return _EMAIL.sub("[redacted]", text or "")
 
 
-def first_amount(text):
-    """First stated money amount. A later parenthetical conversion is left out."""
-    plain = plain_text(text)
-    match = _MONEY.search(plain)
-    if not match:
-        return None
+_AGGREGATE = re.compile(
+    r"aggregate (?:principal |offering )?(?:amount|price)|aggregate principal|offering amount",
+    re.I,
+)
+_DENOMINATION = re.compile(
+    r"denominat|integral multiple|minimum (?:denomination|purchase)",
+    re.I,
+)
+_PAR = re.compile(r"\bpar (?:value|amount)\b", re.I)
+_FEE = re.compile(r"\b(?:registration|filing|commission)\s+fee\b|\bsec fee\b", re.I)
+
+
+def _amount_from(match):
     scale = _SCALE.get((match.group("scale") or "").casefold(), 1)
     number = float(match.group("num").replace(",", ""))
     return {
@@ -141,6 +148,38 @@ def first_amount(text):
         "currency": _CURRENCY[(match.group("cur") or "").casefold()],
         "text": match.group(0).strip(),
     }
+
+
+def _amount_window(plain, match, radius=40):
+    return plain[max(0, match.start() - radius) : match.end() + radius]
+
+
+def _skip_amount(plain, match):
+    """Denominations, par values, fees, and sub-dollar figures are not the raise."""
+    amount = _amount_from(match)
+    if amount["value"] < 1:
+        return True
+    window = _amount_window(plain, match)
+    if _PAR.search(window) or _DENOMINATION.search(window):
+        return True
+    if _FEE.search(window) and not _AGGREGATE.search(window):
+        return True
+    return False
+
+
+def first_amount(text):
+    """Stated money amount. Prefer the aggregate offering over the first hit.
+
+    Skips $2,000/$1,000 denomination minimums, par values such as $0.01 and
+    $0.0001, registration fees, and numbers with no currency. A later
+    parenthetical conversion is left out when an earlier amount is kept.
+    """
+    plain = plain_text(text)
+    kept = [match for match in _MONEY.finditer(plain) if not _skip_amount(plain, match)]
+    if not kept:
+        return None
+    preferred = [match for match in kept if _AGGREGATE.search(_amount_window(plain, match))]
+    return _amount_from(preferred[0] if preferred else kept[0])
 
 
 def figure_kind(text):

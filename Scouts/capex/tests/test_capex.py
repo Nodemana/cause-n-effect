@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 import urllib.parse
+from datetime import date
 from pathlib import Path
 
 SCOUT = Path(__file__).resolve().parents[1]
@@ -60,6 +61,48 @@ class CapexTests(unittest.TestCase):
         self.assertTrue(client.urls[0].startswith("https://data.sec.gov/api/xbrl/companyfacts/CIK0001018724.json"))
         with self.assertRaises(fetcher.EndpointError):
             fetcher._require_sec("https://example.com/companyfacts")
+
+    def test_stale_periods_are_dropped_and_quarters_are_derived(self):
+        payload = json.loads((FIX / "companyfacts_amzn.json").read_text(encoding="utf-8"))
+        rows = payload["facts"]["us-gaap"]["PaymentsToAcquireProductiveAssets"]["units"]["USD"]
+        rows.append(
+            {
+                "start": "2016-01-01",
+                "end": "2016-12-31",
+                "val": 1,
+                "accn": "0001018724-17-000001",
+                "form": "10-K",
+                "filed": "2017-02-01",
+            }
+        )
+        facts = fetcher.select_facts(payload, n=8, quarters=8, as_of=date(2026, 10, 12))
+        ends = {item["row"]["end"] for item in facts}
+        self.assertNotIn("2016-12-31", ends)
+        self.assertIn("2025-06-30", ends)
+        bundles = [
+            {
+                "ticker": "AMZN",
+                "cik": "0001018724",
+                "company": "AMAZON COM INC",
+                "facts": facts,
+            }
+        ]
+        figures = pipeline.figures_from_facts(bundles, "2026-10-12")
+        by_key = {(row["figure_type"], row["period"], row["instrument"]): row for row in figures}
+        self.assertEqual(
+            by_key[("PaymentsToAcquireProductiveAssets", "2025-01-01/2025-03-31", "quarter")]["value"],
+            25000000000,
+        )
+        self.assertEqual(
+            by_key[("PaymentsToAcquireProductiveAssets", "2025-01-01/2025-06-30", "ytd")]["value"],
+            48000000000,
+        )
+        quarter = by_key[("PaymentsToAcquireProductiveAssets", "2025-04-01/2025-06-30", "quarter")]
+        self.assertEqual(quarter["value"], 23000000000)
+        self.assertEqual(
+            by_key[("FinanceLeaseRightOfUseAsset", "2025-03-31", "instant")]["value"],
+            1000000000,
+        )
 
     def test_guidance_search_uses_efts_phrases(self):
         page = json.loads((FIX / "efts_guidance.json").read_text(encoding="utf-8"))

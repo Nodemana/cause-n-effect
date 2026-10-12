@@ -6,6 +6,7 @@ Appendix 3Y keeps on-market acquisitions only. Sales, grants, gifts, option
 exercises, and off-market changes are left unmarked so the filter can drop them.
 """
 
+import html
 import re
 from datetime import date
 from xml.etree import ElementTree
@@ -28,7 +29,7 @@ _MONEY = re.compile(
 
 
 def parse_form4(body, source_url, filing_date, ticker=None):
-    text = (body or "").lstrip("\ufeff").strip()
+    text = _prepare_ownership_xml(body)
     if not text:
         return [_shell("sec", "4", source_url, filing_date, ticker, ["unparseable"], ["empty Form 4"])]
     try:
@@ -117,6 +118,20 @@ _MONTHS = {
     "november": 11, "nov": 11,
     "december": 12, "dec": 12,
 }
+
+
+def _prepare_ownership_xml(body):
+    """Pull the ownership document out of a submission wrapper, HTML escape, or default namespace."""
+    raw = (body or "").lstrip("\ufeff").strip()
+    if not raw:
+        return ""
+    if "ownershipdocument" not in raw.casefold() and "&lt;ownershipdocument" in raw.casefold():
+        raw = html.unescape(raw)
+    match = re.search(r"<ownershipDocument\b[^>]*>.*?</ownershipDocument>", raw, re.I | re.S)
+    if match:
+        raw = match.group(0)
+    raw = raw.replace("&nbsp;", " ")
+    return raw.strip()
 
 
 def local(tag):

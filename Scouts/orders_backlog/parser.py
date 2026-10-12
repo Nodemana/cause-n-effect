@@ -121,7 +121,7 @@ def parse_company_facts(payload, company, source_side):
                 source_type="xbrl_company_facts",
                 disclosure=disclosure,
                 flags=flags,
-                notes=notes or [concept],
+                notes=[concept, *notes],
             )
         )
     return rows

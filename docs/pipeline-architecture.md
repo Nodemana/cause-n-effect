@@ -2,11 +2,11 @@
 
 Design for the path from a scout finding to the few theses the Imperator reads each week. Scouts already fetch, parse, and store figures. The Legate sweep, Centurions, and Praetorians are design only: `Centurions/` and `Praetorians/` hold a one-line role note, and nothing in the repo runs those agents yet.
 
-`orders_backlog` and `accumulation` have structure and fixture tests, and no live command yet. `capex`, `debt_raise`, and `insider_buying` each have a live command documented in [setup.md](setup.md).
+Each scout has a live command documented in [setup.md](setup.md).
 
 Agents are ephemeral. A Centurion, a Praetorian, and the Legate start each run with an empty context. The SQLite database is the sole persistent memory. This repository holds schema and code only. Databases, account identifiers, and anyone's positions or results stay off the tree (local `*.sqlite` files are gitignored).
 
-Today `shared/schema.sql` stores `runs` and `figures`, plus a small `leads` table keyed by run and ticker. The tables in [Proposed schema](#proposed-schema) are the pipeline shape. They are not created yet.
+Today `shared/schema.sql` stores `runs` and `figures`, plus a small `leads` table keyed by run and ticker. The tables in [Proposed schema](#proposed-schema) are the pipeline shape. They are created by [Implemented schema](#implemented-schema).
 
 ## Flow
 
@@ -97,12 +97,12 @@ If the Imperator acts, status becomes `acted` and `outcome` is filled. A name th
 
 ## Proposed schema
 
-Proposed only. Applying it means a later migration. It does not change `shared/schema.sql` in this document.
+Sketch of the columns below. The migration that creates them is [Implemented schema](#implemented-schema). It leaves `runs` and `figures` as they are.
 
 `quality_score` is written when the Centurion finishes. `outcome` is written only after the Imperator acts. `parent_position_id` is set when the row updates a position the Imperator already tracks.
 
 ```sql
--- Proposed pipeline tables. Not applied.
+-- Sketch of the pipeline tables. Applied by shared/migrations/001_pipeline.sql.
 
 CREATE TABLE leads (
   lead_id INTEGER PRIMARY KEY,
@@ -171,4 +171,20 @@ CREATE TABLE legate_merges (
 );
 ```
 
-`quality_score` for a lead is the number of `lead_criteria_results` rows with `cleared = 1` for that lead. The rubric for the lead type is the denominator, and it stays fixed across runs, so scores compare without rescaling.
+`quality_score` for a lead is the number of `lead_criteria_results` rows with `passed = 1` (the sketch above calls that flag `cleared`). The rubric for the lead type is the denominator, and a rubric version stays fixed, so scores compare without rescaling.
+
+## Implemented schema
+
+Applied. `shared/pipeline_store.py` (`ensure_pipeline`, or `connect`) runs `shared/migrations/001_pipeline.sql` and records `001_pipeline.sql` in `schema_migrations`. Running it again does not duplicate rows. `lodge_lead`, `record_criterion_result`, and `compute_quality_score` write leads and scores. `quality_score` is the count of criteria with `passed = 1`. `outcome` stays empty until it is set on its own.
+
+The migration sits on a database that already has `runs`, `figures`, and the earlier `leads` table, and it does not modify `scout_tests`, `debt_scout_runs`, or `debt_scout_filing_scores`. When `leads` has no `lead_id` column, the helper renames it, creates the table below, and copies every row. `rank` becomes `priority`. The old status was a pricing label (`underappreciated`, `partly`, `priced_in`, `crowded`), so that text is kept in `summary` and the pipeline status starts at `fresh`. `lead_type` comes from the scout on `runs` (`debt-raise` maps to `debt_raise`, and the same for the other scouts).
+
+Beyond the sketch:
+
+- `leads` adds `exchange` and `source_scout`. Status also allows `closed` and `rejected`. `parent_position_id` must reference a lead whose status is `acted` or `position`. Figure ids live in `lead_figures`.
+- `rubrics` is one fixed row per lead type and version. Version 1 is seeded for `capex`, `debt_raise`, `insider_buying`, `orders_backlog`, and `accumulation`. Changing a threshold means a new version.
+- `rubric_criteria` stores `name`, `description`, `threshold_value`, and `threshold_unit`. Seeded numbers (market cap, insider-buy dollars, debt-raise size versus the company, backlog quarter-over-quarter growth, stake percent, recent-filing window) are configurable defaults.
+- `lead_criteria_results` stores `passed`, `evidence`, `source_url`, and `assessed_by` (a `runs.run_id`).
+- `theses` stores the Centurion `run_id`, `thesis_text`, `risks`, and `quality_score`.
+- `critiques` stores the Praetorian `run_id`, `critique`, `verdict` (`revise`, `accept`, or `reject`), and `round`.
+- `legate_merges` stores the rationale, `priority_rank`, and `bias_audit`. The merged lead ids are rows in `legate_merge_leads`.
