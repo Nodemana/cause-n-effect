@@ -31,6 +31,9 @@ def migrate(conn):
         )
         """
     )
+    from shared.store import ensure_history
+
+    ensure_history(conn)
     for path in sorted(MIGRATIONS.glob("*.sql")):
         seen = conn.execute(
             "SELECT 1 FROM schema_migrations WHERE name = ?", (path.name,)

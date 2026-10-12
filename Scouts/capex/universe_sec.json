@@ -1,0 +1,8 @@
+{
+  "description": "SEC test set for reported capex and capex-guidance search. CIKs are the SEC's public identifiers.",
+  "companies": [
+    {"ticker": "AMZN", "name": "Amazon.com Inc", "cik": "0001018724"},
+    {"ticker": "ORCL", "name": "Oracle Corp", "cik": "0001341439"},
+    {"ticker": "MSFT", "name": "Microsoft Corp", "cik": "0000789019"}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "hits": {
+    "total": {"value": 1},
+    "hits": [
+      {
+        "_id": "0001018724-25-000020:amzn-8k.htm",
+        "_source": {
+          "ciks": ["1018724"],
+          "form": "8-K",
+          "file_date": "2025-07-31",
+          "period_ending": "2025-06-30",
+          "file_description": "Raises capital expenditure outlook to approximately $75 billion for 2025.",
+          "display_names": ["Amazon.com, Inc.  (AMZN)  (CIK 0001018724)"]
+        }
+      }
+    ]
+  }
+}

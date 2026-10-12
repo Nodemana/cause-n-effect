@@ -373,7 +373,10 @@ class DebtRaiseTests(unittest.TestCase):
 
             conn = open_db(db)
             applied = conn.execute("SELECT name FROM schema_migrations").fetchall()
-            self.assertEqual([row["name"] for row in applied], ["001_history.sql"])
+            self.assertEqual(
+                sorted(row["name"] for row in applied),
+                ["001_history.sql", "shared_schema.sql"],
+            )
             stored = json.loads(
                 conn.execute("SELECT score_histogram FROM debt_scout_runs").fetchone()["score_histogram"]
             )
@@ -385,7 +388,7 @@ class DebtRaiseTests(unittest.TestCase):
             conn.close()
             again = open_db(db)
             applied = again.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-            self.assertEqual(applied, 1)
+            self.assertEqual(applied, 2)
             again.close()
 
 

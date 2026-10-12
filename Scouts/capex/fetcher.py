@@ -1,0 +1,203 @@
+"""SEC companyfacts, EDGAR full-text guidance hits, and ASX announcement lists.
+
+Pass a client in tests. With no client, SEC calls use sec_client and ASX calls
+use asx_client. Both come from shared/nethttp.py. sec_client refuses to send
+when SEC_CONTACT_EMAIL is missing. asx_client spaces requests by 2 seconds.
+"""
+
+import re
+import sys
+import urllib.parse
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+_REPO = _HERE.parents[1]
+for _entry in (str(_REPO), str(_HERE)):
+    if _entry not in sys.path:
+        sys.path.insert(0, _entry)
+
+from shared.nethttp import EndpointError, asx_client, sec_client  # noqa: E402
+
+COMPANYFACTS = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+EFTS_URL = "https://efts.sec.gov/LATEST/search-index"
+ASX_API = "https://asx.api.markitdigital.com/asx-research/1.0"
+ASX_CAP = 5
+
+# Reported capex cash-flow tags, plus PP&E and finance-lease balances.
+CAPEX_TAGS = (
+    "PaymentsToAcquirePropertyPlantAndEquipment",
+    "PaymentsToAcquireProductiveAssets",
+    "PaymentsForCapitalImprovements",
+    "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+    "PropertyPlantAndEquipmentNet",
+    "PropertyPlantAndEquipmentGross",
+    "FinanceLeaseRightOfUseAsset",
+    "FinanceLeaseLiability",
+    "FinanceLeaseLiabilityNoncurrent",
+    "FinanceLeaseLiabilityCurrent",
+)
+STATEMENT_FORMS = frozenset({"10-K", "10-Q", "20-F", "10-K/A", "10-Q/A", "20-F/A"})
+GUIDANCE_QUERY = '"capital expenditure" OR "capital expenditures" OR capex'
+GUIDANCE_FORMS = "8-K,8-K/A,10-K,10-K/A,10-Q,10-Q/A"
+_ASX_CAPEX = re.compile(
+    r"capex|capital expenditure|capital investment|property,\s*plant|\bppe\b",
+    re.I,
+)
+
+
+def collect_companyfacts(companies, client=None, n=4):
+    """Latest reported facts for each capex tag. `client` is required in tests."""
+    client = client or sec_client()
+    found = []
+    for company in companies:
+        cik = _cik(company.get("cik"))
+        url = companyfacts_url(cik)
+        _require_sec(url)
+        payload = client.json(url)
+        found.append(
+            {
+                "ticker": company["ticker"],
+                "cik": cik,
+                "company": payload.get("entityName") or company.get("name") or company["ticker"],
+                "facts": select_facts(payload, n),
+            }
+        )
+    return found
+
+
+def companyfacts_url(cik):
+    return COMPANYFACTS.format(cik=_cik(cik))
+
+
+def select_facts(payload, n=4):
+    """One row per tag, unit, and period. The latest filing wins. Non-statements are dropped.
+
+    Cash-flow tags are stored as the year-to-date span SEC reported. A quarter is
+    not derived here.
+    """
+    gaap = (payload.get("facts") or {}).get("us-gaap") or {}
+    chosen = []
+    for tag in CAPEX_TAGS:
+        node = gaap.get(tag) or {}
+        for unit, rows in (node.get("units") or {}).items():
+            if not _monetary(unit):
+                continue
+            best = {}
+            for row in rows:
+                if row.get("form") not in STATEMENT_FORMS:
+                    continue
+                end = row.get("end")
+                if not end:
+                    continue
+                key = (row.get("start"), end)
+                previous = best.get(key)
+                if previous is None or (row.get("filed") or "") > (previous.get("filed") or ""):
+                    best[key] = row
+            ordered = sorted(
+                best.values(),
+                key=lambda row: (row.get("end") or "", row.get("start") or ""),
+                reverse=True,
+            )
+            for row in ordered[:n]:
+                chosen.append({"tag": tag, "unit": unit, "row": row})
+    return chosen
+
+
+def collect_guidance(companies, client=None, start=None, end=None, limit=20):
+    """EDGAR full-text hits for capex-guidance phrases, limited per company."""
+    client = client or sec_client()
+    found = []
+    for company in companies:
+        cik = _cik(company.get("cik"))
+        url = efts_url(cik, start, end)
+        _require_sec(url)
+        page = client.json(url)
+        hits = ((page.get("hits") or {}).get("hits")) or []
+        for hit in hits[:limit]:
+            found.append(
+                {
+                    "ticker": company["ticker"],
+                    "cik": cik,
+                    "company": company.get("name") or company["ticker"],
+                    "hit": hit,
+                }
+            )
+    return found
+
+
+def efts_url(cik, start, end, offset=0):
+    query = urllib.parse.urlencode(
+        {
+            "q": GUIDANCE_QUERY,
+            "dateRange": "custom",
+            "startdt": start,
+            "enddt": end,
+            "forms": GUIDANCE_FORMS,
+            "ciks": _cik(cik),
+            "from": str(offset),
+        }
+    )
+    return f"{EFTS_URL}?{query}"
+
+
+def collect_asx(companies, client=None, count=ASX_CAP):
+    """Latest ASX announcements, capped at five per company. The feed shape is checked."""
+    client = client or asx_client()
+    count = min(int(count), ASX_CAP)
+    rows = []
+    for company in companies:
+        code = (company.get("ticker") or "").strip().upper()
+        if not code:
+            continue
+        url = f"{ASX_API}/companies/{code.lower()}/announcements?count={count}"
+        _require_asx(url)
+        payload = client.json(url)
+        check_feed(payload, code)
+        data = payload.get("data") or {}
+        name = data.get("displayName") or company.get("name") or code
+        for item in (data.get("items") or [])[:count]:
+            headline = (item.get("headline") or "").strip()
+            key = item.get("documentKey") or ""
+            if not headline or not key or not _ASX_CAPEX.search(headline):
+                continue
+            filed = str(item.get("date") or "")[:10]
+            rows.append(
+                {
+                    "ticker": f"{code}.AX",
+                    "company": name,
+                    "headline": headline,
+                    "filed": filed or None,
+                    "document_key": key,
+                    "source_url": f"{ASX_API}/file/{key}",
+                }
+            )
+    return rows
+
+
+def check_feed(payload, code):
+    """The announcements API is undocumented. A response without data.items is unhealthy."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict) or "items" not in data:
+        raise EndpointError(f"ASX announcements feed for {code} failed the health check")
+
+
+def _cik(value):
+    return str(int(str(value))).zfill(10)
+
+
+def _monetary(unit):
+    token = (unit or "").upper()
+    return len(token) == 3 and token.isalpha()
+
+
+def _require_sec(url):
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host != "sec.gov" and not host.endswith(".sec.gov"):
+        raise EndpointError(f"refusing non-SEC host for {url}")
+
+
+def _require_asx(url):
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    official = host == "asx.com.au" or host.endswith(".asx.com.au") or host == "asx.api.markitdigital.com"
+    if not official:
+        raise EndpointError(f"refusing non-ASX host for {url}")

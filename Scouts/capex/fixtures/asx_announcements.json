@@ -1,0 +1,43 @@
+{
+  "data": {
+    "displayName": "Example Grid Ltd",
+    "items": [
+      {
+        "date": "2026-03-02T01:00:00Z",
+        "headline": "Capital expenditure update of A$40 million for FY26",
+        "documentKey": "2924-00000001-2A1",
+        "isPriceSensitive": true
+      },
+      {
+        "date": "2026-03-01T01:00:00Z",
+        "headline": "Dividend reinvestment plan",
+        "documentKey": "2924-00000002-2A1",
+        "isPriceSensitive": false
+      },
+      {
+        "date": "2026-02-20T01:00:00Z",
+        "headline": "Property, plant programme of $12 million",
+        "documentKey": "2924-00000003-2A1",
+        "isPriceSensitive": true
+      },
+      {
+        "date": "2026-02-10T01:00:00Z",
+        "headline": "Annual general meeting",
+        "documentKey": "2924-00000004-2A1",
+        "isPriceSensitive": false
+      },
+      {
+        "date": "2026-02-01T01:00:00Z",
+        "headline": "Director appointment",
+        "documentKey": "2924-00000005-2A1",
+        "isPriceSensitive": false
+      },
+      {
+        "date": "2026-01-15T01:00:00Z",
+        "headline": "Capex of $99 million that the five-item cap must drop",
+        "documentKey": "2924-00000006-2A1",
+        "isPriceSensitive": true
+      }
+    ]
+  }
+}

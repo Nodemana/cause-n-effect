@@ -1,6 +1,6 @@
 # shared
 
-Utilities used by every scout. Each scout keeps its own fetching, parsing, and storage in its own folder. This package is the common machinery.
+Utilities used by every scout. Each scout keeps its own fetching and parsing. The figures history and the HTTP client live here.
 
 ## nethttp
 
@@ -20,5 +20,9 @@ asx_client().get("https://www.asx.com.au/...")
 ```
 
 `cache/` next to this module is the on-disk cache directory. It is gitignored.
+
+## History
+
+`schema.sql` is the shared `runs`, `figures`, `leads`, and `changes` store. `store.py` applies it and replaces one run's figures. Debt-raise adds its own analytics tables on top of the same `runs` row. Do not commit a database file.
 
 Repository layout, setting `SEC_CONTACT_EMAIL`, and the scout test commands are in `docs/setup.md`.

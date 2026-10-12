@@ -1,0 +1,4 @@
+{
+  "description": "ASX codes whose latest five announcements are scanned for capex language. Leave companies empty to skip ASX. The feed is undocumented, ignores counts above five, and is health-checked on each response.",
+  "companies": []
+}

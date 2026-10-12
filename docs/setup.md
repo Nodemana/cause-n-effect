@@ -18,7 +18,7 @@ cause-n-effect/
     └── capex/          # big spenders' capex → 2nd/3rd-tier suppliers
 ```
 
-`Scouts/capex` describes purpose only until that scout's software is added. Each other scout keeps its fetcher, parser, and tests in its own folder. Behaviour that used to sit in the top-level README (form types, filters, and what is flagged for the Legate) is in that scout's README.
+`Scouts/capex` pulls SEC companyfacts, EDGAR full-text capex guidance, and ASX announcements into the shared figures table. Each other scout keeps its fetcher, parser, and tests in its own folder.
 
 ## Environment
 
@@ -39,6 +39,7 @@ python3 -m unittest discover -s Scouts/accumulation/tests -t .
 python3 Scouts/orders-backlog/tests/test_orders_backlog.py
 python3 Scouts/debt-raise/tests/test_debt_raise.py
 python3 Scouts/insider-buying/tests/test_insider_buying.py
+python3 Scouts/capex/tests/test_capex.py
 ```
 
 Debt-raise also has a report and a live entry point. The live script writes its database under `/tmp`. If `SEC_CONTACT_EMAIL` is unset it prints that and does not send an SEC request; the ASX watchlist still runs.
@@ -46,4 +47,10 @@ Debt-raise also has a report and a live entry point. The live script writes its 
 ```bash
 python3 Scouts/debt-raise/report.py --db history.sqlite
 python3 Scouts/debt-raise/live.py
+```
+
+Capex has a live entry point for the owner. It is not part of the fixture tests. Set `SEC_CONTACT_EMAIL` before running it. The default database is `/tmp/cause-n-effect-capex.sqlite`.
+
+```bash
+python3 Scouts/capex/live.py
 ```
