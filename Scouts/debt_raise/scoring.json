@@ -3,6 +3,7 @@
   "threshold": 2,
   "mid_min": 2,
   "mid_max": 4,
+  "min_deal_usd": 50000000,
   "rules": [
     {"id": "generic", "pattern": "general corporate purposes?", "weight": 0},
     {"id": "working_capital", "pattern": "working capital", "weight": 1},

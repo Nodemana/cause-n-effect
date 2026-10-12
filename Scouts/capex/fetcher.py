@@ -8,6 +8,8 @@ when SEC_CONTACT_EMAIL is missing. asx_client spaces requests by 2 seconds.
 import re
 import sys
 import urllib.parse
+from collections import Counter
+from datetime import date
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -70,12 +72,15 @@ def companyfacts_url(cik):
 
 
 def select_facts(payload, n=4):
-    """One row per tag, unit, and period. The latest filing wins. Non-statements are dropped.
+    """One row per tag, unit, and period. The first filing wins. Non-statements are dropped.
 
-    Cash-flow tags are stored as the year-to-date span SEC reported. A quarter is
-    not derived here.
+    A later amendment or restatement does not replace the filing that first
+    reported the figure. Each duration is labelled quarter, ytd, ttm, or annual.
+    Year-to-date is only a span that starts on the fiscal-year start and is not
+    itself a quarter or a full year.
     """
     gaap = (payload.get("facts") or {}).get("us-gaap") or {}
+    fiscal_start = infer_fiscal_start(payload)
     chosen = []
     for tag in CAPEX_TAGS:
         node = gaap.get(tag) or {}
@@ -91,7 +96,7 @@ def select_facts(payload, n=4):
                     continue
                 key = (row.get("start"), end)
                 previous = best.get(key)
-                if previous is None or (row.get("filed") or "") > (previous.get("filed") or ""):
+                if previous is None or _filed_on(row) < _filed_on(previous):
                     best[key] = row
             ordered = sorted(
                 best.values(),
@@ -99,8 +104,79 @@ def select_facts(payload, n=4):
                 reverse=True,
             )
             for row in ordered[:n]:
-                chosen.append({"tag": tag, "unit": unit, "row": row})
+                chosen.append(
+                    {
+                        "tag": tag,
+                        "unit": unit,
+                        "row": row,
+                        "period_label": span_label(row.get("start"), row.get("end"), fiscal_start),
+                    }
+                )
     return chosen
+
+
+def infer_fiscal_start(payload):
+    """Month-day the fiscal year starts, from Q1 and full-year statement spans.
+
+    Calendar year (01-01) is the fallback when the filing does not say.
+    """
+    gaap = (payload.get("facts") or {}).get("us-gaap") or {}
+    votes = []
+    for node in gaap.values():
+        if not isinstance(node, dict):
+            continue
+        for unit, rows in (node.get("units") or {}).items():
+            if not _monetary(unit):
+                continue
+            for row in rows or []:
+                if row.get("form") not in STATEMENT_FORMS:
+                    continue
+                start = row.get("start") or ""
+                end = row.get("end") or ""
+                if len(start) < 10:
+                    continue
+                fp = (row.get("fp") or "").upper()
+                if fp == "Q1":
+                    votes.append(start[5:10])
+                elif fp == "FY" and end and _span_days(start, end) >= 350:
+                    votes.append(start[5:10])
+    if not votes:
+        return "01-01"
+    return Counter(votes).most_common(1)[0][0]
+
+
+def span_label(start, end, fiscal_start="01-01"):
+    """quarter, ytd, ttm, or annual. Instant facts (no start) have no span label.
+
+    ytd is only a span that begins on the fiscal-year start and is longer than
+    a quarter and shorter than a year. A twelve-month span that begins then is
+    annual. The same length beginning on any other day is ttm.
+    """
+    if not start or not end:
+        return ""
+    days = _span_days(start, end)
+    if days is None:
+        return ""
+    on_year_start = start[5:10] == fiscal_start
+    if 80 <= days <= 115:
+        return "quarter"
+    if 350 <= days <= 380:
+        return "annual" if on_year_start else "ttm"
+    if on_year_start:
+        return "ytd"
+    return ""
+
+
+def _span_days(start, end):
+    try:
+        return (date.fromisoformat(end) - date.fromisoformat(start)).days
+    except ValueError:
+        return None
+
+
+def _filed_on(row):
+    """Missing dates sort last so a dated original beats an undated repeat."""
+    return row.get("filed") or "9999-99-99"
 
 
 def collect_guidance(companies, client=None, start=None, end=None, limit=20):

@@ -47,6 +47,7 @@ class CapexTests(unittest.TestCase):
             {
                 ("PaymentsToAcquireProductiveAssets", "2025-03-31", "2025-01-01"),
                 ("PaymentsToAcquireProductiveAssets", "2025-06-30", "2025-01-01"),
+                ("PaymentsToAcquireProductiveAssets", "2026-06-30", "2025-07-01"),
                 ("FinanceLeaseRightOfUseAsset", "2025-03-31", None),
             },
         )
@@ -55,8 +56,27 @@ class CapexTests(unittest.TestCase):
             for item in facts
             if item["tag"] == "PaymentsToAcquireProductiveAssets" and item["row"]["end"] == "2025-03-31"
         )
-        self.assertEqual(q1["row"]["val"], 25000000000)
-        self.assertEqual(q1["row"]["filed"], "2025-05-01")
+        self.assertEqual(q1["row"]["val"], 24000000000)
+        self.assertEqual(q1["row"]["filed"], "2025-04-15")
+        self.assertEqual(q1["row"]["accn"], "0001018724-25-000001")
+        self.assertEqual(q1["period_label"], "quarter")
+        half = next(
+            item
+            for item in facts
+            if item["tag"] == "PaymentsToAcquireProductiveAssets" and item["row"]["end"] == "2025-06-30"
+        )
+        self.assertEqual(half["row"]["val"], 48000000000)
+        self.assertEqual(half["row"]["filed"], "2025-08-01")
+        self.assertEqual(half["period_label"], "ytd")
+        trailing = next(
+            item
+            for item in facts
+            if item["tag"] == "PaymentsToAcquireProductiveAssets" and item["row"]["end"] == "2026-06-30"
+        )
+        self.assertEqual(trailing["row"]["val"], 90000000000)
+        self.assertEqual(trailing["row"]["filed"], "2026-07-15")
+        self.assertEqual(trailing["period_label"], "ttm")
+        self.assertEqual(fetcher.infer_fiscal_start(payload), "01-01")
         self.assertTrue(client.urls[0].startswith("https://data.sec.gov/api/xbrl/companyfacts/CIK0001018724.json"))
         with self.assertRaises(fetcher.EndpointError):
             fetcher._require_sec("https://example.com/companyfacts")
@@ -134,10 +154,16 @@ class CapexTests(unittest.TestCase):
                 """
             ).fetchall()
             by_key = {(row["ticker"], row["figure_type"], row["period"]): row for row in rows}
-            actual = by_key[("AMZN", "PaymentsToAcquireProductiveAssets", "2025-01-01/2025-03-31")]
-            self.assertEqual(actual["value"], 25000000000)
+            actual = by_key[("AMZN", "PaymentsToAcquireProductiveAssets", "quarter|2025-01-01/2025-03-31")]
+            self.assertEqual(actual["value"], 24000000000)
             self.assertEqual(actual["currency"], "USD")
-            self.assertEqual(actual["announced_on"], "2025-05-01")
+            self.assertEqual(actual["announced_on"], "2025-04-15")
+            ytd = by_key[("AMZN", "PaymentsToAcquireProductiveAssets", "ytd|2025-01-01/2025-06-30")]
+            self.assertEqual(ytd["value"], 48000000000)
+            self.assertEqual(ytd["announced_on"], "2025-08-01")
+            trailing = by_key[("AMZN", "PaymentsToAcquireProductiveAssets", "ttm|2025-07-01/2026-06-30")]
+            self.assertEqual(trailing["value"], 90000000000)
+            self.assertEqual(trailing["announced_on"], "2026-07-15")
             self.assertEqual(actual["source_type"], "filing")
             self.assertEqual(actual["verified"], 1)
             self.assertIn("/Archives/edgar/data/1018724/", actual["source_url"])
@@ -151,6 +177,64 @@ class CapexTests(unittest.TestCase):
             self.assertEqual(asx["source_type"], "asx_announcement")
             self.assertTrue(asx["source_url"].startswith("https://asx.api.markitdigital.com/"))
             conn.close()
+
+    def test_span_labels_follow_the_fiscal_year(self):
+        self.assertEqual(fetcher.span_label("2025-01-01", "2025-03-31", "01-01"), "quarter")
+        self.assertEqual(fetcher.span_label("2025-04-01", "2025-06-30", "01-01"), "quarter")
+        self.assertEqual(fetcher.span_label("2025-01-01", "2025-06-30", "01-01"), "ytd")
+        self.assertEqual(fetcher.span_label("2025-01-01", "2025-12-31", "01-01"), "annual")
+        self.assertEqual(fetcher.span_label("2025-07-01", "2026-06-30", "01-01"), "ttm")
+        self.assertEqual(fetcher.span_label("2025-07-01", "2026-06-30", "07-01"), "annual")
+        self.assertEqual(fetcher.span_label("2025-07-01", "2026-03-31", "07-01"), "ytd")
+        june_year = {
+            "facts": {
+                "us-gaap": {
+                    "PaymentsToAcquirePropertyPlantAndEquipment": {
+                        "units": {
+                            "USD": [
+                                {
+                                    "start": "2025-07-01",
+                                    "end": "2025-09-30",
+                                    "val": 10,
+                                    "accn": "0000000001-25-000001",
+                                    "fy": 2026,
+                                    "fp": "Q1",
+                                    "form": "10-Q",
+                                    "filed": "2025-11-01",
+                                },
+                                {
+                                    "start": "2025-07-01",
+                                    "end": "2026-06-30",
+                                    "val": 40,
+                                    "accn": "0000000001-26-000001",
+                                    "fy": 2026,
+                                    "fp": "FY",
+                                    "form": "10-K",
+                                    "filed": "2026-08-15",
+                                },
+                                {
+                                    "start": "2025-07-01",
+                                    "end": "2026-06-30",
+                                    "val": 41,
+                                    "accn": "0000000001-26-000099",
+                                    "fy": 2026,
+                                    "fp": "FY",
+                                    "form": "10-K/A",
+                                    "filed": "2026-09-01",
+                                },
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        self.assertEqual(fetcher.infer_fiscal_start(june_year), "07-01")
+        facts = fetcher.select_facts(june_year, n=4)
+        by_end = {item["row"]["end"]: item for item in facts}
+        self.assertEqual(by_end["2025-09-30"]["period_label"], "quarter")
+        self.assertEqual(by_end["2026-06-30"]["period_label"], "annual")
+        self.assertEqual(by_end["2026-06-30"]["row"]["val"], 40)
+        self.assertEqual(by_end["2026-06-30"]["row"]["filed"], "2026-08-15")
 
     def test_amounts_and_sec_email_gate(self):
         self.assertEqual(first_amount("$75 billion")["value"], 75_000_000_000)

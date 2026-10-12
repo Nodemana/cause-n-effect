@@ -37,13 +37,16 @@ def figures_from_facts(bundles, seen_at):
             start = row.get("start")
             end = row["end"]
             period = f"{start}/{end}" if start else end
+            label = fact.get("period_label") or ""
+            if label:
+                period = f"{label}|{period}"
             accn = row.get("accn") or ""
             rows.append(
                 {
                     "ticker": bundle["ticker"],
                     "company": bundle.get("company"),
                     "figure_type": fact["tag"],
-                    "instrument": "",
+                    "instrument": label,
                     "period": period,
                     "value": row.get("val"),
                     "value_text": _plain(row.get("val")),
