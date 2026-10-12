@@ -27,7 +27,7 @@ def fixture_response(prompt):
     raise FixtureError(f"fixture has no response for task {task!r}")
 
 
-def run_with_fixture(db_path, *, responder=None, queue_dir=None, with_praetorians=False, **kwargs):
+def run_with_fixture(db_path, *, responder=None, queue_dir=None, **kwargs):
     """Drive a sweep offline. Not used by the live CLI."""
     from pipeline.agent import read_tasks, result_path
     from pipeline.flow import ingest_run, run_pipeline
@@ -36,7 +36,7 @@ def run_with_fixture(db_path, *, responder=None, queue_dir=None, with_praetorian
         queue_dir = str(Path(db_path).parent / "agent_queue")
     responder = responder or (lambda task: fixture_response(task["prompt"]))
     parties_client = kwargs.pop("parties_client", None)
-    result = run_pipeline(db_path, queue_dir=queue_dir, with_praetorians=with_praetorians, **kwargs)
+    result = run_pipeline(db_path, queue_dir=queue_dir, **kwargs)
     prompts = []
     seen = set()
     while result.get("status") == "awaiting_agents":
@@ -546,51 +546,35 @@ def _official_citation(thesis):
 
 
 def _praetorian(prompt):
+    """List flaws. The returned object does not reject the lead."""
     price_run = _field(prompt, "PRICE_RUN")
     thesis = _block(prompt, "THESIS")
-    grade_issues = _grade_issues(thesis)
+    flaws = []
     if price_run == "priced-in":
-        assumptions = (
-            "The price-run classification is priced-in, so the claim that this is still early does not hold."
+        flaws.append(
+            {
+                "flaw": "The price-run classification is priced-in, so the claim that this is still early does not hold.",
+                "severity": "high",
+                "evidence": "The stored text marks the run as priced-in.",
+            }
         )
-        contradicting = "A priced-in classification is counter-evidence to treating the finding as an early lead."
-        stance = "agree"
-        counterevidence = (
-            "Agree: the stored text marks the run as priced-in, and that concern stands."
+    if not _official_citation(thesis):
+        flaws.append(
+            {
+                "flaw": "The thesis does not cite an SEC filing, an ASX announcement, or a company release.",
+                "severity": "high",
+                "evidence": "The thesis text has no official source host.",
+            }
         )
-        issues = 1
-    elif price_run in {"new", "acceleration"}:
-        assumptions = ""
-        contradicting = ""
-        stance = "agree"
-        counterevidence = f"Agree: the {price_run} classification matches the stored official-source figures."
-        issues = 0
-    else:
-        assumptions = ""
-        contradicting = ""
-        stance = ""
-        counterevidence = ""
-        issues = 0
-    if _official_citation(thesis):
-        bad_sources = ""
-    else:
-        bad_sources = "The thesis does not cite an SEC filing, an ASX announcement, or a company release."
-        issues += 1
-    if grade_issues:
-        issues += len(grade_issues)
-        listed = " ".join(grade_issues)
-        assumptions = (assumptions + " " + listed).strip()
-    elif "market cap unverified" in (thesis or "").casefold():
-        issues += 1
-        assumptions = (assumptions + " market cap unverified").strip()
-    return {
-        "assumptions_that_fail": assumptions,
-        "bad_sources": bad_sources,
-        "contradicting_research": contradicting,
-        "other_side": (
-            "The return fails if the named spending or order is cancelled before it reaches a filing the thesis can cite."
-        ),
-        "surviving_issues": issues,
-        "price_run_stance": stance,
-        "price_run_counterevidence": counterevidence,
-    }
+    grade_issues = _grade_issues(thesis)
+    for line in grade_issues:
+        flaws.append({"flaw": line, "severity": "moderate", "evidence": line})
+    if not grade_issues and "market cap unverified" in (thesis or "").casefold():
+        flaws.append(
+            {
+                "flaw": "market cap unverified",
+                "severity": "moderate",
+                "evidence": "The thesis states that the market cap is unverified.",
+            }
+        )
+    return {"flaws": flaws}

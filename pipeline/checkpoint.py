@@ -107,7 +107,6 @@ class SweepState:
         self.queue_dir = ""
         self.reports_dir = ""
         self.max_theses = 5
-        self.with_praetorians = False
         self.limit = None
         self.figures = 0
         self.deterministic_rejects = 0
@@ -149,7 +148,6 @@ def _dump_state(state):
         "queue_dir": state.queue_dir,
         "reports_dir": state.reports_dir,
         "max_theses": state.max_theses,
-        "with_praetorians": bool(state.with_praetorians),
         "limit": state.limit,
         "figures": state.figures,
         "deterministic_rejects": state.deterministic_rejects,
@@ -173,7 +171,6 @@ def _load_state(data):
     state.queue_dir = data.get("queue_dir") or ""
     state.reports_dir = data.get("reports_dir") or ""
     state.max_theses = int(data.get("max_theses") or 5)
-    state.with_praetorians = bool(data.get("with_praetorians"))
     state.limit = data.get("limit")
     state.figures = data.get("figures") or 0
     state.deterministic_rejects = data.get("deterministic_rejects") or 0

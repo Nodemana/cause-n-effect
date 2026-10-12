@@ -235,29 +235,14 @@ def _evidence_links(lead):
 
 
 def _praetorian_block(thesis):
-    review = getattr(thesis, "review", None)
-    if not review:
-        return "Stage skipped."
-    review = review or {}
-    issues = int(review.get("surviving_issues") or 0)
-    verdict = "accept" if issues == 0 else "revise"
-    stance = _text(review.get("price_run_stance")) or "none"
-    lines = [
-        f"**Verdict:** {verdict}",
-        f"**Price-run stance:** {stance}",
-        f"**Surviving issues:** {issues}",
-        "",
-        "**Objections**",
-        "",
-    ]
-    for label, key in (
-        ("Assumptions that fail", "assumptions_that_fail"),
-        ("Bad sources", "bad_sources"),
-        ("Contradicting research", "contradicting_research"),
-        ("Other side", "other_side"),
-        ("Price-run counterevidence", "price_run_counterevidence"),
-    ):
-        lines.append(f"- {label}: {_text(review.get(key)) or 'none'}")
+    review = getattr(thesis, "review", None) or {}
+    flaws = review.get("flaws") or []
+    if not flaws:
+        return "No flaws recorded."
+    lines = []
+    for item in flaws:
+        lines.append(f"- **{item.get('severity') or 'low'}** — {_text(item.get('flaw'))}")
+        lines.append(f"  Evidence: {_text(item.get('evidence'))}")
     return "\n".join(lines)
 
 

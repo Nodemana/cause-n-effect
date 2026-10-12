@@ -186,15 +186,13 @@ def praetorian_prompt(thesis_markdown, price_run):
             "THESIS_BEGIN",
             thesis_markdown,
             "THESIS_END",
-            "Critique only. Do not merge, rank, or add an assumptions list of your own.",
-            "The Centurion classified any prior price run first. "
-            "State whether you agree or disagree, with counter-evidence. "
-            "A priced-in call is a concern. Do not reject the lead automatically.",
-            "Reply with one JSON object and no other text. Keys: assumptions_that_fail, "
-            "bad_sources, contradicting_research, other_side, surviving_issues, "
-            "price_run_stance, price_run_counterevidence. "
-            "price_run_stance is agree, disagree, or empty when PRICE_RUN is none. "
-            "surviving_issues is an integer. Empty strings are allowed for the text keys.",
+            "Write every flaw in this thesis. Do not merge, rank, reject, or drop the lead.",
+            "The lead continues to ranking whether or not this list is empty.",
+            "Reply with one JSON object and no other text. Key: flaws.",
+            "flaws is a list of {flaw, severity, evidence}.",
+            "severity is low, moderate, or high.",
+            "flaw and evidence are non-empty strings.",
+            "An empty list means the thesis has no recorded flaw.",
         ]
     )
 

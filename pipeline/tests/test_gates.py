@@ -364,10 +364,12 @@ class GateTests(unittest.TestCase):
         )
         bad = fixture_response(failed)
         good = fixture_response(clean)
-        self.assertGreaterEqual(bad["surviving_issues"], 2)
-        self.assertIn("fail", bad["assumptions_that_fail"])
-        self.assertIn("missing evidence", bad["assumptions_that_fail"])
-        self.assertEqual(good["surviving_issues"], 0)
+        self.assertGreaterEqual(len(bad["flaws"]), 2)
+        text = " ".join(item["flaw"] + " " + item["evidence"] for item in bad["flaws"])
+        self.assertIn("fail", text)
+        self.assertIn("missing evidence", text)
+        self.assertTrue(all(item["severity"] in {"low", "moderate", "high"} for item in bad["flaws"]))
+        self.assertEqual(good["flaws"], [])
 
     def test_a_failed_hard_grade_is_rejected_before_ranking(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1191,9 +1193,9 @@ class GateTests(unittest.TestCase):
         )
         named = fixture_response(praetorian_prompt("The figure is an ASX announcement.", "new"))
         unofficial = fixture_response(praetorian_prompt("Source: https://example.com/quote", "new"))
-        self.assertEqual(cited["bad_sources"], "")
-        self.assertEqual(named["bad_sources"], "")
-        self.assertIn("does not cite", unofficial["bad_sources"])
+        self.assertEqual(cited["flaws"], [])
+        self.assertEqual(named["flaws"], [])
+        self.assertTrue(any("does not cite" in item["flaw"] for item in unofficial["flaws"]))
 
     def test_stub_novelty_timing_and_return_follow_the_figure(self):
 

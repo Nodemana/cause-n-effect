@@ -6,9 +6,9 @@ files and advances one judgement stage. Combining leads, a leftover Legate
 merge, and ranking stay in process and do not write task files.
 
 Stage order: significance, then one Centurion task per lead, a leftover Legate
-merge, centurion pass 2 only for that leftover, then ranking. Praetorian
-review is off unless the run passes `--with-praetorians`. Ranking
-writes at most `--max-theses` theses (default 5) to
+merge, centurion pass 2 only for that leftover, then a Praetorian critique,
+then ranking. The critique lists every flaw and does not drop a lead.
+Ranking writes at most `--max-theses` theses (default 5) to
 `data/reports/<run_id>.md`. Linkable
 capex, orders backlog, and debt raises become one capex-chain lead before
 that Centurion. Same-ticker insider and accumulation signals inside the
@@ -141,7 +141,6 @@ def run_pipeline(
     shares_client=None,
     queue_dir=None,
     max_theses=SHORTLIST_MAX,
-    with_praetorians=False,
 ):
     """Do the deterministic work and queue the next agent stage.
 
@@ -186,7 +185,6 @@ def run_pipeline(
         state.queue_dir = queue
         state.reports_dir = reports_directory(queue)
         state.max_theses = int(max_theses)
-        state.with_praetorians = bool(with_praetorians)
         state.limit = limit
         run_id = store.start_run(conn, started)
         state.run_id = run_id
@@ -562,7 +560,7 @@ def _apply_praetorian(conn, state, results):
         if data is None:
             raise AgentResultError(f"{lead_id}: missing praetorian result")
         _attach_review(lead, data)
-    ranked = _rank(final, state.max_theses, with_praetorians=True)
+    ranked = _rank(final, state.max_theses)
     state.final_ids = [lead.synthetic_id for lead in final]
     state.pending_persist = True
     state.stage = "praetorian"
@@ -573,7 +571,7 @@ def _apply_praetorian(conn, state, results):
 def _queue_praetorian(conn, state):
     final = _final_leads(state.leads, state.merged)
     state.final_ids = [lead.synthetic_id for lead in final]
-    if not final or not state.with_praetorians:
+    if not final:
         _queue_ranking(conn, state)
         return
     _write_praetorian_tasks(state, final)
@@ -583,7 +581,7 @@ def _queue_praetorian(conn, state):
 def _queue_ranking(conn, state):
     final = _final_leads(state.leads, state.merged)
     state.final_ids = [lead.synthetic_id for lead in final]
-    ranked = _rank(final, state.max_theses, with_praetorians=state.with_praetorians)
+    ranked = _rank(final, state.max_theses)
     state.pending_persist = True
     state.stage = "ranking"
     save_state(state)
@@ -808,71 +806,45 @@ def _final_leads(leads, merged):
 
 
 def _attach_review(lead, data):
-    stance = _text(data.get("price_run_stance")).casefold()
-    review = {
-        "assumptions_that_fail": _text(data.get("assumptions_that_fail")),
-        "bad_sources": _text(data.get("bad_sources")),
-        "contradicting_research": _text(data.get("contradicting_research")),
-        "other_side": _text(data.get("other_side")),
-        "surviving_issues": max(0, int(data.get("surviving_issues") or 0)),
-        "price_run_stance": stance if stance in {"agree", "disagree"} else "",
-        "price_run_counterevidence": _text(data.get("price_run_counterevidence")),
-    }
-    _note_unverified_cap(lead, review)
-    _note_significance(lead, review)
-    lead.thesis.review = review
-    lead.thesis.surviving_issues = review["surviving_issues"]
+    """Store the critique. The flaw list does not change which leads continue."""
+    flaws = []
+    for item in data.get("flaws") or []:
+        flaws.append(
+            {
+                "flaw": _text(item.get("flaw")),
+                "severity": _text(item.get("severity")).casefold(),
+                "evidence": _text(item.get("evidence")),
+            }
+        )
+    lead.thesis.review = {"flaws": flaws}
 
 
-def _note_significance(lead, review):
-    """One routine or on_time rating stays on the lead as a surviving issue."""
-    issue = getattr(lead, "significance_issue", None)
-    if not issue:
-        return
-    if issue.casefold() in review["assumptions_that_fail"].casefold():
-        return
-    review["assumptions_that_fail"] = (review["assumptions_that_fail"] + " " + issue).strip()
-    review["surviving_issues"] += 1
-
-
-def _note_unverified_cap(lead, review):
-    if not getattr(lead, "market_cap_unverified", False):
-        return
-    if UNVERIFIED in review["assumptions_that_fail"].casefold():
-        return
-    review["assumptions_that_fail"] = (review["assumptions_that_fail"] + " " + UNVERIFIED).strip()
-    review["surviving_issues"] += 1
-
-
-def _rank(final, max_theses=SHORTLIST_MAX, *, with_praetorians=False):
+def _rank(final, max_theses=SHORTLIST_MAX):
     cap = SHORTLIST_MAX if max_theses is None else int(max_theses)
     reviewed = []
     for lead in final:
         if lead.thesis is None:
             continue
-        if with_praetorians:
-            if lead.thesis.review is None:
-                continue
-        else:
-            lead.thesis.review = None
-            lead.thesis.surviving_issues = _issues_without_praetorian(lead)
+        lead.thesis.surviving_issues = _issues_without_praetorian(lead)
         reviewed.append(lead)
     scored = [( _rank_score(lead), lead) for lead in reviewed]
     scored.sort(key=lambda item: _rank_key(item[1], item[0]))
     for index, (score, lead) in enumerate(scored, start=1):
         lead.rank = index
         lead.presented = index <= cap
+        flaws = (getattr(lead.thesis, "review", None) or {}).get("flaws") or []
         lead.rank_rationale = (
             f"Rank {index}: score {score:.1f} from ROI {lead.thesis.roi or lead.thesis.roi_pct}, "
             f"growth and magnitude, minus {lead.thesis.surviving_issues} surviving issues; "
             f"timeframe {lead.thesis.timeframe_days} days, "
-            f"{lead.thesis.risk_count} risks."
+            f"{lead.thesis.risk_count} risks. "
+            f"Praetorian flaws recorded: {len(flaws)}."
         )
     return [lead for _score, lead in scored]
 
 
 def _deterministic_notes(lead):
-    """Soft gates recorded on the thesis when Praetorian review is off."""
+    """Soft gates recorded on the thesis. Praetorian flaws are not in this list."""
     notes = []
     if getattr(lead, "market_cap_unverified", False):
         notes.append(UNVERIFIED)
@@ -885,7 +857,7 @@ def _deterministic_notes(lead):
 
 
 def _issues_without_praetorian(lead):
-    """Soft gates that are not a Praetorian verdict."""
+    """Soft gates. A Praetorian flaw does not add to this count."""
     return len(_deterministic_notes(lead))
 
 
@@ -1375,18 +1347,14 @@ def _evidence(members, id_map):
 
 
 def _critique_body(review):
-    return "\n\n".join(
-        [
-            "## Assumptions that fail\n\n" + review["assumptions_that_fail"],
-            "## Bad or non-official sources\n\n" + review["bad_sources"],
-            "## Contradicting research\n\n" + review["contradicting_research"],
-            "## The other side of the claim\n\n" + review["other_side"],
-            "## Price-run classification\n\n"
-            + (review.get("price_run_stance") or "")
-            + "\n"
-            + (review.get("price_run_counterevidence") or ""),
-        ]
-    )
+    flaws = review.get("flaws") or []
+    if not flaws:
+        return "No flaws recorded."
+    lines = ["## Flaws", ""]
+    for item in flaws:
+        lines.append(f"- {item['severity']}: {item['flaw']}")
+        lines.append(f"  Evidence: {item['evidence']}")
+    return "\n".join(lines)
 
 
 def _party_list(value):

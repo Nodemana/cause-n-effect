@@ -1,5 +1,7 @@
 """Writes for one pipeline run. Search for the reject log lives here too."""
 
+import json
+
 from shared.pipeline_store import lodge_lead, record_criterion_result
 from shared.store import allocate_run_id, utc_now
 
@@ -304,36 +306,31 @@ def set_merge_rank(conn, merge_id, rank):
 
 
 def insert_review(conn, run_id, thesis_id, review, critique_body, written_at):
+    """Store the flaw list. The critique verdict stays accept so the lead is not rejected."""
+    flaws = review.get("flaws") or []
     with conn:
         conn.execute(
             """
             INSERT INTO praetorian_reviews (
                 thesis_id, run_id, assumptions_that_fail, bad_sources,
                 contradicting_research, other_side, surviving_issues,
-                price_run_stance, price_run_counterevidence, written_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                price_run_stance, price_run_counterevidence, flaws, written_at
+            ) VALUES (?, ?, '', '', '', '', 0, NULL, '', ?, ?)
             """,
             (
                 thesis_id,
                 run_id,
-                review["assumptions_that_fail"],
-                review["bad_sources"],
-                review["contradicting_research"],
-                review["other_side"],
-                int(review["surviving_issues"]),
-                review.get("price_run_stance") or None,
-                review.get("price_run_counterevidence") or "",
+                json.dumps(flaws, sort_keys=True),
                 written_at,
             ),
         )
-        verdict = "accept" if int(review["surviving_issues"]) == 0 else "revise"
         conn.execute(
             """
             INSERT INTO critiques (
                 thesis_id, run_id, critique, verdict, round, written_at
-            ) VALUES (?, ?, ?, ?, 1, ?)
+            ) VALUES (?, ?, ?, 'accept', 1, ?)
             """,
-            (thesis_id, run_id, critique_body, verdict, written_at),
+            (thesis_id, run_id, critique_body, written_at),
         )
 
 

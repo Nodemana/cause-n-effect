@@ -91,26 +91,26 @@ CENTURION_SCHEMA = {
     },
 }
 
+_FLAW_SEVERITIES = ("low", "moderate", "high")
+
 PRAETORIAN_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": [
-        "assumptions_that_fail",
-        "bad_sources",
-        "contradicting_research",
-        "other_side",
-        "surviving_issues",
-        "price_run_stance",
-        "price_run_counterevidence",
-    ],
+    "required": ["flaws"],
     "properties": {
-        "assumptions_that_fail": {"type": "string"},
-        "bad_sources": {"type": "string"},
-        "contradicting_research": {"type": "string"},
-        "other_side": {"type": "string"},
-        "surviving_issues": {"type": "integer", "minimum": 0},
-        "price_run_stance": {"enum": ["agree", "disagree", ""]},
-        "price_run_counterevidence": {"type": "string"},
+        "flaws": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["flaw", "severity", "evidence"],
+                "properties": {
+                    "flaw": {"type": "string", "minLength": 1},
+                    "severity": {"enum": list(_FLAW_SEVERITIES)},
+                    "evidence": {"type": "string", "minLength": 1},
+                },
+            },
+        },
     },
 }
 
@@ -299,23 +299,27 @@ def _validate_centurion(lead_id, data):
 
 
 def _validate_praetorian(lead_id, data):
-    required = set(PRAETORIAN_SCHEMA["required"])
-    errors = _unexpected(lead_id, data, required)
-    errors.extend(_missing(lead_id, data, required))
-    for key in (
-        "assumptions_that_fail",
-        "bad_sources",
-        "contradicting_research",
-        "other_side",
-        "price_run_counterevidence",
-    ):
-        _string(errors, lead_id, data, key)
-    if "surviving_issues" in data and not _is_int(data.get("surviving_issues")):
-        errors.append(f"{lead_id}: surviving_issues must be an integer")
-    elif "surviving_issues" in data and data["surviving_issues"] < 0:
-        errors.append(f"{lead_id}: surviving_issues must be zero or positive")
-    if "price_run_stance" in data and data.get("price_run_stance") not in {"agree", "disagree", ""}:
-        errors.append(f"{lead_id}: price_run_stance must be agree, disagree, or empty")
+    errors = _unexpected(lead_id, data, {"flaws"})
+    errors.extend(_missing(lead_id, data, {"flaws"}))
+    flaws = data.get("flaws")
+    if "flaws" not in data:
+        return errors
+    if not isinstance(flaws, list):
+        errors.append(f"{lead_id}: flaws must be a list")
+        return errors
+    for index, item in enumerate(flaws):
+        prefix = f"{lead_id}: flaws[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        errors.extend(_unexpected(prefix, item, {"flaw", "severity", "evidence"}))
+        errors.extend(_missing(prefix, item, {"flaw", "severity", "evidence"}))
+        if "flaw" in item and (not isinstance(item.get("flaw"), str) or not item["flaw"].strip()):
+            errors.append(f"{prefix}: flaw must be a non-empty string")
+        if "severity" in item and item.get("severity") not in _FLAW_SEVERITIES:
+            errors.append(f"{prefix}: severity must be {_listed(_FLAW_SEVERITIES)}")
+        if "evidence" in item and (not isinstance(item.get("evidence"), str) or not item["evidence"].strip()):
+            errors.append(f"{prefix}: evidence must be a non-empty string")
     return errors
 
 

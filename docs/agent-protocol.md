@@ -28,8 +28,8 @@ A market cap is shares outstanding times an official USD share-price figure alre
 2. **centurion_1** — one task per lead after the deterministic combine. A capex chain (capex, orders backlog, and debt where they link) is one lead. Smart money (insider and accumulation on the same ticker inside the window) is one lead. Macro stays one lead, and its task lists related findings from the other two. An unlinked figure stays a single lead.
 3. **Legate merge** — deterministic, no task file. Chain types are not merged again. A leftover cross-group link, such as capex with insider buying, becomes one merged lead.
 4. **centurion_2** — one task per leftover merged lead. A sweep with no leftover merge skips this stage.
-5. **praetorian** — off unless `run` was started with `--with-praetorians`. When on, one task per lead that still has a thesis (the chain or smart-money lead, a single lead, or a leftover merge).
-6. **ranking** — deterministic. Score is expected return, plus growth and magnitude, minus 8 points per surviving issue. With Praetorians off, that issue count is the significance soft issue, an unverified market cap, and an open backlog growth question (a large order with no prior comparison). It does not read a Praetorian verdict. With `--with-praetorians`, the count is the ingested review. The top of the list, at most `--max-theses` (default 5), gets a pending decision and a section in `data/reports/<run_id>.md`. No task file.
+5. **praetorian** — one task per lead that still has a thesis (the chain or smart-money lead, a single lead, or a leftover merge). The result is a list of flaws. Each flaw has `flaw`, `severity` (`low`, `moderate`, or `high`), and `evidence`. An empty list is valid. The critique does not reject, drop, or filter a lead.
+6. **ranking** — deterministic. Score is expected return, plus growth and magnitude, minus 8 points per deterministic surviving issue (a significance soft issue, an unverified market cap, or an open backlog growth question). Praetorian flaws are not part of that count and do not remove a lead. The top of the list, at most `--max-theses` (default 5), gets a pending decision and a section in `data/reports/<run_id>.md`. Each section includes that thesis's full flaw list. No task file.
 
 A stage with nothing left to judge is skipped. The run then finishes with zero rankings and zero decisions.
 
@@ -81,10 +81,10 @@ The Centurion still writes one result file. There is no shared evidence file and
 
 ### Praetorian
 
-`assumptions_that_fail`, `bad_sources`, `contradicting_research`, `other_side`, and `price_run_counterevidence` are strings and may be empty. `surviving_issues` is an integer, zero or greater. `price_run_stance` is `agree`, `disagree`, or empty.
+`flaws` is an array of `{flaw, severity, evidence}`. `severity` is `low`, `moderate`, or `high`. `flaw` and `evidence` are non-empty strings. The array may be empty. Extra keys are rejected. The list is stored and shown. It does not reject the lead.
 
 ## After the last stage
 
-Ranking reads the ingested expected return, timeframe, and surviving issues. It writes `rankings` for every reviewed lead and a `pending` row in `decisions` for each presented lead. `--max-theses` on `run` caps that presented list (default 5). The same list is written to `data/reports/<run_id>.md` when the queue is `data/agent_queue` (the report directory is the queue directory's sibling `reports/`). Each section has the thesis, the cause to effect chain, the tickers, the evidence links, the Praetorian verdict and objections (or `Stage skipped.` when that stage is off), and the macro context. `pipeline_runs.status` becomes `complete` and `stage` becomes `ranking`. `provider` is `agent`. Token columns stay at 0.
+Ranking reads the ingested expected return, timeframe, and the deterministic surviving issues. It writes `rankings` for every lead that still has a thesis and a `pending` row in `decisions` for each presented lead. A Praetorian flaw does not remove a row from `rankings`. `--max-theses` on `run` caps that presented list (default 5). The same list is written to `data/reports/<run_id>.md` when the queue is `data/agent_queue` (the report directory is the queue directory's sibling `reports/`). Each section has the thesis, the cause to effect chain, the tickers, the evidence links, the full Praetorian flaw list (severity, flaw, and evidence), and the macro context. `pipeline_runs.status` becomes `complete` and `stage` becomes `ranking`. `provider` is `agent`. Token columns stay at 0.
 
 A judgement reject is stored with `rejection_stage` `agent`. A threshold or dedupe reject stays `deterministic` and is written by `run`, before any agent task.

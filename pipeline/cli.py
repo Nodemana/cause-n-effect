@@ -74,7 +74,7 @@ def build_parser():
             "The figures summary is the lead figures used after --limit. "
             "Ranking later writes at most --max-theses pending decisions and "
             "data/reports/<run_id>.md beside the queue directory. "
-            "Praetorian review is off unless --with-praetorians is passed."
+            "A Praetorian critique lists every flaw in each thesis and does not drop a lead."
         ),
     )
     run.add_argument("--db", required=True, help="SQLite database that holds scout figures")
@@ -98,15 +98,6 @@ def build_parser():
         "--macro-cache",
         default=None,
         help="JSON file with a summary key. Missing file skips macro context on a capex chain and on a later merge",
-    )
-    run.add_argument(
-        "--with-praetorians",
-        action="store_true",
-        help=(
-            "Queue a Praetorian review after the Centurion passes and before ranking. "
-            "Off by default. Ranking then uses that review. "
-            "Without this flag, ranking uses the Centurion thesis and does not read a Praetorian verdict."
-        ),
     )
     run.add_argument(
         "--max-theses",
@@ -142,8 +133,8 @@ def build_parser():
             "Same-ticker insider and accumulation signals inside the window are one smart-money lead. "
             "A macro lead stays separate, and its Centurion task lists related findings from those scouts. "
             "A leftover cross-group merge, when one exists, gets a second Centurion pass. "
-            "Praetorian runs only when the sweep was started with --with-praetorians. "
-            "Ranking and pending decisions follow. "
+            "A Praetorian critique then lists every flaw. It does not reject or drop a lead. "
+            "Ranking and pending decisions follow. The flaw list is shown in the report and does not remove a lead from ranking. "
             "Ranking writes at most the run's --max-theses theses to data/reports/<run_id>.md. "
             "Merge and ranking do not write task files. "
             "When SEC_CONTACT_EMAIL is set, the significance ingest names counterparties "
@@ -188,7 +179,6 @@ def _run(parser, args):
         shares_client=shares_client,
         queue_dir=args.queue_dir,
         max_theses=args.max_theses,
-        with_praetorians=args.with_praetorians,
     )
     _print_result(result)
     return 0

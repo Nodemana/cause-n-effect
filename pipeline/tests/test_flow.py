@@ -68,9 +68,10 @@ class PipelineFlowTests(unittest.TestCase):
             self.assertIn("**Tickers:**", report)
             self.assertIn("### Evidence", report)
             self.assertIn("### Praetorian", report)
-            self.assertIn("Stage skipped.", report)
+            self.assertIn("No flaws recorded.", report)
+            self.assertNotIn("Stage skipped.", report)
             self.assertNotIn("**Verdict:**", report)
-            self.assertFalse(any(prompt.startswith("TASK: praetorian") for prompt in result["prompts"]))
+            self.assertTrue(any(prompt.startswith("TASK: praetorian") for prompt in result["prompts"]))
             self.assertIn("### Macro context", report)
             self.assertIn("Sweep macro context: none", report)
 
@@ -156,7 +157,7 @@ class PipelineFlowTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            result = run_with_fixture(path, macro_cache=str(cache), with_praetorians=True)
+            result = run_with_fixture(path, macro_cache=str(cache))
             conn = connect(path)
             try:
                 merged = conn.execute(
@@ -178,22 +179,27 @@ class PipelineFlowTests(unittest.TestCase):
                 )
                 review = conn.execute(
                     """
-                    SELECT r.surviving_issues, r.assumptions_that_fail,
-                           r.price_run_stance, r.price_run_counterevidence
+                    SELECT r.flaws, k.rank, k.surviving_issues
                     FROM praetorian_reviews AS r
                     JOIN theses AS t ON t.thesis_id = r.thesis_id
                     JOIN leads AS l ON l.lead_id = t.lead_id
+                    JOIN rankings AS k ON k.lead_id = l.lead_id
                     WHERE l.source_scout = 'capex_chain'
                     """
                 ).fetchone()
-                self.assertGreaterEqual(review["surviving_issues"], 1)
-                self.assertIn("priced-in", review["assumptions_that_fail"])
-                self.assertEqual(review["price_run_stance"], "agree")
-                self.assertIn("priced-in", review["price_run_counterevidence"])
+                flaws = json.loads(review["flaws"])
+                self.assertTrue(flaws)
+                priced = next(item for item in flaws if "priced-in" in item["flaw"])
+                self.assertEqual(priced["severity"], "high")
+                self.assertIn("priced-in", priced["evidence"])
+                self.assertEqual(review["rank"], 1)
+                self.assertEqual(review["surviving_issues"], 0)
                 report = Path(result["report"]).read_text(encoding="utf-8")
                 self.assertIn("Policy rates unchanged.", report)
                 self.assertIn("### Macro context", report)
                 self.assertIn("priced-in", report)
+                self.assertIn("**high**", report)
+                self.assertIn("Evidence:", report)
             finally:
                 conn.close()
 
@@ -338,9 +344,13 @@ class PipelineFlowTests(unittest.TestCase):
                 self.assertNotIn("JSON cache should not be used.", merged["macro_context"])
                 self.assertIn("Macro context used:", merged["assumptions"])
                 self.assertNotIn("JSON cache should not be used.", merged["assumptions"])
-                self.assertEqual(
+                self.assertGreater(
                     conn.execute("SELECT COUNT(*) FROM praetorian_reviews").fetchone()[0],
                     0,
+                )
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM praetorian_reviews").fetchone()[0],
+                    conn.execute("SELECT COUNT(*) FROM rankings").fetchone()[0],
                 )
             finally:
                 conn.close()
@@ -567,7 +577,8 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertIn("Globex Power", merged["thesis_text"])
         self.assertIn("Amazon", merged["thesis_text"])
         self.assertEqual(merged["roi"], "27%")
-        self.assertEqual(reviews, 0)
+        self.assertGreater(reviews, 0)
+        self.assertEqual(reviews, result["rankings"])
         self.assertEqual(ranking["rank"], 1)
         self.assertEqual(ranking["source_scout"], "capex_chain")
         self.assertEqual({item["source_url"] for item in evidence}, {AMZN_URL, GEV_URL})
@@ -650,7 +661,7 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertIn("awaiting_agents", completed.stdout)
         self.assertIn("agent_queue", completed.stdout)
         self.assertIn("--max-theses", completed.stdout)
-        self.assertIn("--with-praetorians", completed.stdout)
+        self.assertNotIn("--with-praetorians", completed.stdout)
         self.assertIn("data/reports", completed.stdout)
         self.assertNotIn("TODO", completed.stdout)
         self.assertNotIn("yahoo", completed.stdout.casefold())
@@ -822,6 +833,7 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertEqual(names.count("005_deal_party_role.sql"), 1)
         self.assertEqual(names.count("006_agent_handoff.sql"), 1)
         self.assertEqual(names.count("008_macro_leads.sql"), 1)
+        self.assertEqual(names.count("009_praetorian_flaws.sql"), 1)
         self.assertNotIn("007_prices_cleanup.sql", names)
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         self.assertIn("lead_counterparties", tables)
@@ -874,7 +886,10 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertEqual(tiny["significance_timing"], "early")
         self.assertIn("novelty routine", tiny["assumptions"])
         self.assertGreaterEqual(tiny["surviving_issues"], 1)
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM praetorian_reviews").fetchone()[0], 0)
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM praetorian_reviews").fetchone()[0],
+            conn.execute("SELECT COUNT(*) FROM rankings").fetchone()[0],
+        )
         self.assertEqual(rows["UNV"]["reason"], "unverified figure")
         self.assertIsNone(rows["UNV"]["significance_magnitude"])
         self.assertEqual(rows["NWT"]["significance_magnitude"], "small")
@@ -936,7 +951,10 @@ class PipelineFlowTests(unittest.TestCase):
             )
         }
         self.assertEqual(reviewed, {"capex_chain", "insider-buying"})
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM praetorian_reviews").fetchone()[0], 0)
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM praetorian_reviews").fetchone()[0],
+            conn.execute("SELECT COUNT(*) FROM rankings").fetchone()[0],
+        )
 
     def _assert_merge_rank_and_decisions(self, conn):
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM legate_merges").fetchone()[0], 0)
