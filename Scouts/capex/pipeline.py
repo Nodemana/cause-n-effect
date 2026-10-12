@@ -19,10 +19,9 @@ def run(db_path, facts, guidance, announcements, started_at, seen_at, notes=None
     figures.extend(figures_from_facts(facts, seen_at))
     figures.extend(figures_from_guidance(guidance, seen_at))
     figures.extend(figures_from_asx(announcements, seen_at))
-    run_id = f"{started_at[:10]}-capex"
     conn = connect(db_path)
     try:
-        save_run(conn, run_id, "capex", started_at, figures, notes=notes)
+        run_id = save_run(conn, "capex", started_at, figures, notes=notes)
     finally:
         conn.close()
     return {"run_id": run_id, "figures": len(figures)}

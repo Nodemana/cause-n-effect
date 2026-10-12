@@ -104,11 +104,10 @@ def main(argv=None):
         item["period"] = item.get("period") or ""
         figures.append(item)
     figures = _unique_figures(figures)
-    run_id = f"{seen}-insider-buying"
     notes = f"records={len(table['records'])} review={len(table['review'])}"
     conn = connect(db_path)
     try:
-        save_run(conn, run_id, "insider-buying", started, figures, notes=notes)
+        run_id = save_run(conn, "insider-buying", started, figures, notes=notes)
     finally:
         conn.close()
     print(f"run {run_id} figures {len(figures)} review {len(table['review'])}")

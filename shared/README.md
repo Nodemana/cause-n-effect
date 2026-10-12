@@ -23,6 +23,6 @@ asx_client().get("https://www.asx.com.au/...")
 
 ## History
 
-`schema.sql` is the shared `runs`, `figures`, `leads`, and `changes` store. `store.py` applies it and replaces one run's figures. Debt-raise adds its own analytics tables on top of the same `runs` row. Do not commit a database file.
+`schema.sql` is the shared `runs`, `figures`, `leads`, and `changes` store. `store.py` applies it. Each live run inserts a new id, the UTC date, the UTC time as HHMMSS, and the scout name (`2026-10-12-143052-capex`), plus that run's figures. A later run does not update or delete an earlier run's figures. Ids already stored, including a date and a scout name with no time, stay readable. Debt-raise adds its own analytics tables on top of the same `runs` row. Do not commit a database file.
 
 Repository layout, setting `SEC_CONTACT_EMAIL`, and the scout test commands are in `docs/setup.md`.

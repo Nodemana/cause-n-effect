@@ -1,10 +1,14 @@
 """Screen checks. Dates are fixed so the window does not depend on today."""
 
+import sqlite3
+import tempfile
 import unittest
 from datetime import date
+from pathlib import Path
 
 from Scouts.accumulation.filters import ScreenConfig, has_activist_purpose, screen
 from Scouts.accumulation.model import Position
+from Scouts.accumulation.pipeline import store_run
 
 AS_OF = date(2026, 10, 1)
 SECTORS = {"NWND": "materials", "BRMB": "health", "CPRL": "materials"}
@@ -200,6 +204,26 @@ class FilterTests(unittest.TestCase):
                 "matched_filters",
             },
         )
+
+    def test_same_day_runs_keep_their_figures(self):
+        morning = screen([pos(stake_pct=7.5)], config(), SECTORS)
+        afternoon = screen(
+            [pos(stake_pct=9.0, document_url="https://www.sec.gov/Archives/later")],
+            config(),
+            SECTORS,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            first = store_run(db, morning, "2026-10-12T08:15:00Z")
+            second = store_run(db, afternoon, "2026-10-12T18:45:09Z")
+            self.assertEqual(first["run_id"], "2026-10-12-081500-accumulation")
+            self.assertEqual(second["run_id"], "2026-10-12-184509-accumulation")
+            conn = sqlite3.connect(db)
+            values = {row[0]: row[1] for row in conn.execute("SELECT run_id, value FROM figures")}
+            self.assertEqual(values[first["run_id"]], 7.5)
+            self.assertEqual(values[second["run_id"]], 9.0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 2)
+            conn.close()
 
 
 if __name__ == "__main__":

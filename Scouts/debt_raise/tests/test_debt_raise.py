@@ -126,7 +126,7 @@ class DebtRaiseTests(unittest.TestCase):
             self.assertEqual(summary["filings_seen"], 4)
             self.assertEqual(summary["resolved_by_cheap_filter"], 1)
             self.assertEqual(summary["sent_to_full_document"], 3)
-            self.assertEqual(summary["run_id"], "2026-03-04-debt-raise")
+            self.assertEqual(summary["run_id"], "2026-03-04-120000-debt-raise")
             self.assertEqual(summary["score_histogram"]["0"], 2)
             self.assertEqual(summary["score_histogram"]["3"], 1)
             self.assertEqual(summary["score_histogram"]["5+"], 1)
@@ -236,6 +236,36 @@ class DebtRaiseTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(mid[0], 3)
             self.assertEqual(mid[1], "cheap_filter")
+            conn.close()
+
+    def test_same_day_runs_keep_their_figures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            morning = pipeline.run(
+                [_filing(ACC_CENTER, "8-K", "Financing for data center construction.", ["1.01"])],
+                db,
+                documents={ACC_CENTER: "The facility funds data center construction of US$180 million."},
+                started_at="2026-03-04T08:00:00Z",
+            )
+            afternoon = pipeline.run(
+                [_filing(ACC_CAPEX, "424B2", "Proceeds fund capital expenditures of US$40 million at the plant.")],
+                db,
+                documents={ACC_CAPEX: "Proceeds fund capital expenditures of US$40 million at the plant."},
+                started_at="2026-03-04T15:30:45Z",
+            )
+            self.assertEqual(morning["run_id"], "2026-03-04-080000-debt-raise")
+            self.assertEqual(afternoon["run_id"], "2026-03-04-153045-debt-raise")
+            conn = sqlite3.connect(db)
+            first_value = conn.execute(
+                "SELECT value FROM figures WHERE run_id = ?", (morning["run_id"],)
+            ).fetchone()[0]
+            second_value = conn.execute(
+                "SELECT value FROM figures WHERE run_id = ?", (afternoon["run_id"],)
+            ).fetchone()[0]
+            self.assertEqual(first_value, 180_000_000)
+            self.assertEqual(second_value, 40_000_000)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 2)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM debt_scout_runs").fetchone()[0], 2)
             conn.close()
 
     def test_fetcher_uses_index_text_and_pages_without_downloading(self):
