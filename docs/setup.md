@@ -59,7 +59,7 @@ python3 -m Scouts.orders_backlog.live --db /tmp/cause-n-effect.sqlite
 python3 -m Scouts.accumulation.live --db /tmp/cause-n-effect.sqlite
 ```
 
-`--since` and `--until` bound the debt-raise SEC window. `--tickers` is a comma-separated list and also filters that scout's ASX watchlist. Capex `--quarters` keeps companyfacts whose period end falls in the last N quarters (default 8).
+`--since` and `--until` bound the debt-raise SEC window. `--tickers` is a comma-separated list and also filters that scout's ASX watchlist. Capex `--quarters` keeps companyfacts whose period end falls in the last N quarters (default 8). Insider buying `--limit` caps Form 4 filings (default 50). Every live command accepts `--help` and `-h`, prints usage, and exits before any request.
 
 Offline SEC checks use a fixture instead of EDGAR and do not open a network connection:
 

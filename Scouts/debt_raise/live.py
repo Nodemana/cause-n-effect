@@ -13,6 +13,7 @@ parameter. A 424B hit with no ticker in the index is labeled from that CIK.
 `--limit` caps in-scope SEC filings (default 50).
 """
 
+import argparse
 import json
 import os
 import sqlite3
@@ -40,13 +41,34 @@ def sec_block_message():
     return "SEC_CONTACT_EMAIL is missing. No SEC request was sent."
 
 
-def _option(args, name):
-    if name not in args:
-        return None
-    index = args.index(name)
-    if index + 1 >= len(args) or str(args[index + 1]).startswith("--"):
-        raise SystemExit(f"{name} needs a value")
-    return args[index + 1]
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="python3 -m Scouts.debt_raise.live",
+        description="Store debt-raise figures from SEC filings and the ASX watchlist.",
+    )
+    parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite history path")
+    parser.add_argument("--sec-fixture", help="score this filings JSON instead of contacting EDGAR")
+    parser.add_argument("--no-asx", action="store_true", help="do not request ASX announcements")
+    parser.add_argument("--since", help="SEC window start date, YYYY-MM-DD")
+    parser.add_argument("--until", help="SEC window end date, YYYY-MM-DD (default today)")
+    parser.add_argument("--tickers", help="comma-separated tickers to keep")
+    parser.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=DEFAULT_LIMIT,
+        help=f"maximum in-scope SEC filings (default {DEFAULT_LIMIT})",
+    )
+    return parser
+
+
+def _positive_int(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("--limit must be an integer") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError("--limit must be at least 1")
+    return number
 
 
 def _tickers(value):
@@ -56,23 +78,8 @@ def _tickers(value):
     return rows or None
 
 
-def _limit(args):
-    raw = _option(args, "--limit")
-    if raw is None:
-        return DEFAULT_LIMIT
-    try:
-        value = int(raw)
-    except ValueError:
-        raise SystemExit("--limit must be an integer") from None
-    if value < 1:
-        raise SystemExit("--limit must be at least 1")
-    return value
-
-
-def _window(args):
+def _window(since, until):
     """SEC date window. `--until` defaults to today; `--since` defaults to three days earlier."""
-    until = _option(args, "--until")
-    since = _option(args, "--since")
     end = until or date.today().isoformat()
     date.fromisoformat(end)
     if since:
@@ -83,11 +90,11 @@ def _window(args):
 
 
 def main(argv=None):
-    args = list(sys.argv[1:] if argv is None else argv)
-    db_path = Path(_option(args, "--db") or DEFAULT_DB)
-    tickers = _tickers(_option(args, "--tickers"))
+    args = build_parser().parse_args(argv)
+    db_path = Path(args.db)
+    tickers = _tickers(args.tickers)
     filings = []
-    fixture = _option(args, "--sec-fixture")
+    fixture = args.sec_fixture
     if fixture:
         fixture = Path(fixture)
         payload = json.loads(fixture.read_text(encoding="utf-8"))
@@ -102,15 +109,15 @@ def main(argv=None):
         if blocked:
             print(blocked)
         else:
-            start, end = _window(args)
-            limit = _limit(args)
+            start, end = _window(args.since, args.until)
+            limit = args.limit
             scope = f" for {', '.join(tickers)}" if tickers else ""
             print(f"SEC window {start} to {end}, at most {limit} in-scope filings{scope}")
             found, missing = fetcher.collect_window(start, end, tickers=tickers, limit=limit)
             if missing:
                 print(f"unmapped tickers: {', '.join(missing)}")
             filings.extend(found)
-    if "--no-asx" not in args:
+    if not args.no_asx:
         companies = json.loads(UNIVERSE.read_text(encoding="utf-8"))["companies"]
         if tickers:
             wanted = {(ticker.upper().removesuffix(".AX")) for ticker in tickers}

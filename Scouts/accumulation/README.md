@@ -22,7 +22,7 @@ The ASX announcements feed is undocumented, returns only the latest five announc
 
 ## Run
 
-The live command writes screened stakes into the shared figures table and exits nonzero when it stores no figure. A review-flagged stake is stored with `verified` 0. SEC 13D/13G requests wait until `SEC_CONTACT_EMAIL` is set. The offline check uses the Schedule 13D fixture.
+The live command writes screened stakes into the shared figures table and exits nonzero when it stores no figure. A figure is `verified` when the primary document's cover page yielded both the percent of class and the share count. Currency is USD for an SEC stake and AUD for an ASX stake. The source URL is that primary document, and the accession is stored with it. Warrant, unit, and OTC-only tickers (such as a `NUAIW` warrant line or an `FMTOF` OTC foreign line) are skipped unless `universe_sec.json` lists them; a common-stock ticker for the same CIK is preferred. SEC 13D/13G requests wait until `SEC_CONTACT_EMAIL` is set. The offline check uses the Schedule 13D fixture. `--help` prints usage and does not open a connection.
 
 ```bash
 python3 -m Scouts.accumulation.live --db /tmp/cause-n-effect.sqlite
