@@ -20,7 +20,7 @@ from shared.shares import cache_shares_outstanding, companies_from_figures
 from shared.store import utc_now
 
 from pipeline.budget import TokenBudget
-from pipeline.counterparties import enrich_leads
+from pipeline.counterparties import enrich_leads, is_common_heading
 from pipeline.llm import parse_json_object, resolve_provider
 from pipeline.load import is_quarter_figure, load_latest_figures
 from pipeline.marketcap import UNVERIFIED
@@ -641,6 +641,7 @@ def _thesis_from_model(data, lead, criteria, pass_number, macro):
     thesis.roi_pct = _roi_pct(data)
     thesis.timeframe_days = _int_or_none(data.get("timeframe_days"))
     data = _apply_growth_evidence(data, lead, thesis)
+    data = _ensure_named_parties(data, lead)
     if pass_number == 2:
         price_run = _text(data.get("price_run"))
         thesis.price_run = price_run if price_run in _PRICE_RUNS else None
@@ -663,6 +664,36 @@ def _apply_growth_evidence(data, lead, thesis):
         data = dict(data)
         data["thesis"] = (body + " " + text).strip()
     return data
+
+
+def _ensure_named_parties(data, lead):
+    """Keep the named-party sentence when the model omits it."""
+    body = _text(data.get("thesis"))
+    folded = body.casefold()
+    extra = []
+    if getattr(lead, "lead_type", "") == "capex" and "suppliers named:" not in folded:
+        extra.append(_named_sentence("Suppliers named", data.get("suppliers")))
+    if getattr(lead, "lead_type", "") == "orders_backlog" and "customers named:" not in folded:
+        extra.append(_named_sentence("Customers named", data.get("customers")))
+    if not extra:
+        return data
+    data = dict(data)
+    data["thesis"] = (body + " " + " ".join(extra)).strip()
+    return data
+
+
+def _named_sentence(label, items):
+    names = []
+    for item in items or []:
+        if isinstance(item, dict):
+            name = _text(item.get("name"))
+        else:
+            name = _text(item)
+        if name and not is_common_heading(name):
+            names.append(name)
+    if names:
+        return f"{label}: {', '.join(names)}."
+    return f"{label}: none found."
 
 
 def _render(data, thesis, assumptions, risks):
@@ -786,8 +817,9 @@ def _thesis_parties(thesis, role):
     names = set()
     tickers = set()
     for item in getattr(thesis, role):
-        if item.get("name"):
-            names.add(normalise_name(item["name"]))
+        name = item.get("name")
+        if name and not is_common_heading(name):
+            names.add(normalise_name(name))
         if item.get("ticker"):
             tickers.add(str(item["ticker"]).upper())
     return names, tickers
@@ -914,7 +946,7 @@ def _party_list(value):
         if not isinstance(item, dict):
             continue
         name = _text(item.get("name"))
-        if not name:
+        if not name or is_common_heading(name):
             continue
         items.append({"name": name, "ticker": _text(item.get("ticker"))})
     return items

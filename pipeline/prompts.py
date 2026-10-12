@@ -147,6 +147,8 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
         "risks and assumptions are lists of sentences. "
         "suppliers, customers, and buyers are lists of {name, ticker} "
         "taken from COUNTERPARTIES and from the figure text. "
+        "When COUNTERPARTIES is empty, the thesis says none found for the "
+        "suppliers line on a capex lead and for the customers line on a backlog lead. "
         "price_run is null on a first pass. "
         "Figures only from the source URL and the fields above."
     )
