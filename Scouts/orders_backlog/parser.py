@@ -205,8 +205,15 @@ def _stamp_accession(rows, accession):
 
 
 def _backlog_text(text, company, source_type, source_url, filing_date):
+    """A backlog figure is the amount next to the word backlog.
+
+    Cash flow, an award, or a sales figure in the same paragraph is not backlog.
+    The period is the quarter end, including the one stated for the whole release.
+    """
     rows = []
-    for sentence in _sentences(text):
+    plain = _plain_filing(text)
+    filed_period = _document_period(plain)
+    for sentence in _split_sentences(_reflow_prose(plain)):
         folded = sentence.casefold()
         if "|" in sentence and "backlog" in folded:
             piped = _pipe_row(
@@ -221,27 +228,39 @@ def _backlog_text(text, company, source_type, source_url, filing_date):
             rows.append(_shell(company, "customer_backlog", "backlog", source_type, source_url, filing_date,
                                ["ambiguous_value"], ["sentence mixes backlog with a deferred-revenue proxy"]))
             continue
-        amounts = _moneys(sentence)
-        if not amounts:
-            rows.append(_shell(company, "customer_backlog", "backlog", source_type, source_url, filing_date,
-                               ["missing_value"], ["backlog mentioned without a value"],
-                               equipment_or_period=_period(sentence)))
+        found = _adjacent_backlog(sentence, company, source_type, source_url, filing_date, filed_period)
+        if found:
+            rows.extend(found)
             continue
-        if len(amounts) > 1:
-            rows.append(_shell(company, "customer_backlog", "backlog", source_type, source_url, filing_date,
-                               ["ambiguous_value"], ["more than one amount in the backlog sentence"],
-                               equipment_or_period=_period(sentence)))
+        rows.append(_shell(company, "customer_backlog", "backlog", source_type, source_url, filing_date,
+                           ["missing_value"], ["backlog mentioned without an adjacent amount"],
+                           equipment_or_period=_release_period(sentence, filed_period, filing_date)))
+    return rows
+
+
+def _adjacent_backlog(sentence, company, source_type, source_url, filing_date, filed_period):
+    """Amounts whose preceding words are backlog, not another metric."""
+    found = []
+    for match in _METRIC_AMOUNT.finditer(sentence or ""):
+        kind = match.group("kind").casefold()
+        if kind not in {"backlog", "total backlog", "equipment backlog"}:
             continue
-        amount = amounts[0]
-        rows.append(
+        if _CHANGE.search(match.group("mid") or ""):
+            continue
+        scale = _SCALE.get((match.group("scale") or "").casefold(), 1)
+        value = float(match.group("num").replace(",", "")) * scale
+        if value < 1_000_000:
+            continue
+        period = _release_period(sentence, filed_period, filing_date)
+        found.append(
             record(
                 source_side="customer_backlog",
                 company=company["name"],
                 ticker=company.get("ticker"),
-                equipment_or_period=_period(sentence),
-                value=amount["value"],
-                currency=amount["currency"],
-                timing=_period(sentence),
+                equipment_or_period=period,
+                value=value,
+                currency=_CURRENCY[(match.group("cur") or "").casefold()],
+                timing=period,
                 source_url=source_url,
                 filing_date=filing_date,
                 source_type=source_type,
@@ -249,7 +268,7 @@ def _backlog_text(text, company, source_type, source_url, filing_date):
                 notes=["release text"],
             )
         )
-    return rows
+    return found
 
 
 _METRIC_AMOUNT = re.compile(
@@ -467,31 +486,49 @@ def _metric_rows(sentence, company, source_type, source_url, filing_date, filed_
     return found
 
 
+_MILLIONS = re.compile(
+    r"\(\$?\s*in\s+millions\)|\(\s*dollars\s+in\s+millions\b|"
+    r"amounts?\s+are\s+in\s+millions|in\s+millions\s+of\s+dollars",
+    re.I,
+)
+
+
 def _table_backlogs(text, company, source_type, source_url, filing_date, filed_period):
-    """A backlog row under '($ in millions)' is millions, in a pipe table or HTML cells."""
-    if not re.search(r"\(\$?\s*in millions\)|\(\s*dollars in millions\b", text or "", re.I):
+    """A backlog row under an 'in millions' header is millions.
+
+    The header and the amount may be split across cells, spans, and blank
+    lines. A dollar sign often sits in its own cell beside the number.
+    """
+    if not _MILLIONS.search(text or ""):
         return []
     rows = []
     lines = text.splitlines()
     section = None
-    million = False
     for index, line in enumerate(lines):
-        if re.search(r"\(\$?\s*in millions\)|\(\s*dollars in millions\b", line, re.I):
-            million = True
         stripped = line.strip(" |")
         for name in _SECTION:
             if stripped.casefold() == name.casefold() or stripped.casefold().endswith(name.casefold()):
                 section = name
-        if not million or not re.match(r"\s*\|?\s*Backlog\b", line, re.I):
+        if not _backlog_label(line):
             continue
         if re.search(r"organic|book-to-bill|intangible", line, re.I):
             continue
         amounts = _first_dollars(lines, index)
         if not amounts:
+            if section:
+                print(
+                    f"segment backlog skipped ticker={company.get('ticker')} "
+                    f"segment={section} reason=no amount"
+                )
             continue
         value = float(amounts[0].replace(",", "")) * 1_000_000
         period = _nearby_period(lines, index, filed_period, filing_date) or filed_period
         label = f"backlog:{section}" if section else "backlog"
+        if section:
+            print(
+                f"segment backlog ticker={company.get('ticker')} instrument={label} "
+                f"period={period} value={value:.0f}"
+            )
         rows.append(
             record(
                 source_side="supplier_order",
@@ -511,13 +548,56 @@ def _table_backlogs(text, company, source_type, source_url, filing_date, filed_p
     return rows
 
 
+def _backlog_label(line):
+    """A row whose first cell is Backlog, not 'Organic change in backlog'.
+
+    An iXBRL tag can leave a short token in front of the word.
+    """
+    cells = [part.strip() for part in line.split("|")]
+    cells = [part for part in cells if part]
+    if not cells:
+        return False
+    label = cells[0].casefold()
+    if len(label) > 24 or "organic" in label or "book-to-bill" in label or "intangible" in label:
+        return False
+    return re.search(r"\bbacklog\b", label) is not None
+
+
 def _first_dollars(lines, index):
-    """The first dollar amount on a backlog row, or on the next cell."""
-    for line in lines[index : index + 4]:
-        amounts = re.findall(r"\$\s*([\d,]+(?:\.\d+)?)", line)
-        if amounts:
-            return amounts
-        if line is not lines[index] and line.strip(" |") and not line.strip().startswith("$"):
+    """The current-period amount, including '$' and '15,175' in separate cells."""
+    cells = []
+    for offset, line in enumerate(lines[index : index + 10]):
+        if offset and re.match(
+            r"\s*\|?\s*(?:Organic|Book-to-bill|Net sales|Operating|Performance)\b",
+            line,
+            re.I,
+        ):
+            break
+        if "|" in line:
+            cells.extend(part.strip() for part in line.split("|"))
+        else:
+            cells.append(line.strip())
+    pending = False
+    started = False
+    for cell in cells:
+        if not cell:
+            continue
+        if not started:
+            started = True
+            amounts = re.findall(r"\$\s*([\d,]+(?:\.\d+)?)", cell)
+            if amounts:
+                return amounts
+            continue
+        if re.fullmatch(r"\$", cell):
+            pending = True
+            continue
+        joined = re.fullmatch(r"\$\s*([\d,]+(?:\.\d+)?)", cell)
+        if joined:
+            return [joined.group(1)]
+        bare = re.fullmatch(r"([\d,]+(?:\.\d+)?)", cell)
+        if bare and pending:
+            return [bare.group(1)]
+        if re.search(r"[A-Za-z]", cell):
             break
     return []
 
@@ -913,20 +993,34 @@ def _pipe_row(sentence, company, source_side, disclosure, source_type, source_ur
 
 
 def _recent_periods(rows, max_quarters):
-    """Keep period ends inside the last `max_quarters` quarters before the newest end."""
+    """Keep each ticker inside the last `max_quarters` quarters before its newest end.
+
+    A press-release row is held to the same window as company facts. The cutoff
+    is per ticker, so one company's filing date does not drop another's quarter.
+    """
     if not max_quarters or max_quarters < 0:
         return rows
-    dated = [parsed for parsed in (_iso_date(row.get("equipment_or_period")) for row in rows) if parsed]
-    if not dated:
-        return rows
-    cutoff = _shift_months(max(dated), -3 * (int(max_quarters) - 1))
+    groups = {}
+    for row in rows or []:
+        groups.setdefault(row.get("ticker") or "", []).append(row)
     kept = []
-    for row in rows:
-        parsed = _iso_date(row.get("equipment_or_period"))
-        if parsed is not None and parsed < cutoff:
+    for group in groups.values():
+        dated = [_row_period_end(row) for row in group]
+        dated = [item for item in dated if item is not None]
+        if not dated:
+            kept.extend(group)
             continue
-        kept.append(row)
+        cutoff = _shift_months(max(dated), -3 * (int(max_quarters) - 1))
+        for row in group:
+            parsed = _row_period_end(row)
+            if parsed is not None and parsed < cutoff:
+                continue
+            kept.append(row)
     return kept
+
+
+def _row_period_end(row):
+    return _iso_date(str(row.get("equipment_or_period") or "").split("|", 1)[0])
 
 
 def _iso_date(value):
