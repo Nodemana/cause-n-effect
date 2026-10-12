@@ -35,4 +35,6 @@ DB Browser for SQLite can open `~/Projects/cause-n-effect/cause-n-effect-scouts.
 - `debt_scout_runs`
 - `debt_scout_filing_scores`
 - `schema_migrations`
+- `macro_series`
+- `macro_observations`
 - `changes` (view)

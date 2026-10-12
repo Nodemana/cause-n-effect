@@ -1,0 +1,9 @@
+{
+  "response": {
+    "total": "2",
+    "data": [
+      {"period": "2024-01-02", "series": "RWTC", "value": "72.10"},
+      {"period": "2024-01-03", "series": "RWTC", "value": null}
+    ]
+  }
+}
