@@ -65,7 +65,7 @@ Each dimension is a short label plus a one-line rationale, not necessarily a num
 - **Magnitude** (`significance_magnitude`, `significance_magnitude_rationale`): how large the move is, absolute and relative to the company's size.
 - **Novelty** (`significance_novelty`, `significance_novelty_rationale`): the first time this company has done it, or routine behaviour.
 - **Market attention** (`significance_attention`, `significance_attention_rationale`): whether anyone else has written about or noticed it. Media and aggregators may be checked only for that. They are never a source of figures.
-- **Timing** (`significance_timing`, `significance_timing_rationale`): how early this is relative to the next earnings date or catalyst.
+- **Timing** (`significance_timing`, `significance_timing_rationale`): how early this is relative to the next earnings date or catalyst. The stub measures age from the event date (the insider trade date, otherwise the period end, otherwise the filing date) to the sweep date.
 
 Per-type guidance for those four judgments is in each scout README.
 

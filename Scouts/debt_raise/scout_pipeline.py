@@ -44,12 +44,14 @@ def run(
     config=None,
     started_at=None,
     min_deal=None,
+    tickers=None,
 ):
     """Score index text, read a full filing only when the cheap filter says to.
 
     `documents` maps an accession to fixture text so tests never open a socket.
     `client` is used for the full-document pass when the accession is not in
-    `documents`. The cheap pass does not fetch.
+    `documents`. The cheap pass does not fetch. `tickers` is stored on the run
+    as its scope; None is a full-universe run.
     """
     loaded = config or load_config()
     rules = loaded["rules"]
@@ -122,6 +124,7 @@ def run(
             scores,
             figures,
             notes=f"threshold={used}",
+            scope=tickers,
         )
     finally:
         conn.close()

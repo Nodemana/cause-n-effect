@@ -126,7 +126,7 @@ def main(argv=None):
     if not filings:
         print("No filings to score.")
         return 1
-    summary = pipeline.run(filings, db_path)
+    summary = pipeline.run(filings, db_path, tickers=tickers)
     print(
         f"run {summary['run_id']} threshold {summary['threshold']:g} "
         f"seen {summary['filings_seen']} cheap {summary['resolved_by_cheap_filter']} "

@@ -1,7 +1,10 @@
-"""Latest figure from each scout, across a recent window of runs."""
+"""Current scout figures, with earlier runs kept as comparison history."""
 
+import logging
 import re
-from datetime import date, timedelta
+from datetime import date
+
+log = logging.getLogger(__name__)
 
 SCOUT_LEAD_TYPES = {
     "capex": "capex",
@@ -37,7 +40,9 @@ _TYPES_FOR_LEAD = {
     "insider_buying": INSIDER_TYPES,
 }
 
+# Callers may still pass window_days. The candidate set is not limited to it.
 FIGURE_WINDOW_DAYS = 30
+INSIDER_TRADE_MAX_AGE_DAYS = 30
 
 _ACCESSION = re.compile(r"\d{10}-\d{2}-\d{6}")
 _CIK = re.compile(r"/data/(\d+)/")
@@ -82,58 +87,151 @@ def classify(scout, figure_type):
 
 
 def load_latest_figures(conn, *, as_of=None, window_days=FIGURE_WINDOW_DAYS):
-    """Latest figure per ticker, type, instrument, and period for each scout.
+    """Current candidates for each scout, newest run first.
 
-    The window is `window_days` back from `as_of` (a UTC timestamp or date).
-    A later run that names only some tickers does not hide figures from an
-    earlier run that started inside the window. Period stays in the key so a
-    prior quarter is still loaded for the growth comparison. The same key in
-    two runs keeps the later `started_at`, then the higher figure id.
+    A run with no scope is the full universe: its figures are the candidates
+    for every ticker a newer scoped run did not already cover, and older runs
+    are comparison history only. A `--tickers` scope replaces only those
+    tickers, including instruments that the scoped run no longer stores.
+    Identical figures (ticker, type, instrument, period, value) collapse to
+    the newest row. An insider trade more than 30 days before its filing date
+    is dropped. `as_of` and `window_days` do not limit this set.
     """
-    cutoff = _window_start(as_of, window_days)
+    _ = (as_of, window_days)
     scouts = tuple(SCOUT_LEAD_TYPES)
     placeholders = ", ".join("?" * len(scouts))
-    rows = conn.execute(
+    runs = conn.execute(
         f"""
-        WITH recent AS (
-            SELECT run_id, scout, started_at
-            FROM runs
-            WHERE scout IN ({placeholders})
-              AND started_at >= ?
-        ),
-        ranked AS (
-            SELECT f.figure_id,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY recent.scout, f.ticker, f.figure_type, f.instrument, f.period
-                       ORDER BY recent.started_at DESC, f.figure_id DESC
-                   ) AS n
-            FROM figures AS f
-            JOIN recent ON recent.run_id = f.run_id
-        )
+        SELECT run_id, scout, started_at, scope
+        FROM runs
+        WHERE scout IN ({placeholders})
+        ORDER BY started_at DESC, run_id DESC
+        """,
+        scouts,
+    ).fetchall()
+    if not runs:
+        return []
+    run_ids = [row["run_id"] for row in runs]
+    id_marks = ", ".join("?" * len(run_ids))
+    stored = conn.execute(
+        f"""
         SELECT f.figure_id, f.run_id, f.ticker, f.company, f.figure_type,
                f.instrument, f.period, f.value, f.value_text, f.currency,
                f.seen_at, f.announced_on, f.source_url, f.source_type, f.verified,
-               recent.scout AS scout
+               r.scout AS scout, r.started_at AS started_at
         FROM figures AS f
-        JOIN recent ON recent.run_id = f.run_id
-        JOIN ranked ON ranked.figure_id = f.figure_id AND ranked.n = 1
-        ORDER BY COALESCE(f.announced_on, '') DESC, f.figure_id DESC
+        JOIN runs AS r ON r.run_id = f.run_id
+        WHERE f.run_id IN ({id_marks})
         """,
-        (*scouts, cutoff),
+        run_ids,
     ).fetchall()
-    return [Figure(row) for row in rows]
+    by_run = {}
+    for row in stored:
+        by_run.setdefault(row["run_id"], []).append(row)
+    selected = []
+    by_scout = {}
+    for run in runs:
+        by_scout.setdefault(run["scout"], []).append(run)
+    for scout_runs in by_scout.values():
+        covered = set()
+        for run in scout_runs:
+            tokens = _scope_tokens(run["scope"])
+            for row in by_run.get(run["run_id"], []):
+                if tokens is not None and not _ticker_in(row["ticker"], tokens):
+                    continue
+                if _ticker_in(row["ticker"], covered):
+                    continue
+                selected.append(row)
+            if tokens is None:
+                break
+            covered |= _expand_tickers(tokens)
+    collapsed = _collapse_identical(selected)
+    figures = []
+    for row in collapsed:
+        figure = Figure(row)
+        if _stale_insider(figure):
+            log.warning(
+                "skipped insider trade ticker=%s period=%s announced_on=%s: "
+                "trade is more than %s days before the filing",
+                figure.ticker,
+                figure.period,
+                figure.announced_on or "",
+                INSIDER_TRADE_MAX_AGE_DAYS,
+            )
+            continue
+        figures.append(figure)
+    figures.sort(key=lambda figure: (figure.announced_on or "", figure.figure_id), reverse=True)
+    return figures
 
 
-def _window_start(as_of, window_days):
-    if as_of is None:
-        from shared.store import utc_now
+def _scope_tokens(scope):
+    if scope is None:
+        return None
+    text = str(scope).strip()
+    if not text or text.casefold() == "all":
+        return None
+    tokens = _expand_tickers(part for part in text.split(",") if part.strip())
+    return tokens or None
 
-        as_of = utc_now()
+
+def _expand_tickers(tickers):
+    expanded = set()
+    for ticker in tickers:
+        full = str(ticker).strip().upper()
+        if not full:
+            continue
+        bare = full[:-3] if full.endswith(".AX") else full
+        expanded.add(full)
+        expanded.add(bare)
+        if bare:
+            expanded.add(f"{bare}.AX")
+    return expanded
+
+
+def _ticker_in(ticker, tokens):
+    if not tokens:
+        return False
+    return bool(_expand_tickers([ticker]) & set(tokens))
+
+
+def _collapse_identical(rows):
+    """One row per ticker, type, instrument, period, and value. Newest wins."""
+    best = {}
+    for row in rows:
+        key = (
+            row["ticker"],
+            row["figure_type"],
+            row["instrument"] or "",
+            row["period"] or "",
+            row["value"],
+        )
+        current = best.get(key)
+        rank = (row["started_at"] or "", row["figure_id"] or 0)
+        if current is None or rank > current[0]:
+            best[key] = (rank, row)
+    return [item[1] for item in best.values()]
+
+
+def _stale_insider(figure):
+    """True when an insider trade date is more than 30 days before the filing.
+
+    The filing date is the clock, matching the insider scout: a late Form 4
+    can arrive long after the trade. A missing date is kept.
+    """
+    if figure.figure_type != "insider_purchase" and classify(figure.scout, figure.figure_type) != "insider_buying":
+        return False
+    dates = _DATE.findall(figure.period or "")
+    if not dates:
+        return False
+    filed = filing_date(figure)
+    if not filed:
+        return False
     try:
-        day = date.fromisoformat(str(as_of)[:10])
+        traded = date.fromisoformat(dates[0])
+        filed_on = date.fromisoformat(filed)
     except ValueError:
-        day = date.today()
-    return (day - timedelta(days=int(window_days))).isoformat()
+        return False
+    return (filed_on - traded).days > INSIDER_TRADE_MAX_AGE_DAYS
 
 
 def exchange_for(figure):
@@ -179,3 +277,24 @@ def filing_date(figure):
     if not raw:
         return None
     return raw[:10]
+
+
+def event_date(figure):
+    """Insider trade date, otherwise the period end, otherwise the filing date."""
+    dates = _DATE.findall(figure.period or "")
+    insider = figure.figure_type == "insider_purchase" or classify(figure.scout, figure.figure_type) == "insider_buying"
+    if insider and dates:
+        try:
+            return date.fromisoformat(dates[0])
+        except ValueError:
+            pass
+    end = period_end(figure.period)
+    if end is not None:
+        return end
+    filed = filing_date(figure)
+    if not filed:
+        return None
+    try:
+        return date.fromisoformat(filed)
+    except ValueError:
+        return None

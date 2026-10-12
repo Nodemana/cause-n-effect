@@ -11,9 +11,12 @@ client (the pipeline CLI passes the SEC client when `SEC_CONTACT_EMAIL`
 is set). A missing client returns without a request.
 """
 
+import logging
 import re
 
 from shared.store import save_run
+
+log = logging.getLogger(__name__)
 
 SHARES_FIGURE_TYPE = "dei:EntityCommonStockSharesOutstanding"
 SHARES_TYPES = (
@@ -89,7 +92,17 @@ def cache_shares_outstanding(conn, companies, *, client=None, fetched_at):
     rows = []
     for company in pending:
         url = companyfacts_url(company["cik"])
-        parsed = shares_from_companyfacts(client.json(url))
+        try:
+            parsed = shares_from_companyfacts(client.json(url))
+        except Exception as exc:
+            log.warning(
+                "skipped shares ticker=%s cik=%s url=%s: %s",
+                company.get("ticker") or "",
+                company.get("cik") or "",
+                url,
+                exc,
+            )
+            continue
         if not parsed:
             continue
         filed = (parsed.get("filed") or "")[:10]

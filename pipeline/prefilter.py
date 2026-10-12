@@ -3,7 +3,16 @@
 import re
 from datetime import date
 
-from pipeline.load import ORDER_TYPES, as_of, classify, exchange_for, extract_cik, filing_date, period_end
+from pipeline.load import (
+    ORDER_TYPES,
+    as_of,
+    classify,
+    event_date,
+    exchange_for,
+    extract_cik,
+    filing_date,
+    period_end,
+)
 from pipeline.marketcap import criterion_threshold, resolve_market_cap
 from pipeline.names import normalise_name
 
@@ -109,7 +118,7 @@ class Candidate:
         self.parties = parties
 
 
-def prefilter(conn, figures, limit=None):
+def prefilter(conn, figures, limit=None, now=None):
     """Return (candidates, rejects, used) from the latest figures.
 
     `limit` keeps the first N lead figures in newest-announced order before
@@ -163,7 +172,7 @@ def prefilter(conn, figures, limit=None):
         )
     for figure, lead_type in classified:
         parties = extract_parties(figure, lead_type, by_name, cik_by_ticker)
-        reason, rating = _threshold(conn, figure, lead_type)
+        reason, rating = _threshold(conn, figure, lead_type, now=now)
         if reason:
             rejects.append(PlannedReject(figure, lead_type, "deterministic", reason, rating, parties))
             continue
@@ -263,7 +272,7 @@ def party_index(figures):
     return by_name, cik_by_ticker
 
 
-def _threshold(conn, figure, lead_type):
+def _threshold(conn, figure, lead_type, now=None):
     if figure.value is None or figure.value <= 0:
         return "missing value", _magnitude("missing value")
     if lead_type == "insider_buying" and figure.value < INSIDER_MIN_DOLLARS:
@@ -311,7 +320,7 @@ def _threshold(conn, figure, lead_type):
     if growth:
         return growth, _magnitude(growth)
     figure.earlier_similar = _earlier_similar(conn, figure)
-    figure.period_age_days = _period_age_days(figure)
+    figure.period_age_days = _period_age_days(figure, now)
     return None, None
 
 
@@ -423,37 +432,52 @@ def _period_ordinal(figure):
 
 
 def _earlier_similar(conn, figure):
+    """True when a different period stores a value within the similar band.
+
+    A later scout run stores the same figure again. That copy shares the
+    period and the value, so it is not an earlier occurrence. A restatement
+    of the same period is skipped too. A different period inside the band,
+    including the same value, is routine.
+    """
     if figure.value in (None, 0):
         return False
     rows = conn.execute(
         """
-        SELECT value FROM figures
+        SELECT value, period FROM figures
         WHERE ticker = ? AND figure_type = ? AND instrument = ? AND figure_id != ?
           AND value IS NOT NULL AND value != 0
         """,
         (figure.ticker, figure.figure_type, figure.instrument, figure.figure_id),
     ).fetchall()
+    period = figure.period or ""
     for row in rows:
+        if (row["period"] or "") == period:
+            continue
         gap = abs(row["value"] - figure.value) / abs(figure.value)
         if gap <= SIMILAR_VALUE_BAND:
             return True
     return False
 
 
-def _period_age_days(figure):
-    end = period_end(figure.period)
-    if end is None:
-        filed = filing_date(figure)
-        if not filed:
-            return None
-        try:
-            end = date.fromisoformat(filed)
-        except ValueError:
-            return None
-    anchor = as_of(figure)
-    if anchor is None:
+def _period_age_days(figure, today=None):
+    """Days from the event date to the sweep date.
+
+    The event date is the insider trade date, otherwise the period end,
+    otherwise the filing date. `seen_at` is when the figure was stored, not
+    when the event happened.
+    """
+    event = event_date(figure)
+    if event is None:
         return None
-    return (anchor - end).days
+    if today is None:
+        from shared.store import utc_now
+
+        today = utc_now()
+    try:
+        anchor = date.fromisoformat(str(today)[:10])
+    except ValueError:
+        return None
+    return (anchor - event).days
 
 
 def _stake_pct(figure):

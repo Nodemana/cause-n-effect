@@ -126,7 +126,7 @@ def run_pipeline(
                 fetched_at=started,
             )
         names, _ciks = party_index(figures)
-        candidates, rejects, used = prefilter(conn, figures, limit=limit)
+        candidates, rejects, used = prefilter(conn, figures, limit=limit, now=started)
         leads = _rate(conn, provider, budget, candidates, rejects)
         _research(conn, provider, budget, leads, names, macro)
         leads = _drop_hard_failures(leads, rejects)

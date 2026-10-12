@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS runs(
   run_id TEXT PRIMARY KEY,
   scout TEXT NOT NULL,
   started_at TEXT NOT NULL,
-  notes TEXT);
+  notes TEXT,
+  scope TEXT);
 
 CREATE TABLE IF NOT EXISTS figures(
   figure_id INTEGER PRIMARY KEY,
