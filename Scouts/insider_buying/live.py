@@ -11,6 +11,7 @@ Offline SEC check, using the fixture XML instead of EDGAR:
     python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/insider_buying/fixtures/sec_form4_ceo.xml --no-asx
 """
 
+import argparse
 import json
 import os
 import sqlite3
@@ -30,6 +31,7 @@ from shared.store import connect, save_run, utc_now  # noqa: E402
 
 UNIVERSE = _HERE / "universe_asx.json"
 DEFAULT_DB = Path("/tmp/cause-n-effect-insider.sqlite")
+DEFAULT_LIMIT = 50
 
 
 def sec_block_message():
@@ -56,14 +58,39 @@ def _unique_figures(figures):
     return kept
 
 
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="python3 -m Scouts.insider_buying.live",
+        description="Store Form 4 code P purchases and ASX Appendix 3Y on-market buys.",
+    )
+    parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite history path")
+    parser.add_argument("--sec-fixture", help="read this Form 4 XML instead of contacting EDGAR")
+    parser.add_argument("--no-asx", action="store_true", help="do not request ASX announcements")
+    parser.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=DEFAULT_LIMIT,
+        help=f"maximum SEC Form 4 filings to download (default {DEFAULT_LIMIT})",
+    )
+    return parser
+
+
+def _positive_int(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("--limit must be an integer") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError("--limit must be at least 1")
+    return number
+
+
 def main(argv=None):
-    args = list(sys.argv[1:] if argv is None else argv)
-    db_path = DEFAULT_DB
-    if "--db" in args:
-        db_path = Path(args[args.index("--db") + 1])
+    args = build_parser().parse_args(argv)
+    db_path = Path(args.db)
     documents = []
-    if "--sec-fixture" in args:
-        fixture = Path(args[args.index("--sec-fixture") + 1])
+    if args.sec_fixture:
+        fixture = Path(args.sec_fixture)
         documents.append(
             {
                 "source": "sec",
@@ -82,9 +109,9 @@ def main(argv=None):
         else:
             end = date.today().isoformat()
             start = (date.today() - timedelta(days=7)).isoformat()
-            print(f"SEC Form 4 window {start} to {end}, at most 5 filings")
-            documents.extend(fetcher.collect_sec(start, end, limit=5))
-    if "--no-asx" not in args:
+            print(f"SEC Form 4 window {start} to {end}, at most {args.limit} filings")
+            documents.extend(fetcher.collect_sec(start, end, limit=args.limit))
+    if not args.no_asx:
         companies = json.loads(UNIVERSE.read_text(encoding="utf-8"))["companies"]
         print(f"ASX Appendix 3Y, at most {5} announcements considered per company")
         documents.extend(fetcher.collect_asx(companies))
@@ -104,11 +131,10 @@ def main(argv=None):
         item["period"] = item.get("period") or ""
         figures.append(item)
     figures = _unique_figures(figures)
-    run_id = f"{seen}-insider-buying"
     notes = f"records={len(table['records'])} review={len(table['review'])}"
     conn = connect(db_path)
     try:
-        save_run(conn, run_id, "insider-buying", started, figures, notes=notes)
+        run_id = save_run(conn, "insider-buying", started, figures, notes=notes)
     finally:
         conn.close()
     print(f"run {run_id} figures {len(figures)} review {len(table['review'])}")

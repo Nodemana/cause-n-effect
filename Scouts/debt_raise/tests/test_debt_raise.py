@@ -7,8 +7,10 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import urllib.parse
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import date
 from pathlib import Path
 
 SCOUT = Path(__file__).resolve().parents[1]
@@ -25,6 +27,7 @@ from score import (  # noqa: E402
     histogram,
     load_config,
     needs_full_document,
+    pick_amount,
     score_text,
 )
 
@@ -69,6 +72,10 @@ class DebtRaiseTests(unittest.TestCase):
         center = score_text("Financing for data center construction in Ohio.", self.rules)
         capex = score_text("<p>capital expenditures at the plant</p>", self.rules)
         acquire = score_text("The notes finance the acquisition of a transformer business.", self.rules)
+        boilerplate = score_text(
+            "We may use the net proceeds for general corporate purposes, which may include acquisitions of complementary businesses.",
+            self.rules,
+        )
         blank = score_text("   ", self.rules)
         unknown = score_text("Item 1.01 Entry into a Material Definitive Agreement.", self.rules)
         both = score_text(
@@ -81,6 +88,8 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertEqual(center.score, 5)
         self.assertEqual(capex.score, 3)
         self.assertEqual(acquire.score, 4)
+        self.assertEqual(boilerplate.score, 0)
+        self.assertNotIn("acquisition", boilerplate.matched)
         self.assertEqual(both.score, 5)
         self.assertIn("generic", both.matched)
         self.assertFalse(blank.decided)
@@ -133,7 +142,7 @@ class DebtRaiseTests(unittest.TestCase):
             self.assertEqual(summary["filings_seen"], 4)
             self.assertEqual(summary["resolved_by_cheap_filter"], 1)
             self.assertEqual(summary["sent_to_full_document"], 3)
-            self.assertEqual(summary["run_id"], "2026-03-04-debt-raise")
+            self.assertEqual(summary["run_id"], "2026-03-04-120000-debt-raise")
             self.assertEqual(summary["score_histogram"]["0"], 2)
             self.assertEqual(summary["score_histogram"]["3"], 1)
             self.assertEqual(summary["score_histogram"]["5+"], 1)
@@ -245,6 +254,36 @@ class DebtRaiseTests(unittest.TestCase):
             self.assertEqual(mid[1], "cheap_filter")
             conn.close()
 
+    def test_same_day_runs_keep_their_figures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            morning = pipeline.run(
+                [_filing(ACC_CENTER, "8-K", "Financing for data center construction.", ["1.01"])],
+                db,
+                documents={ACC_CENTER: "The facility funds data center construction of US$180 million."},
+                started_at="2026-03-04T08:00:00Z",
+            )
+            afternoon = pipeline.run(
+                [_filing(ACC_CAPEX, "424B2", "Proceeds fund capital expenditures of US$80 million at the plant.")],
+                db,
+                documents={ACC_CAPEX: "Proceeds fund capital expenditures of US$80 million at the plant."},
+                started_at="2026-03-04T15:30:45Z",
+            )
+            self.assertEqual(morning["run_id"], "2026-03-04-080000-debt-raise")
+            self.assertEqual(afternoon["run_id"], "2026-03-04-153045-debt-raise")
+            conn = sqlite3.connect(db)
+            first_value = conn.execute(
+                "SELECT value FROM figures WHERE run_id = ?", (morning["run_id"],)
+            ).fetchone()[0]
+            second_value = conn.execute(
+                "SELECT value FROM figures WHERE run_id = ?", (afternoon["run_id"],)
+            ).fetchone()[0]
+            self.assertEqual(first_value, 180_000_000)
+            self.assertEqual(second_value, 80_000_000)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 2)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM debt_scout_runs").fetchone()[0], 2)
+            conn.close()
+
     def test_fetcher_uses_index_text_and_pages_without_downloading(self):
         page1 = json.loads((FIX / "efts_page1.json").read_text(encoding="utf-8"))
         page2 = json.loads((FIX / "efts_page2.json").read_text(encoding="utf-8"))
@@ -285,6 +324,9 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertTrue(filings[0]["document_url"].startswith("https://www.sec.gov/"))
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(url.startswith("https://efts.sec.gov/") for url in calls))
+        self.assertNotIn("q=", calls[0])
+        self.assertNotIn("8-K%2FA", calls[0])
+        self.assertNotIn("8-K/A", calls[0])
 
     def test_full_document_fetch_stays_on_sec(self):
         index = json.loads((FIX / "sec_index.json").read_text(encoding="utf-8"))
@@ -304,6 +346,18 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertIn("capital expenditures", text)
         self.assertTrue(calls[0].endswith("/index.json"))
         self.assertTrue(calls[1].endswith("/d424b5.htm"))
+        names = [
+            "0000999001-26-000011-index.html",
+            "0000999001-26-000011.txt",
+            "R1.htm",
+            "R12.html",
+            "ex99.htm",
+            "d424b5.htm",
+        ]
+        self.assertEqual(fetcher.choose_primary_name(names), "d424b5.htm")
+        self.assertTrue(fetcher.summary_is_form_label("424B5", "424B5"))
+        self.assertTrue(fetcher.summary_is_form_label("FORM 8-K", "8-K"))
+        self.assertFalse(fetcher.summary_is_form_label("Prospectus supplement", "424B5"))
         self.assertTrue(all("sec.gov" in url for url in calls))
         with self.assertRaises(fetcher.EndpointError):
             fetcher._require_sec("https://example.com/file")
@@ -326,6 +380,18 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertEqual(amount["currency"], "USD")
         self.assertEqual(amount["text"], "US$750 million")
         self.assertEqual(deal_amount(text)["value"], 750_000_000)
+        prospectus = (
+            "The notes will be issued in minimum denominations of $2,000 and integral multiples of $1,000. "
+            "The common stock has a par value of $0.01 per share and the preferred stock has a par value of $0.0001. "
+            "The registration fee is $153,500. "
+            "We are offering $500,000,000 aggregate principal amount of the notes. "
+            "The offering is 12 million shares."
+        )
+        offering = first_amount(prospectus)
+        self.assertEqual(offering["value"], 500_000_000)
+        self.assertEqual(offering["text"], "$500,000,000")
+        self.assertIsNone(first_amount("minimum denominations of $2,000 and integral multiples of $1,000"))
+        self.assertIsNone(first_amount("par value of $0.01 and a registration fee of $153,500"))
         scored = score_text(text, self.rules)
         self.assertEqual(scored.score, 1)
         self.assertIn("generic", scored.matched)
@@ -428,6 +494,88 @@ class DebtRaiseTests(unittest.TestCase):
             self.assertEqual(stored, 2_500_000)
             self.assertNotIn("dropped deal below minimum", stderr.getvalue())
 
+    def test_amount_fixtures_pick_the_deal_and_send_the_rest_to_review(self):
+        cases = [
+            ("amount_denomination.txt", "DEN", None),
+            ("amount_par.txt", "PAR", None),
+            ("amount_fee.txt", "FEE", None),
+            ("amount_aggregate.txt", "AGG", 750_000_000),
+            ("amount_offering.txt", "OFF", 500_000_000),
+            ("amount_cover.txt", "COV", 1_250_000_000),
+        ]
+        filings = []
+        documents = {}
+        for index, (name, ticker, expected) in enumerate(cases, start=1):
+            text = (FIX / name).read_text(encoding="utf-8")
+            amount, needs_review = pick_amount(text)
+            if expected is None:
+                self.assertIsNone(amount, name)
+                self.assertIsNone(first_amount(text), name)
+                self.assertTrue(needs_review, name)
+            else:
+                self.assertEqual(amount["value"], expected, name)
+                self.assertEqual(amount["currency"], "USD", name)
+                self.assertNotEqual(amount["text"], "$1,000", name)
+                self.assertFalse(needs_review, name)
+            accession = f"0000999001-26-0001{index:02d}"
+            filings.append(_filing(accession, "424B5", "424B5", ticker=ticker))
+            documents[accession] = text
+
+        tiny, tiny_review = pick_amount("The aggregate principal amount is $750,000.")
+        self.assertIsNone(tiny)
+        self.assertTrue(tiny_review)
+        mixed, mixed_review = pick_amount("A $200 million term loan and a $50 million revolver.")
+        self.assertIsNone(mixed)
+        self.assertTrue(mixed_review)
+
+        class Fake:
+            def json(self, url):
+                raise AssertionError(url)
+
+            def get(self, url, accept=""):
+                raise AssertionError(url)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            pipeline.run(
+                filings,
+                db,
+                client=Fake(),
+                documents=documents,
+                started_at="2026-06-01T00:00:00Z",
+            )
+            conn = sqlite3.connect(db)
+            conn.row_factory = sqlite3.Row
+            figures = {
+                row["ticker"]: row
+                for row in conn.execute(
+                    "SELECT ticker, figure_type, value, value_text, currency, verified FROM figures"
+                )
+            }
+            flags = {
+                row["ticker"]: json.loads(row["flags"])
+                for row in conn.execute("SELECT ticker, flags FROM debt_scout_filing_scores")
+            }
+            conn.close()
+
+        for ticker in ("DEN", "PAR", "FEE"):
+            self.assertNotIn(ticker, figures)
+            self.assertIn("review", flags[ticker])
+        self.assertEqual(figures["AGG"]["figure_type"], "bond_amount")
+        self.assertEqual(figures["AGG"]["value"], 750_000_000)
+        self.assertEqual(figures["AGG"]["value_text"], "$750,000,000")
+        self.assertEqual(figures["AGG"]["currency"], "USD")
+        self.assertEqual(figures["AGG"]["verified"], 1)
+        self.assertNotIn("review", flags["AGG"])
+        self.assertEqual(figures["OFF"]["value"], 500_000_000)
+        self.assertEqual(figures["OFF"]["value_text"], "$500 million")
+        self.assertEqual(figures["OFF"]["figure_type"], "bond_amount")
+        self.assertNotIn("review", flags["OFF"])
+        self.assertEqual(figures["COV"]["value"], 1_250_000_000)
+        self.assertEqual(figures["COV"]["value_text"], "$1,250,000,000")
+        self.assertEqual(figures["COV"]["figure_type"], "bond_amount")
+        self.assertNotIn("review", flags["COV"])
+
     def test_asx_headlines_stay_on_the_list_until_the_full_read(self):
         payload = {
             "data": {
@@ -496,6 +644,283 @@ class DebtRaiseTests(unittest.TestCase):
             self.assertEqual(applied, 2)
             again.close()
 
+    def test_same_day_filings_keep_distinct_periods_and_form_name_uses_first_page(self):
+        same_day = "2026-03-01"
+        first = _filing(ACC_GENERIC, "8-K", "8-K", ["1.01"])
+        second = _filing(ACC_CENTER, "8-K", "8-K", ["2.03"])
+        first["filed"] = same_day
+        second["filed"] = same_day
+        documents = {
+            ACC_GENERIC: "Proceeds will be used for general corporate purposes. The facility is $80 million.",
+            ACC_CENTER: "The facility funds data center construction of US$180 million.",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            summary = pipeline.run(
+                [first, second],
+                db,
+                documents=documents,
+                started_at="2026-03-04T12:00:00Z",
+            )
+            conn = sqlite3.connect(db)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT accession, period, stage_reached, score FROM debt_scout_filing_scores s "
+                "JOIN figures f ON f.run_id = s.run_id AND f.ticker = s.ticker "
+                "WHERE s.run_id = ?",
+                (summary["run_id"],),
+            ).fetchall()
+            periods = {
+                row["period"]
+                for row in conn.execute("SELECT period FROM figures")
+            }
+            conn.close()
+            self.assertEqual(periods, {f"{same_day} {ACC_GENERIC}", f"{same_day} {ACC_CENTER}"})
+            self.assertEqual(len(periods), 2)
+            by_acc = {row["accession"]: row for row in rows}
+            self.assertEqual(by_acc[ACC_GENERIC]["stage_reached"], "cheap_filter")
+            self.assertEqual(by_acc[ACC_GENERIC]["score"], 0)
+
+    def test_index_description_settles_without_a_primary_download(self):
+        calls = []
+
+        class Fake:
+            def json(self, url):
+                calls.append(("json", url))
+                return {
+                    "directory": {
+                        "item": [
+                            {"name": "d8k.htm", "description": "Proceeds for general corporate purposes"},
+                            {"name": "0000999001-26-000010-index.html", "description": "8-K"},
+                        ]
+                    }
+                }
+
+            def get(self, url, accept=""):
+                calls.append(("get", url))
+                raise AssertionError(url)
+
+        filing = _filing(ACC_GENERIC, "8-K", "8-K", ["1.01"])
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline.run([filing], str(Path(tmp) / "history.sqlite"), client=Fake(), started_at="2026-03-04T00:00:00Z")
+        self.assertTrue(calls)
+        self.assertTrue(all(kind == "json" for kind, _url in calls))
+
+    def test_ticker_search_filters_by_cik_and_fills_missing_424b_tickers(self):
+        tickers = json.loads((FIX / "company_tickers.json").read_text(encoding="utf-8"))
+        page = json.loads((FIX / "efts_by_cik.json").read_text(encoding="utf-8"))
+        calls = []
+
+        class Fake:
+            def json(self, url):
+                calls.append(url)
+                if url.startswith(fetcher.TICKERS_URL):
+                    return tickers
+                if "efts.sec.gov" in url:
+                    if "from=0" not in url:
+                        raise AssertionError(url)
+                    return page
+                raise AssertionError(url)
+
+            def get(self, url, accept=""):
+                raise AssertionError("full document during collect")
+
+        filings, missing = fetcher.collect_window(
+            "2025-10-12",
+            "2026-10-12",
+            tickers=["amzn", "ORCL", "MSFT", "NOPE"],
+            client=Fake(),
+            limit=50,
+        )
+        self.assertEqual(missing, ["NOPE"])
+        self.assertEqual(
+            [row["accession"] for row in filings],
+            [
+                "0001018724-25-900001",
+                "0001341439-25-900002",
+                "0000789019-25-900003",
+                "0001018724-25-900004",
+                "0001341439-25-900005",
+                "0000789019-25-900006",
+            ],
+        )
+        by_acc = {row["accession"]: row for row in filings}
+        self.assertEqual(by_acc["0001018724-25-900001"]["ticker"], "AMZN")
+        self.assertEqual(by_acc["0001018724-25-900001"]["cik"], "0001018724")
+        self.assertNotIn("AMZN", by_acc["0001018724-25-900001"]["summary"])
+        self.assertEqual(by_acc["0001341439-25-900002"]["ticker"], "ORCL")
+        self.assertEqual(by_acc["0000789019-25-900003"]["ticker"], "MSFT")
+        self.assertEqual(by_acc["0000789019-25-900003"]["form"], "424B5")
+        self.assertEqual(by_acc["0001341439-25-900005"]["ticker"], "ORCL")
+        self.assertEqual(by_acc["0000789019-25-900006"]["items"], ["2.03"])
+        prospectus = [
+            hit
+            for hit in page["hits"]["hits"]
+            if str(hit["_source"]["form"]).startswith("424B2")
+        ]
+        self.assertEqual(len(prospectus), 5)
+        missing_display = [
+            hit
+            for hit in prospectus
+            if fetcher.ticker_from_display(hit["_source"]["display_names"]) is None
+        ]
+        self.assertEqual(len(missing_display), 4)
+
+        self.assertTrue(calls[0].startswith(fetcher.TICKERS_URL))
+        efts_urls = [url for url in calls if "efts.sec.gov" in url]
+        self.assertEqual(len(efts_urls), 1)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(efts_urls[0]).query)
+        self.assertNotIn("q", query)
+        self.assertNotIn("*", efts_urls[0])
+        self.assertNotIn("AMZN", efts_urls[0])
+        self.assertEqual(query["startdt"], ["2025-10-12"])
+        self.assertEqual(query["enddt"], ["2026-10-12"])
+        self.assertEqual(
+            query["ciks"],
+            ["0001018724,0001341439,0000789019"],
+        )
+        forms = query["forms"][0].split(",")
+        self.assertIn("8-K", forms)
+        self.assertIn("424B2", forms)
+        self.assertIn("424B5", forms)
+        self.assertNotIn("8-K/A", forms)
+        self.assertNotIn("8-K/A", fetcher.FORMS)
+
+    def test_cik_search_stops_at_limit_without_another_page(self):
+        tickers = json.loads((FIX / "company_tickers.json").read_text(encoding="utf-8"))
+        page = json.loads((FIX / "efts_by_cik.json").read_text(encoding="utf-8"))
+        page["hits"]["total"]["value"] = 500
+        calls = []
+
+        class Fake:
+            def json(self, url):
+                calls.append(url)
+                if url.startswith(fetcher.TICKERS_URL):
+                    return tickers
+                if "efts.sec.gov" in url:
+                    if "from=0" not in url:
+                        raise AssertionError(url)
+                    return page
+                raise AssertionError(url)
+
+            def get(self, url, accept=""):
+                raise AssertionError("full document during collect")
+
+        filings, missing = fetcher.collect_window(
+            "2025-10-12",
+            "2026-10-12",
+            tickers=["AMZN", "ORCL", "MSFT"],
+            client=Fake(),
+            limit=2,
+        )
+        self.assertEqual(missing, [])
+        self.assertEqual(
+            [row["ticker"] for row in filings],
+            ["AMZN", "ORCL"],
+        )
+        self.assertEqual(len([url for url in calls if "efts.sec.gov" in url]), 1)
+
+    def test_unknown_ticker_does_not_search_edgar(self):
+        tickers = json.loads((FIX / "company_tickers.json").read_text(encoding="utf-8"))
+        calls = []
+
+        class Fake:
+            def json(self, url):
+                calls.append(url)
+                if url.startswith(fetcher.TICKERS_URL):
+                    return tickers
+                raise AssertionError(url)
+
+            def get(self, url, accept=""):
+                raise AssertionError(url)
+
+        filings, missing = fetcher.collect_window(
+            "2025-10-12",
+            "2026-10-12",
+            tickers=["NOPE"],
+            client=Fake(),
+        )
+        self.assertEqual(filings, [])
+        self.assertEqual(missing, ["NOPE"])
+        self.assertEqual(calls, [fetcher.TICKERS_URL])
+
+    def test_live_forwards_tickers_since_and_limit_without_a_socket(self):
+        import live
+
+        seen = {}
+
+        def collect_window(start, end, tickers=None, client=None, limit=None):
+            seen.update(start=start, end=end, tickers=tickers, client=client, limit=limit)
+            return [], []
+
+        original_collect = fetcher.collect_window
+        original_block = live.sec_block_message
+        fetcher.collect_window = collect_window
+        live.sec_block_message = lambda: None
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                code = live.main(
+                    [
+                        "--db",
+                        str(Path(tmp) / "history.sqlite"),
+                        "--tickers",
+                        "AMZN,ORCL,MSFT",
+                        "--since",
+                        "2025-10-12",
+                        "--until",
+                        "2026-10-08",
+                        "--limit",
+                        "40",
+                        "--no-asx",
+                    ]
+                )
+                self.assertEqual(code, 1)
+                self.assertEqual(seen["start"], "2025-10-12")
+                self.assertEqual(seen["end"], "2026-10-08")
+                self.assertEqual(seen["tickers"], ["AMZN", "ORCL", "MSFT"])
+                self.assertEqual(seen["limit"], 40)
+                self.assertIsNone(seen["client"])
+                seen.clear()
+                live.main(["--db", str(Path(tmp) / "default.sqlite"), "--no-asx"])
+                self.assertEqual(seen["limit"], live.DEFAULT_LIMIT)
+                self.assertEqual(seen["limit"], 50)
+                self.assertIsNone(seen["tickers"])
+                start = date.fromisoformat(seen["start"])
+                end = date.fromisoformat(seen["end"])
+                self.assertEqual((end - start).days, 3)
+        finally:
+            fetcher.collect_window = original_collect
+            live.sec_block_message = original_block
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
+
+    def test_live_tickers_without_contact_sends_nothing(self):
+        import live
+
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = live.main(
+                        [
+                            "--db",
+                            str(Path(tmp) / "history.sqlite"),
+                            "--tickers",
+                            "AMZN,ORCL,MSFT",
+                            "--since",
+                            "2025-10-12",
+                            "--no-asx",
+                        ]
+                    )
+                self.assertEqual(code, 1)
+                self.assertIn("SEC_CONTACT_EMAIL is missing", buffer.getvalue())
+                self.assertIn("No filings to score.", buffer.getvalue())
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
+
     def test_live_fixture_stores_a_figure_and_empty_run_exits_nonzero(self):
         import live
 
@@ -520,6 +945,24 @@ class DebtRaiseTests(unittest.TestCase):
         finally:
             if previous is not None:
                 os.environ["SEC_CONTACT_EMAIL"] = previous
+
+    def test_help_exits_zero_without_network(self):
+        import subprocess
+        import sys
+
+        env = {key: value for key, value in os.environ.items() if key != "SEC_CONTACT_EMAIL"}
+        root = str(Path(__file__).resolve().parents[3])
+        for flag in ("--help", "-h"):
+            completed = subprocess.run(
+                [sys.executable, "-m", "Scouts.debt_raise.live", flag],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("usage", completed.stdout.lower())
 
 
 if __name__ == "__main__":

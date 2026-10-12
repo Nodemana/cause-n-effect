@@ -1,0 +1,8 @@
+{
+  "description": "ASX names whose announcements are scanned for order and backlog language. The feed returns the latest five headlines per company.",
+  "companies": [
+    {"ticker": "WOR", "name": "Worley Ltd"},
+    {"ticker": "DOW", "name": "Downer EDI Ltd"},
+    {"ticker": "MND", "name": "Monadelphous Group Ltd"}
+  ]
+}

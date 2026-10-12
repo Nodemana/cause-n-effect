@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 import urllib.parse
+from datetime import date
 from pathlib import Path
 
 SCOUT = Path(__file__).resolve().parents[1]
@@ -56,9 +57,9 @@ class CapexTests(unittest.TestCase):
             for item in facts
             if item["tag"] == "PaymentsToAcquireProductiveAssets" and item["row"]["end"] == "2025-03-31"
         )
-        self.assertEqual(q1["row"]["val"], 24000000000)
-        self.assertEqual(q1["row"]["filed"], "2025-04-15")
-        self.assertEqual(q1["row"]["accn"], "0001018724-25-000001")
+        self.assertEqual(q1["row"]["val"], 25000000000)
+        self.assertEqual(q1["row"]["filed"], "2025-05-01")
+        self.assertEqual(q1["row"]["accn"], "0001018724-25-000008")
         self.assertEqual(q1["period_label"], "quarter")
         half = next(
             item
@@ -73,13 +74,55 @@ class CapexTests(unittest.TestCase):
             for item in facts
             if item["tag"] == "PaymentsToAcquireProductiveAssets" and item["row"]["end"] == "2026-06-30"
         )
-        self.assertEqual(trailing["row"]["val"], 90000000000)
-        self.assertEqual(trailing["row"]["filed"], "2026-07-15")
+        self.assertEqual(trailing["row"]["val"], 91000000000)
+        self.assertEqual(trailing["row"]["filed"], "2026-08-20")
         self.assertEqual(trailing["period_label"], "ttm")
         self.assertEqual(fetcher.infer_fiscal_start(payload), "01-01")
         self.assertTrue(client.urls[0].startswith("https://data.sec.gov/api/xbrl/companyfacts/CIK0001018724.json"))
         with self.assertRaises(fetcher.EndpointError):
             fetcher._require_sec("https://example.com/companyfacts")
+
+    def test_stale_periods_are_dropped_and_quarters_are_derived(self):
+        payload = json.loads((FIX / "companyfacts_amzn.json").read_text(encoding="utf-8"))
+        rows = payload["facts"]["us-gaap"]["PaymentsToAcquireProductiveAssets"]["units"]["USD"]
+        rows.append(
+            {
+                "start": "2016-01-01",
+                "end": "2016-12-31",
+                "val": 1,
+                "accn": "0001018724-17-000001",
+                "form": "10-K",
+                "filed": "2017-02-01",
+            }
+        )
+        facts = fetcher.select_facts(payload, n=8, quarters=8, as_of=date(2026, 10, 12))
+        ends = {item["row"]["end"] for item in facts}
+        self.assertNotIn("2016-12-31", ends)
+        self.assertIn("2025-06-30", ends)
+        bundles = [
+            {
+                "ticker": "AMZN",
+                "cik": "0001018724",
+                "company": "AMAZON COM INC",
+                "facts": facts,
+            }
+        ]
+        figures = pipeline.figures_from_facts(bundles, "2026-10-12")
+        by_key = {(row["figure_type"], row["period"], row["instrument"]): row for row in figures}
+        self.assertEqual(
+            by_key[("PaymentsToAcquireProductiveAssets", "2025-01-01/2025-03-31", "quarter")]["value"],
+            25000000000,
+        )
+        self.assertEqual(
+            by_key[("PaymentsToAcquireProductiveAssets", "2025-01-01/2025-06-30", "ytd")]["value"],
+            48000000000,
+        )
+        quarter = by_key[("PaymentsToAcquireProductiveAssets", "2025-04-01/2025-06-30", "quarter")]
+        self.assertEqual(quarter["value"], 23000000000)
+        self.assertEqual(
+            by_key[("FinanceLeaseRightOfUseAsset", "2025-03-31", "instant")]["value"],
+            1000000000,
+        )
 
     def test_guidance_search_uses_efts_phrases(self):
         page = json.loads((FIX / "efts_guidance.json").read_text(encoding="utf-8"))
@@ -141,29 +184,32 @@ class CapexTests(unittest.TestCase):
                 seen_at="2026-10-12",
                 notes="fixture",
             )
-            self.assertEqual(summary["run_id"], "2026-10-12-capex")
+            self.assertEqual(summary["run_id"], "2026-10-12-000000-capex")
             conn = sqlite3.connect(db)
             conn.row_factory = sqlite3.Row
             run = conn.execute("SELECT scout, notes FROM runs").fetchone()
             self.assertEqual(run["scout"], "capex")
             rows = conn.execute(
                 """
-                SELECT ticker, figure_type, period, value, currency, announced_on,
+                SELECT ticker, figure_type, instrument, period, value, currency, announced_on,
                        source_url, source_type, verified
                 FROM figures
                 """
             ).fetchall()
             by_key = {(row["ticker"], row["figure_type"], row["period"]): row for row in rows}
-            actual = by_key[("AMZN", "PaymentsToAcquireProductiveAssets", "quarter|2025-01-01/2025-03-31")]
-            self.assertEqual(actual["value"], 24000000000)
+            actual = by_key[("AMZN", "PaymentsToAcquireProductiveAssets", "2025-01-01/2025-03-31")]
+            self.assertEqual(actual["instrument"], "quarter")
+            self.assertEqual(actual["value"], 25000000000)
             self.assertEqual(actual["currency"], "USD")
-            self.assertEqual(actual["announced_on"], "2025-04-15")
-            ytd = by_key[("AMZN", "PaymentsToAcquireProductiveAssets", "ytd|2025-01-01/2025-06-30")]
+            self.assertEqual(actual["announced_on"], "2025-05-01")
+            ytd = by_key[("AMZN", "PaymentsToAcquireProductiveAssets", "2025-01-01/2025-06-30")]
+            self.assertEqual(ytd["instrument"], "ytd")
             self.assertEqual(ytd["value"], 48000000000)
             self.assertEqual(ytd["announced_on"], "2025-08-01")
-            trailing = by_key[("AMZN", "PaymentsToAcquireProductiveAssets", "ttm|2025-07-01/2026-06-30")]
-            self.assertEqual(trailing["value"], 90000000000)
-            self.assertEqual(trailing["announced_on"], "2026-07-15")
+            trailing = by_key[("AMZN", "PaymentsToAcquireProductiveAssets", "2025-07-01/2026-06-30")]
+            self.assertEqual(trailing["instrument"], "ttm")
+            self.assertEqual(trailing["value"], 91000000000)
+            self.assertEqual(trailing["announced_on"], "2026-08-20")
             self.assertEqual(actual["source_type"], "filing")
             self.assertEqual(actual["verified"], 1)
             self.assertIn("/Archives/edgar/data/1018724/", actual["source_url"])
@@ -233,8 +279,49 @@ class CapexTests(unittest.TestCase):
         by_end = {item["row"]["end"]: item for item in facts}
         self.assertEqual(by_end["2025-09-30"]["period_label"], "quarter")
         self.assertEqual(by_end["2026-06-30"]["period_label"], "annual")
-        self.assertEqual(by_end["2026-06-30"]["row"]["val"], 40)
-        self.assertEqual(by_end["2026-06-30"]["row"]["filed"], "2026-08-15")
+        self.assertEqual(by_end["2026-06-30"]["row"]["val"], 41)
+        self.assertEqual(by_end["2026-06-30"]["row"]["filed"], "2026-09-01")
+
+    def test_same_day_runs_keep_their_figures(self):
+        def bundle(value):
+            return [
+                {
+                    "ticker": "AMZN",
+                    "cik": "0001018724",
+                    "company": "Amazon.com Inc",
+                    "facts": [
+                        {
+                            "tag": "PaymentsToAcquireProductiveAssets",
+                            "unit": "usd",
+                            "row": {
+                                "start": "2025-01-01",
+                                "end": "2025-03-31",
+                                "val": value,
+                                "accn": "0001018724-25-000001",
+                                "filed": "2025-05-01",
+                            },
+                        }
+                    ],
+                }
+            ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            first = pipeline.run(
+                db, bundle(25_000_000_000), [], [], started_at="2026-10-12T08:15:00Z", seen_at="2026-10-12"
+            )
+            second = pipeline.run(
+                db, bundle(11_000_000_000), [], [], started_at="2026-10-12T18:45:09Z", seen_at="2026-10-12"
+            )
+            self.assertEqual(first["run_id"], "2026-10-12-081500-capex")
+            self.assertEqual(second["run_id"], "2026-10-12-184509-capex")
+            conn = sqlite3.connect(db)
+            morning = conn.execute("SELECT value FROM figures WHERE run_id = ?", (first["run_id"],)).fetchone()[0]
+            afternoon = conn.execute("SELECT value FROM figures WHERE run_id = ?", (second["run_id"],)).fetchone()[0]
+            self.assertEqual(morning, 25_000_000_000)
+            self.assertEqual(afternoon, 11_000_000_000)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 2)
+            conn.close()
 
     def test_amounts_and_sec_email_gate(self):
         self.assertEqual(first_amount("$75 billion")["value"], 75_000_000_000)
@@ -278,6 +365,234 @@ class CapexTests(unittest.TestCase):
         finally:
             if previous is not None:
                 os.environ["SEC_CONTACT_EMAIL"] = previous
+
+
+    def test_duplicate_guidance_does_not_roll_the_save_back(self):
+        older = _guidance_hit("2025-07-01", "Raises capital expenditure outlook to $10 billion.")
+        newer = _guidance_hit("2025-08-01", "Raises capital expenditure outlook to $12 billion.")
+        facts = [
+            {
+                "ticker": "AMZN",
+                "cik": "0001018724",
+                "company": "Amazon.com Inc",
+                "facts": [
+                    {
+                        "tag": "PaymentsToAcquireProductiveAssets",
+                        "unit": "USD",
+                        "row": {
+                            "start": "2025-01-01",
+                            "end": "2025-03-31",
+                            "val": 5,
+                            "filed": "2025-05-01",
+                            "form": "10-Q",
+                            "accn": "0001018724-25-000008",
+                            "fp": "Q1",
+                        },
+                    }
+                ],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            with self.assertLogs("shared.store", level="WARNING") as caught:
+                summary = pipeline.run(
+                    db,
+                    facts,
+                    [older, newer],
+                    [],
+                    started_at="2026-10-12T00:00:00Z",
+                    seen_at="2026-10-12",
+                )
+            self.assertEqual(summary["figures"], 2)
+            conn = sqlite3.connect(db)
+            conn.row_factory = sqlite3.Row
+            run = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+            rows = conn.execute(
+                "SELECT ticker, figure_type, period, value FROM figures"
+            ).fetchall()
+            conn.close()
+        self.assertEqual(run, 1)
+        by_key = {(row["ticker"], row["figure_type"], row["period"]): row["value"] for row in rows}
+        self.assertEqual(by_key[("AMZN", "capex_guidance", "2025-06-30")], 12_000_000_000)
+        self.assertEqual(
+            by_key[("AMZN", "PaymentsToAcquireProductiveAssets", "2025-01-01/2025-03-31")],
+            5,
+        )
+        self.assertTrue(any("value=10000000000.0" in line and "kept value=12000000000.0" in line for line in caught.output))
+
+    def test_single_quarter_beats_a_newer_year_to_date_fact(self):
+        payload = {
+            "facts": {
+                "us-gaap": {
+                    "PaymentsToAcquireProductiveAssets": {
+                        "units": {
+                            "USD": [
+                                {
+                                    "start": "2025-04-01",
+                                    "end": "2025-06-30",
+                                    "val": 48000000000,
+                                    "filed": "2025-08-15",
+                                    "form": "10-Q",
+                                    "frame": "CY2025Q2YTD",
+                                    "fp": "Q2",
+                                    "accn": "0001018724-25-000099",
+                                },
+                                {
+                                    "start": "2025-04-01",
+                                    "end": "2025-06-30",
+                                    "val": 10000000000,
+                                    "filed": "2025-08-01",
+                                    "form": "10-Q",
+                                    "frame": "CY2025Q2",
+                                    "fp": "Q2",
+                                    "accn": "0001018724-25-000010",
+                                },
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        with self.assertLogs("shared.store", level="WARNING") as caught:
+            chosen = fetcher.select_facts(payload, ticker="AMZN")
+        self.assertEqual(len(chosen), 1)
+        self.assertEqual(chosen[0]["row"]["val"], 10000000000)
+        self.assertEqual(chosen[0]["row"]["frame"], "CY2025Q2")
+        self.assertTrue(any("value=48000000000" in line for line in caught.output))
+
+    def test_live_duplicate_units_store_the_later_filing(self):
+        payload = {
+            "cik": 1018724,
+            "entityName": "AMAZON COM INC",
+            "facts": {
+                "us-gaap": {
+                    "PaymentsToAcquireProductiveAssets": {
+                        "units": {
+                            "USD": [
+                                {
+                                    "start": "2025-01-01",
+                                    "end": "2025-03-31",
+                                    "val": 10,
+                                    "filed": "2025-05-01",
+                                    "form": "10-Q",
+                                    "fp": "Q1",
+                                    "accn": "0001018724-25-000008",
+                                },
+                                {
+                                    "start": "2025-01-01",
+                                    "end": "2025-06-30",
+                                    "val": 30,
+                                    "filed": "2025-08-01",
+                                    "form": "10-Q",
+                                    "fp": "Q2",
+                                    "accn": "0001018724-25-000010",
+                                },
+                            ],
+                            "EUR": [
+                                {
+                                    "start": "2025-01-01",
+                                    "end": "2025-03-31",
+                                    "val": 12,
+                                    "filed": "2025-08-01",
+                                    "form": "10-Q",
+                                    "fp": "Q1",
+                                    "accn": "0001018724-25-000011",
+                                }
+                            ],
+                        }
+                    }
+                }
+            },
+        }
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                fixture = Path(tmp) / "facts.json"
+                fixture.write_text(json.dumps(payload), encoding="utf-8")
+                db = str(Path(tmp) / "history.sqlite")
+                with self.assertLogs("shared.store", level="WARNING") as caught:
+                    code = live.main(["--db", db, "--sec-fixture", str(fixture), "--no-asx"])
+                self.assertEqual(code, 0)
+                conn = sqlite3.connect(db)
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT period, value, currency FROM figures ORDER BY period, currency"
+                ).fetchall()
+                conn.close()
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
+        stored = {(row["period"], row["currency"]): row["value"] for row in rows}
+        self.assertEqual(stored[("2025-01-01/2025-03-31", "EUR")], 12)
+        self.assertEqual(stored[("2025-01-01/2025-06-30", "USD")], 30)
+        self.assertNotIn(("2025-01-01/2025-03-31", "USD"), stored)
+        self.assertTrue(any("value=10" in line and "kept value=12" in line for line in caught.output))
+
+    def test_store_skips_a_second_insert_with_the_same_key(self):
+        from shared.store import _insert_figures, connect, save_run
+
+        row = {
+            "ticker": "AMZN",
+            "figure_type": "capex_guidance",
+            "instrument": "0001018724-25-000020",
+            "period": "2025-06-30",
+            "value": 1,
+            "value_text": "1",
+            "currency": "USD",
+            "seen_at": "2026-10-12",
+            "announced_on": "2025-07-01",
+            "source_url": "https://www.sec.gov/Archives/edgar/data/1018724/",
+            "source_type": "filing",
+            "verified": 1,
+        }
+        duplicate = dict(row, value=2, announced_on="2025-08-01")
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            conn = connect(db)
+            run_id = save_run(conn, "capex", "2026-10-12T00:00:00Z", [row])
+            with conn:
+                _insert_figures(conn, run_id, [duplicate])
+            stored = conn.execute("SELECT value, COUNT(*) FROM figures").fetchone()
+            conn.close()
+        self.assertEqual(stored[0], 1)
+        self.assertEqual(stored[1], 1)
+
+    def test_help_exits_zero_without_network(self):
+        import subprocess
+        import sys
+
+        env = {key: value for key, value in os.environ.items() if key != "SEC_CONTACT_EMAIL"}
+        for flag in ("--help", "-h"):
+            completed = subprocess.run(
+                [sys.executable, "-m", "Scouts.capex.live", flag],
+                cwd=str(REPO),
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("usage", completed.stdout.lower())
+
+
+def _guidance_hit(file_date, description):
+    return {
+        "ticker": "AMZN",
+        "cik": "0001018724",
+        "company": "Amazon.com Inc",
+        "hit": {
+            "_id": "0001018724-25-000020:amzn.htm",
+            "_source": {
+                "adsh": "0001018724-25-000020",
+                "form": "8-K",
+                "file_date": file_date,
+                "period_ending": "2025-06-30",
+                "file_description": description,
+                "ciks": ["0001018724"],
+                "display_names": ["Amazon.com, Inc."],
+            },
+        },
+    }
 
 
 if __name__ == "__main__":

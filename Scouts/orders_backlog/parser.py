@@ -10,10 +10,13 @@ from datetime import date, datetime
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_REPO = _ROOT.parents[1]
+for _entry in (str(_REPO), str(_ROOT)):
+    if _entry not in sys.path:
+        sys.path.insert(0, _entry)
 
 from model import archive_index_url, record
+from shared.store import log_duplicate, prefer_fact
 from tags import (
     ACTIVE_BACKLOG_TAGS,
     ACTIVE_INTAKE_TAGS,
@@ -104,8 +107,7 @@ def parse_company_facts(payload, company, source_side, max_quarters=DEFAULT_RECE
     for (concept, end, currency), points in sorted(by_key.items()):
         kind = "stale" if points[0][0] == "stale" else "active"
         values = {point.get("val") for _kind, point in points}
-        latest = max(points, key=lambda item: item[1].get("filed") or "")
-        point = latest[1]
+        point = _choose_point(points, company, concept, end, currency)
         flags = []
         notes = []
         if len(values) > 1:
@@ -139,7 +141,7 @@ def parse_company_facts(payload, company, source_side, max_quarters=DEFAULT_RECE
                 source_type="xbrl_company_facts",
                 disclosure=disclosure,
                 flags=flags,
-                notes=notes or [concept],
+                notes=[concept, *notes],
             )
         )
     return _recent_periods(rows, max_quarters)
@@ -321,6 +323,40 @@ def _supplier_text(text, company, source_type, source_url, filing_date):
             )
         )
     return rows
+
+
+def _choose_point(points, company, concept, end, currency):
+    """Keep the single-quarter value, then the most recent filing."""
+    chosen = points[0][1]
+    for _kind, point in points[1:]:
+        if prefer_fact(point, chosen):
+            log_duplicate(
+                _fact_row(company, concept, end, currency, chosen),
+                _fact_row(company, concept, end, currency, point),
+            )
+            chosen = point
+        else:
+            log_duplicate(
+                _fact_row(company, concept, end, currency, point),
+                _fact_row(company, concept, end, currency, chosen),
+            )
+    return chosen
+
+
+def _fact_row(company, concept, end, currency, point):
+    return {
+        "ticker": company.get("ticker") or "",
+        "figure_type": concept,
+        "instrument": "",
+        "period": end or "",
+        "value": point.get("val"),
+        "currency": currency,
+        "filed": point.get("filed"),
+        "frame": point.get("frame"),
+        "fp": point.get("fp"),
+        "start": point.get("start"),
+        "end": point.get("end") or end,
+    }
 
 
 def _tag_sets(company, source_side):

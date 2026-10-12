@@ -12,9 +12,12 @@ at most five announcements per company.
 
 The default database is /tmp/cause-n-effect-capex.sqlite. SEC names are
 AMZN, ORCL, and MSFT in universe_sec.json. Guidance search covers the last
-90 days. Cash-flow tags are stored as the year-to-date span SEC reported.
+90 days. Cash-flow tags keep the reported span. A single quarter is derived when the
+prior year-to-date figure is present. Periods older than --quarters (default 8)
+are dropped.
 """
 
+import argparse
 import json
 import os
 import sqlite3
@@ -44,17 +47,33 @@ def sec_block_message():
     return "SEC_CONTACT_EMAIL is missing. No SEC request was sent."
 
 
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="python3 -m Scouts.capex.live",
+        description="Store SEC companyfacts, capex guidance, and ASX capex headlines.",
+    )
+    parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite history path")
+    parser.add_argument("--sec-fixture", help="read this companyfacts JSON instead of contacting EDGAR")
+    parser.add_argument("--no-asx", action="store_true", help="do not request ASX announcements")
+    parser.add_argument(
+        "--quarters",
+        type=int,
+        default=fetcher.RECENT_QUARTERS,
+        help=f"keep companyfacts whose period end falls in the last N quarters (default {fetcher.RECENT_QUARTERS})",
+    )
+    return parser
+
+
 def main(argv=None):
-    args = list(sys.argv[1:] if argv is None else argv)
-    db_path = DEFAULT_DB
-    if "--db" in args:
-        db_path = Path(args[args.index("--db") + 1])
+    args = build_parser().parse_args(argv)
+    db_path = Path(args.db)
+    quarters = args.quarters
     sec_companies = json.loads(SEC_UNIVERSE.read_text(encoding="utf-8"))["companies"]
-    asx_companies = [] if "--no-asx" in args else json.loads(ASX_UNIVERSE.read_text(encoding="utf-8"))["companies"]
+    asx_companies = [] if args.no_asx else json.loads(ASX_UNIVERSE.read_text(encoding="utf-8"))["companies"]
     facts = []
     guidance = []
-    if "--sec-fixture" in args:
-        fixture = Path(args[args.index("--sec-fixture") + 1])
+    if args.sec_fixture:
+        fixture = Path(args.sec_fixture)
         payload = json.loads(fixture.read_text(encoding="utf-8"))
         company = sec_companies[0]
         facts = [
@@ -62,7 +81,7 @@ def main(argv=None):
                 "ticker": company["ticker"],
                 "cik": str(int(company["cik"])).zfill(10),
                 "company": payload.get("entityName") or company.get("name"),
-                "facts": fetcher.select_facts(payload),
+                "facts": fetcher.select_facts(payload, ticker=company["ticker"], quarters=quarters),
             }
         ]
         print(f"SEC fixture {fixture}")
@@ -76,10 +95,10 @@ def main(argv=None):
             names = ", ".join(company["ticker"] for company in sec_companies)
             print(f"SEC companyfacts for {names}")
             print(f"EDGAR full-text capex guidance {start} to {end}")
-            facts = fetcher.collect_companyfacts(sec_companies)
+            facts = fetcher.collect_companyfacts(sec_companies, quarters=quarters)
             guidance = fetcher.collect_guidance(sec_companies, start=start, end=end)
     announcements = []
-    if "--no-asx" in args:
+    if args.no_asx:
         pass
     elif asx_companies:
         print(f"ASX announcements, at most {fetcher.ASX_CAP} per company")
@@ -94,7 +113,7 @@ def main(argv=None):
     notes = (
         "SEC companyfacts and EDGAR full-text guidance; "
         f"ASX list capped at {fetcher.ASX_CAP}. "
-        "Cash-flow tags are the reported year-to-date span."
+        f"Cash-flow tags are the reported span; quarters={quarters}."
     )
     summary = pipeline.run(
         db_path,
@@ -122,7 +141,7 @@ def main(argv=None):
         print("figures: (none)")
     for row in rows:
         print(
-            f"  {row['ticker']} {row['figure_type']} period={row['period']} "
+            f"  {row['ticker']} {row['figure_type']} {row['instrument']} period={row['period']} "
             f"value={row['value']} {row['currency'] or ''} text={row['value_text']} "
             f"announced_on={row['announced_on']} verified={row['verified']} "
             f"source_type={row['source_type']} url={row['source_url']}"

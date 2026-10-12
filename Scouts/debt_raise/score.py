@@ -129,11 +129,31 @@ def redact(text):
     return _EMAIL.sub("[redacted]", text or "")
 
 
-# Deal size ignores boilerplate under this amount unless the caller overrides it.
+# Under US$1,000,000 is a denomination, a par figure, or a fee, not a deal.
+_MIN_DEAL = 1_000_000
+# Structured notes of a few million are real deals above that floor. The
+# pipeline drops them unless the caller lowers this store floor.
 DEFAULT_MIN_DEAL_USD = 50_000_000
-
-_PRINCIPAL = re.compile(r"aggregate principal amount", re.I)
-_OFFERING = re.compile(r"\boffering\b", re.I)
+_BEFORE = 120
+_AFTER = 80
+_AGGREGATE = re.compile(r"aggregate principal(?:\s+amount)?", re.I)
+_OFFERING_PHRASE = re.compile(r"aggregate offering(?:\s+price)?|offering amount", re.I)
+_OFFERING_OF = re.compile(
+    r"\boffering of(?:\s+(?:approximately|about|up to))?\s*$",
+    re.I,
+)
+_COVER_TOTAL = re.compile(r"\btotal(?:\s+amount)?(?:\s+of)?\s*$", re.I)
+_REJECT = re.compile(
+    r"\bdenominations?\b|\bintegral multiples?\b|\bpar value\b|\bper notes?\b|"
+    r"\bfees?\b|\bunderwriting discounts?\b|\bcommissions?\b",
+    re.I,
+)
+_CONVERSION_OPEN = re.compile(
+    r"\s*\(\s*(?:approximately\s+|about\s+|or\s+)?$",
+    re.I,
+)
+_CONVERSION_CLOSE = re.compile(r"(?:\s+[A-Za-z]+){0,4}\s*\)")
+_SENTENCE = re.compile(r"\.\s+")
 _NOISE_BEFORE = re.compile(
     r"(?:less than|at least|greater than|more than|up to|minimum denomination|"
     r"offering price(?: of)?|discount of|commission of|fee of)\s*$",
@@ -147,72 +167,128 @@ _STATED_TOTAL = re.compile(
 _IN_THE_AGGREGATE = re.compile(r"^\s*in the aggregate\b", re.I)
 
 
-def first_amount(text):
-    """First stated money amount. A later parenthetical conversion is left out."""
-    found = money_amounts(text)
-    if not found:
+def _amount_from(match):
+    scale = _SCALE.get((match.group("scale") or "").casefold(), 1)
+    number = float(match.group("num").replace(",", ""))
+    return {
+        "value": number * scale,
+        "currency": _CURRENCY[(match.group("cur") or "").casefold()],
+        "text": match.group(0).strip(),
+    }
+
+
+def _nearest(before, after, pattern):
+    best = None
+    for found in pattern.finditer(before):
+        dist = len(before) - found.end()
+        if best is None or dist < best:
+            best = dist
+    for found in pattern.finditer(after):
+        dist = found.start()
+        if best is None or dist < best:
+            best = dist
+    return best
+
+
+def _labeled_wins(dist, reject_at):
+    return dist is not None and (reject_at is None or dist <= reject_at)
+
+
+def _conversion_indexes(plain, matches):
+    """Parenthetical currency conversions sit beside the amount they restate."""
+    skip = set()
+    for index, match in enumerate(matches[:-1]):
+        nxt = matches[index + 1]
+        between = plain[match.end() : nxt.start()]
+        after = plain[nxt.end() : nxt.end() + 24]
+        if _CONVERSION_OPEN.fullmatch(between) and _CONVERSION_CLOSE.match(after):
+            skip.add(index + 1)
+    return skip
+
+
+def _sentence_before(gap):
+    return _SENTENCE.split(gap)[-1][-_BEFORE:]
+
+
+def _sentence_after(gap):
+    return _SENTENCE.split(gap, maxsplit=1)[0][:_AFTER]
+
+
+def _classify(plain, match, prev_end, next_start):
+    amount = _amount_from(match)
+    amount["start"] = match.start()
+    amount["end"] = match.end()
+    if amount["value"] < _MIN_DEAL:
         return None
-    return _public_amount(found[0])
+    # Labels bind inside the current sentence, so the next sentence's
+    # "aggregate principal amount" is not attached to the previous figure.
+    before = _sentence_before(plain[prev_end : match.start()])
+    after = _sentence_after(plain[match.end() : next_start])
+    if _NOISE_BEFORE.search(before[-40:]) or _NOISE_AFTER.match(after):
+        return None
+    reject_at = _nearest(before, after, _REJECT)
+    aggregate_at = _nearest(before, after, _AGGREGATE)
+    offering_at = _nearest(before, after, _OFFERING_PHRASE)
+    if _OFFERING_OF.search(before):
+        offering_at = 0 if offering_at is None else min(offering_at, 0)
+    cover_at = 0 if _COVER_TOTAL.search(before) else None
+    labeled = [dist for dist in (aggregate_at, offering_at, cover_at) if dist is not None]
+    prefer_at = min(labeled) if labeled else None
+    if reject_at is not None and (prefer_at is None or reject_at < prefer_at):
+        return None
+    if _labeled_wins(aggregate_at, reject_at):
+        tier = 3
+    elif _labeled_wins(offering_at, reject_at):
+        tier = 2
+    elif _labeled_wins(cover_at, reject_at):
+        tier = 1
+    else:
+        tier = 0
+    amount["tier"] = tier
+    return amount
 
 
-def money_amounts(text):
-    """Every money amount in document order, with offsets into the plain text."""
-    plain = plain_text(text)
-    found = []
-    for match in _MONEY.finditer(plain):
-        scale = _SCALE.get((match.group("scale") or "").casefold(), 1)
-        number = float(match.group("num").replace(",", ""))
-        found.append(
-            {
-                "value": number * scale,
-                "currency": _CURRENCY[(match.group("cur") or "").casefold()],
-                "text": match.group(0).strip(),
-                "start": match.start(),
-                "end": match.end(),
-            }
-        )
-    return found
+def _one_value(group):
+    return len({round(item["value"], 2) for item in group}) == 1
 
 
-def deal_amount(text, min_deal=DEFAULT_MIN_DEAL_USD):
-    """Deal size from amounts tied to the offering, not the first dollar figure.
+def _choose(candidates, plain, min_deal):
+    if not candidates:
+        return None, True
+    for tier in (3, 2, 1):
+        group = [item for item in candidates if item["tier"] == tier]
+        if not group:
+            continue
+        if tier == 3:
+            combined = _combine_principal(group, plain, min_deal)
+            if combined is None:
+                return None, True
+            return combined, False
+        if _one_value(group):
+            return group[0], False
+        return None, True
+    if _one_value(candidates):
+        return candidates[0], False
+    return None, True
 
-    Amounts next to "aggregate principal amount" win over amounts that only sit
-    near "offering". A stated total is kept when the filing gives one. Otherwise
-    tranche principal amounts are summed. A parenthetical currency conversion is
-    not a second tranche. When nothing is tied to those phrases, the first
-    stated amount is used so a facility can still be read.
+
+def _combine_principal(group, plain, min_deal):
+    """Stated total, else the sum of the tranches, else the largest principal.
+
+    A figure under `min_deal` is left out of the sum when a larger principal
+    amount is present, so a covenant floor is not added to the deal.
     """
-    plain = plain_text(text)
-    amounts = [
-        item
-        for item in money_amounts(plain)
-        if not _parenthetical(plain, item["start"]) and not _noise_amount(plain, item)
-    ]
-    if not amounts:
-        return None
-    principal = [item for item in amounts if _near(plain, item, _PRINCIPAL)]
-    offering = [item for item in amounts if _near(plain, item, _OFFERING)]
-    pool = principal or offering
-    if not pool:
-        return _public_amount(amounts[0])
-    picked = _combine_deal(plain, pool, min_deal)
-    return _public_amount(picked) if picked else None
-
-
-def _combine_deal(plain, pool, min_deal):
-    """Stated total, else the sum of the tranches, else the largest tied amount."""
     floor = float(min_deal)
-    totals = [item for item in pool if _stated_total(plain, item)]
-    candidates = totals or pool
+    totals = [item for item in group if _stated_total(plain, item)]
+    candidates = totals or list(group)
     if any(item["value"] >= floor for item in candidates):
         candidates = [item for item in candidates if item["value"] >= floor]
-    candidates = _one_currency(candidates)
     if not candidates:
         return None
+    candidates = _one_currency(candidates)
     if totals:
         return max(candidates, key=lambda item: item["value"])
-    if len(candidates) == 1:
+    if _one_value(candidates) or len(candidates) == 1:
         return candidates[0]
     largest = max(candidates, key=lambda item: item["value"])
     rest = [item for item in candidates if item is not largest]
@@ -223,8 +299,6 @@ def _combine_deal(plain, pool, min_deal):
         "value": sum(item["value"] for item in candidates),
         "currency": candidates[0]["currency"],
         "text": " + ".join(item["text"] for item in candidates),
-        "start": candidates[0]["start"],
-        "end": candidates[-1]["end"],
     }
 
 
@@ -239,41 +313,69 @@ def _one_currency(pool):
     return [item for item in pool if item["currency"] == chosen]
 
 
-def _public_amount(item):
-    return {
-        "value": item["value"],
-        "currency": item["currency"],
-        "text": item["text"],
-    }
-
-
-def _near(plain, item, pattern, radius=80):
-    window = plain[max(0, item["start"] - radius) : item["end"] + radius]
-    return pattern.search(window) is not None
-
-
-def _parenthetical(plain, start):
-    index = start - 1
-    while index >= 0 and plain[index] == " ":
-        index -= 1
-    return index >= 0 and plain[index] == "("
-
-
-def _noise_amount(plain, item):
-    """Covenant floors, fees, and per-note prices are not the deal size."""
-    prefix = plain[max(0, item["start"] - 40) : item["start"]]
-    suffix = plain[item["end"] : item["end"] + 20]
-    if _NOISE_BEFORE.search(prefix):
-        return True
-    return _NOISE_AFTER.search(suffix) is not None
-
-
 def _stated_total(plain, item):
     before = plain[max(0, item["start"] - 110) : item["start"]]
     after = plain[item["end"] : item["end"] + 24]
     if _STATED_TOTAL.search(before):
         return True
     return _IN_THE_AGGREGATE.search(after) is not None
+
+
+def pick_amount(text, min_deal=DEFAULT_MIN_DEAL_USD):
+    """Return (amount or None, needs_review).
+
+    Prefer an aggregate principal amount, then "offering of $X" or an aggregate
+    offering, then a cover-page total. Several aggregate-principal tranches are
+    summed, or a stated total is kept. Amounts near denominations, integral
+    multiples, par value, per note, or a fee are ignored, as is anything under
+    US$1,000,000. needs_review is true when money was stated but no single
+    plausible deal size is clear, so the caller stores nothing.
+    """
+    plain = plain_text(text).replace("\u00ad", "").replace("\u200b", "")
+    matches = list(_MONEY.finditer(plain))
+    if not matches:
+        return None, False
+    skipped = _conversion_indexes(plain, matches)
+    candidates = []
+    for index, match in enumerate(matches):
+        if index in skipped:
+            continue
+        prev_end = matches[index - 1].end() if index else 0
+        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(plain)
+        parsed = _classify(plain, match, prev_end, next_start)
+        if parsed is not None:
+            candidates.append(parsed)
+    amount, needs_review = _choose(candidates, plain, min_deal)
+    if amount is not None:
+        amount = {
+            "value": amount["value"],
+            "currency": amount["currency"],
+            "text": amount["text"],
+        }
+    return amount, needs_review
+
+
+def first_amount(text):
+    """Deal size, or None when the text does not state one.
+
+    A later parenthetical currency conversion is left out. Denominations,
+    integral multiples, par value, per-note prices, fees, and amounts under
+    US$1,000,000 are not a deal.
+    """
+    amount, _needs_review = pick_amount(text)
+    return amount
+
+
+def deal_amount(text, min_deal=DEFAULT_MIN_DEAL_USD):
+    """Deal size from aggregate principal, or None when the text does not state one.
+
+    Tranche principal amounts are summed unless the filing states a total.
+    A figure under `min_deal` is left out of that sum when a larger principal
+    amount is present. A deal that is itself under the floor is still returned
+    so the caller can log it instead of storing it.
+    """
+    amount, _needs_review = pick_amount(text, min_deal=min_deal)
+    return amount
 
 
 def figure_kind(text):

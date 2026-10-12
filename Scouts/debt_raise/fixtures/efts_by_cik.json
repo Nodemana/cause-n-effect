@@ -1,0 +1,103 @@
+{
+  "hits": {
+    "total": {"value": 8},
+    "hits": [
+      {
+        "_id": "amzn-424b2-a",
+        "_source": {
+          "adsh": "0001018724-25-900001",
+          "ciks": ["1018724"],
+          "form": "424B2",
+          "file_date": "2025-11-03",
+          "items": "",
+          "file_description": "Prospectus supplement for senior notes",
+          "display_names": ["Amazon.com, Inc.  (CIK 0001018724)"]
+        }
+      },
+      {
+        "_id": "orcl-424b2-a",
+        "_source": {
+          "adsh": "0001341439-25-900002",
+          "ciks": ["0001341439"],
+          "form": "424B2",
+          "file_date": "2025-11-18",
+          "items": "",
+          "file_description": "Medium-term notes prospectus supplement",
+          "display_names": ["Oracle Corp"]
+        }
+      },
+      {
+        "_id": "msft-424b5",
+        "_source": {
+          "adsh": "0000789019-25-900003",
+          "ciks": ["789019"],
+          "form": "424B5",
+          "file_date": "2025-12-02",
+          "items": "",
+          "file_description": "Prospectus supplement",
+          "display_names": ["Microsoft Corporation  (CIK 0000789019)"]
+        }
+      },
+      {
+        "_id": "amzn-424b2-b",
+        "_source": {
+          "adsh": "0001018724-25-900004",
+          "ciks": ["0001018724"],
+          "form": "424B2",
+          "file_date": "2026-01-15",
+          "items": "",
+          "file_description": "Senior notes",
+          "display_names": ["Amazon.com, Inc.  (CIK 0001018724)"]
+        }
+      },
+      {
+        "_id": "orcl-424b2-b",
+        "_source": {
+          "adsh": "0001341439-25-900005",
+          "ciks": ["1341439"],
+          "form": "424B2",
+          "file_date": "2026-02-02",
+          "items": "",
+          "file_description": "Notes due 2031",
+          "display_names": ["Oracle Corp  (ORCL)  (CIK 0001341439)"]
+        }
+      },
+      {
+        "_id": "msft-8k",
+        "_source": {
+          "adsh": "0000789019-25-900006",
+          "ciks": ["0000789019"],
+          "form": "8-K",
+          "file_date": "2026-03-01",
+          "items": "2.03",
+          "file_description": "Item 2.03 Creation of a Direct Financial Obligation.",
+          "display_names": ["Microsoft Corporation  (MSFT)  (CIK 0000789019)"]
+        }
+      },
+      {
+        "_id": "amzn-officer",
+        "_source": {
+          "adsh": "0001018724-25-900007",
+          "ciks": ["1018724"],
+          "form": "8-K",
+          "file_date": "2026-03-04",
+          "items": "5.02",
+          "file_description": "Departure of a director",
+          "display_names": ["Amazon.com, Inc.  (AMZN)  (CIK 0001018724)"]
+        }
+      },
+      {
+        "_id": "nwt-424b2",
+        "_source": {
+          "adsh": "0000999001-25-900008",
+          "ciks": ["999001"],
+          "form": "424B2",
+          "file_date": "2026-03-05",
+          "items": "",
+          "file_description": "Northwind notes",
+          "display_names": ["Northwind Grid  (CIK 0000999001)"]
+        }
+      }
+    ]
+  }
+}

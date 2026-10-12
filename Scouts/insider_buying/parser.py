@@ -6,6 +6,7 @@ Appendix 3Y keeps on-market acquisitions only. Sales, grants, gifts, option
 exercises, and off-market changes are left unmarked so the filter can drop them.
 """
 
+import html
 import re
 from datetime import date
 from xml.etree import ElementTree
@@ -28,7 +29,7 @@ _MONEY = re.compile(
 
 
 def parse_form4(body, source_url, filing_date, ticker=None):
-    text = (body or "").lstrip("\ufeff").strip()
+    text = _prepare_ownership_xml(body)
     if not text:
         return [_shell("sec", "4", source_url, filing_date, ticker, ["unparseable"], ["empty Form 4"])]
     try:
@@ -46,10 +47,9 @@ def parse_form4(body, source_url, filing_date, ticker=None):
     issuer_ticker = (_direct_text(root, "issuer", "issuerTradingSymbol") or "").upper() or None
     flags = []
     notes = []
-    if ticker and issuer_ticker and ticker.upper() != issuer_ticker:
-        flags.append("conflicting_data")
-        notes.append("filing ticker and issuer symbol differ")
     use_ticker = issuer_ticker or (ticker.upper() if ticker else None)
+    if ticker and issuer_ticker and _norm_symbol(ticker) != _norm_symbol(issuer_ticker):
+        notes.append("index ticker and issuer symbol differ; using the issuer symbol on the form")
     if len(owners) > 1:
         flags.append("joint_filing")
         notes.append("more than one reporting owner")
@@ -61,9 +61,12 @@ def parse_form4(body, source_url, filing_date, ticker=None):
     transactions = find_all(root, "nonDerivativeTransaction")
     if not transactions:
         return []
+    footnotes = _footnotes(root)
     for owner in owners:
         for node in transactions:
-            rows.append(_form4_row(node, owner, issuer_name, use_ticker, form, source_url, filed, flags, notes))
+            rows.append(
+                _form4_row(node, owner, issuer_name, use_ticker, form, source_url, filed, flags, notes, footnotes)
+            )
     return rows
 
 
@@ -119,6 +122,20 @@ _MONTHS = {
 }
 
 
+def _prepare_ownership_xml(body):
+    """Pull the ownership document out of a submission wrapper, HTML escape, or default namespace."""
+    raw = (body or "").lstrip("\ufeff").strip()
+    if not raw:
+        return ""
+    if "ownershipdocument" not in raw.casefold() and "&lt;ownershipdocument" in raw.casefold():
+        raw = html.unescape(raw)
+    match = re.search(r"<ownershipDocument\b[^>]*>.*?</ownershipDocument>", raw, re.I | re.S)
+    if match:
+        raw = match.group(0)
+    raw = raw.replace("&nbsp;", " ")
+    return raw.strip()
+
+
 def local(tag):
     if tag.startswith("{"):
         return tag.rsplit("}", 1)[-1]
@@ -140,7 +157,7 @@ def first_text(elem, *names):
     return None
 
 
-def _form4_row(node, owner, company, ticker, form, source_url, filing_date, shared_flags, shared_notes):
+def _form4_row(node, owner, company, ticker, form, source_url, filing_date, shared_flags, shared_notes, footnotes=None):
     code = (_tag_value(node, "transactionCode")[0] or "").upper()
     acquired = (_tag_value(node, "transactionAcquiredDisposedCode")[0] or "").upper()
     shares_text, shares_ok = _tag_value(node, "transactionShares")
@@ -148,6 +165,8 @@ def _form4_row(node, owner, company, ticker, form, source_url, filing_date, shar
     when = parse_date(_tag_value(node, "transactionDate")[0])
     shares = _number(shares_text) if shares_ok else None
     price = _number(price_text) if price_ok else None
+    if price is None:
+        price = _footnote_price(node, footnotes or {})
     flags = list(shared_flags)
     notes = list(shared_notes)
     if not owner.get("name"):
@@ -159,8 +178,8 @@ def _form4_row(node, owner, company, ticker, form, source_url, filing_date, shar
     if not code:
         flags.append("unparseable")
         notes.append("transaction code missing")
-    elif code == "P" and acquired != "A":
-        flags.append("conflicting_data" if acquired else "ambiguous_item")
+    elif code == "P" and acquired not in {"", "A"}:
+        flags.append("conflicting_data")
         notes.append("code P is not marked acquired")
     if _swap(node):
         flags.append("ambiguous_item")
@@ -169,11 +188,7 @@ def _form4_row(node, owner, company, ticker, form, source_url, filing_date, shar
     if code and code not in known:
         flags.append("ambiguous_item")
         notes.append(f"unrecognised transaction code {code}")
-    open_market = (
-        code == "P"
-        and acquired == "A"
-        and not flags
-    )
+    open_market = code == "P" and acquired in {"", "A"} and not flags
     if open_market and (shares is None or shares <= 0 or price is None or price <= 0):
         flags.append("missing_value")
         notes.append("open-market purchase without shares and price")
@@ -275,6 +290,48 @@ def _3y_row(part, director, company, header_title, ticker, source_url, filing_da
         flags=flags,
         notes=notes,
     )
+
+
+def _norm_symbol(value):
+    return re.sub(r"[^A-Z0-9]", "", (value or "").upper())
+
+
+def _footnotes(root):
+    found = {}
+    for node in find_all(root, "footnote"):
+        fid = node.attrib.get("id") or node.attrib.get("Id") or ""
+        if not fid:
+            continue
+        found[fid] = " ".join("".join(node.itertext()).split())
+    return found
+
+
+def _footnote_price(node, footnotes):
+    """A single price, or the stated weighted average, from the price footnote."""
+    ids = []
+    for price_node in node.iter():
+        if local(price_node.tag).lower() != "transactionpricepershare":
+            continue
+        for item in price_node.iter():
+            if local(item.tag).lower() != "footnoteid":
+                continue
+            fid = item.attrib.get("id") or item.attrib.get("Id")
+            if fid:
+                ids.append(fid)
+    blob = " ".join(footnotes.get(fid, "") for fid in ids)
+    if not blob.strip():
+        return None
+    average = re.search(
+        r"weighted average price of \$\s*(\d[\d,]*(?:\.\d+)?)",
+        blob,
+        re.I,
+    )
+    if average:
+        return _number(average.group(1))
+    amounts = re.findall(r"\$\s*(\d[\d,]*(?:\.\d+)?)", blob)
+    if len(amounts) == 1:
+        return _number(amounts[0])
+    return None
 
 
 def _owners(root):

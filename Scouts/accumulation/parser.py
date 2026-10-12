@@ -334,8 +334,8 @@ def _parse_asx(document):
         notes.append("notice is not Form 603, 604, or 605")
         form = document.form_type or "unknown"
 
-    company = _labeled(text, r"Company(?:/[^\n:]{0,80})?\s+name") or _labeled(text, r"Company name")
-    holder = _line_value(text, r"Name")
+    company = _asx_company(text)
+    holder = _asx_holder(text)
     acn_match = re.search(r"ACN/ARSN(?:/[A-Z]+)?\s*[:\-]?\s*([0-9][0-9 ]{4,})", text, re.I)
     target_id = norm_acn(acn_match.group(1)) if acn_match else None
 
@@ -392,6 +392,28 @@ def _parse_asx(document):
     ]
 
 
+def _asx_company(text):
+    labeled = _labeled(text, r"Company(?:/[^\n:]{0,80})?\s+name") or _labeled(text, r"Company name")
+    if labeled:
+        return labeled
+    match = re.search(r"Company Name/Scheme\s+(.+)", text, re.I)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _asx_holder(text):
+    """The substantial holder, not a later 'Name' label such as a contact line."""
+    match = re.search(
+        r"Details of substantial holder\b.*?(?:^|\n)\s*Name\s*[:\-]?\s+([^\n]+)",
+        text,
+        re.I | re.S,
+    )
+    if match:
+        return match.group(1).strip()
+    return _line_value(text, r"Name")
+
+
 def _asx_form_from_hint(hinted):
     key = canonical_form(hinted)
     if key in {"603", "604", "605", "FORM 603", "FORM 604", "FORM 605"}:
@@ -414,22 +436,95 @@ def _asx_form_from_text(text):
 
 
 def _asx_voting(text, form):
+    """Colon-labelled notices and the ASIC table layout from pdftotext -layout.
+
+    On a Form 604 the present column is the current stake. A table row keeps
+    the previous percent and the present percent on one line, with the share
+    counts beside them, so the numbers are not adjacent to the column labels.
+    """
     if form == "604":
-        previous_at = text.casefold().find("previous notice")
-        present_at = text.casefold().find("present notice")
-        previous = present_stake = present_shares = None
-        if previous_at >= 0 and present_at > previous_at:
-            previous = _voting_power(text[previous_at:present_at])
-            present_stake = _voting_power(text[present_at:])
-            present_shares = _share_count(text[present_at:], r"Person's votes")
-        return present_stake, present_shares, previous
+        return _asx_604_voting(text)
     if form == "605":
-        return _voting_power(text), _share_count(text, r"Person's votes"), None
-    return _voting_power(text), _share_count(text, r"Number of securities"), None
+        stake = _voting_power(text)
+        shares = _share_count(text, r"Person's votes")
+        if stake is None or shares is None:
+            row_stake, row_shares, _previous = _from_data_rows(_data_rows(text))
+            stake = stake if stake is not None else row_stake
+            shares = shares if shares is not None else row_shares
+        return stake, shares, None
+    stake = _voting_power(text)
+    shares = _share_count(text, r"Number of securities")
+    if stake is None or shares is None:
+        row_stake, row_shares, _previous = _from_data_rows(_data_rows(text))
+        stake = stake if stake is not None else row_stake
+        shares = shares if shares is not None else row_shares
+    return stake, shares, None
+
+
+def _asx_604_voting(text):
+    folded = text.casefold()
+    previous_at = folded.find("previous notice")
+    present_at = folded.find("present notice")
+    previous = present_stake = present_shares = None
+    if previous_at >= 0 and present_at > previous_at:
+        previous = _voting_power(text[previous_at:present_at])
+        present_stake = _voting_power(text[present_at:])
+        present_shares = _share_count(text[present_at:], r"Person's votes")
+        if previous is None or present_stake is None or present_shares is None:
+            row_stake, row_shares, row_previous = _from_data_rows(_data_rows(text[previous_at:]))
+            if previous is None:
+                previous = row_previous
+            if present_stake is None:
+                present_stake = row_stake
+            if present_shares is None:
+                present_shares = row_shares
+        return present_stake, present_shares, previous
+    stake = _voting_power(text)
+    shares = _share_count(text, r"Person's votes")
+    if stake is None or shares is None:
+        row_stake, row_shares, _previous = _from_data_rows(_data_rows(text))
+        stake = stake if stake is not None else row_stake
+        shares = shares if shares is not None else row_shares
+    return stake, shares, None
+
+
+def _data_rows(text):
+    """Lines that carry both a voting-power percent and a share count."""
+    rows = []
+    for line in text.splitlines():
+        percents = [float(item) for item in re.findall(r"(\d+(?:\.\d+)?)\s*(?:%|per\s*cent\b)", line, re.I)]
+        shares = []
+        for raw in re.findall(r"\d{1,3}(?:,\d{3})+|\d{5,}", line):
+            parsed = _strict_shares(raw)
+            if parsed:
+                shares.append(parsed)
+        if percents and shares:
+            rows.append((percents, shares))
+    return rows
+
+
+def _from_data_rows(rows):
+    """Return (present stake, present shares, previous stake) from table rows."""
+    if not rows:
+        return None, None, None
+    if len(rows) == 1 and len(rows[0][0]) >= 2:
+        percents, shares = rows[0]
+        present_shares = shares[-1] if len(shares) >= 2 else (shares[0] if shares else None)
+        return percents[-1], present_shares, percents[0]
+    if len(rows) == 1:
+        percents, shares = rows[0]
+        return percents[-1], (shares[0] if shares else None), None
+    present_pct, present_shares = rows[-1]
+    previous = rows[0][0][0]
+    return present_pct[-1], (present_shares[-1] if present_shares else None), previous
 
 
 def _voting_power(text):
-    match = re.search(r"voting power(?:\s*\(\d+\))?\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*%", text, re.I)
+    match = re.search(
+        r"voting power(?:\s*\(\d+\))?\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*(?:%|per\s*cent\b)",
+        text,
+        re.I,
+    )
     if not match:
         return None
     return float(match.group(1))

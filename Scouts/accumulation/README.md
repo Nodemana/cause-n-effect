@@ -6,7 +6,7 @@ Finds early stake building in official ownership filings. The scout fetches, par
 
 ## Data sources
 
-SEC Schedules 13D and 13G, including amendments, in both the legacy `SC 13D` / `SC 13G` types and the XML `SCHEDULE 13D` / `SCHEDULE 13G` types. ASX substantial holder notices are Form 603 (new), Form 604 (change), and Form 605 (ceasing). Every SEC and ASX request goes through `shared/nethttp.py`.
+SEC Schedules 13D and 13G, including amendments, in both the legacy `SC 13D` / `SC 13G` types and the XML `SCHEDULE 13D` / `SCHEDULE 13G` types. ASX substantial holder notices are Form 603 (new), Form 604 (change), and Form 605 (ceasing), from `asx.api.markitdigital.com`. Every SEC and ASX request goes through `shared/nethttp.py`. The SEC collector refuses to send when `SEC_CONTACT_EMAIL` is missing.
 
 ## What it captures
 
@@ -20,6 +20,15 @@ A filing is a candidate only inside a recent window (default 90 days), only when
 
 The ASX announcements feed is undocumented, returns only the latest five announcements per company (enough for a weekly run), and is health-checked. Sector is not on the filing; the screen uses a map supplied by the caller. The Legate decides which flagged leads pass a threshold.
 
+## Run
+
+The live command writes screened stakes into the shared figures table and exits nonzero when it stores no figure. A figure is `verified` when the primary document's cover page yielded both the percent of class and the share count. Currency is USD for an SEC stake and AUD for an ASX stake. The source URL is that primary document, and the accession is stored with it. Warrant, unit, and OTC-only tickers (such as a `NUAIW` warrant line or an `FMTOF` OTC foreign line) are skipped unless `universe_sec.json` lists them; a common-stock ticker for the same CIK is preferred. SEC 13D/13G requests wait until `SEC_CONTACT_EMAIL` is set. The offline check uses the Schedule 13D fixture. `--help` prints usage and does not open a connection.
+
+```bash
+python3 -m Scouts.accumulation.live --db /tmp/cause-n-effect.sqlite
+python3 -m Scouts.accumulation.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/accumulation/fixtures/sec_13d.xml --no-asx
+```
+
 ## Status
 
-Structure and tests only, no live runs.
+Fixture tests. SEC live runs where `SEC_CONTACT_EMAIL` is set.

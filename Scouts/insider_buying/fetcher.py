@@ -110,9 +110,9 @@ def iter_hits(client, start, end):
 
 
 def efts_url(start, end, offset=0):
+    """A `q=*` term makes this EDGAR search return no hits."""
     query = urllib.parse.urlencode(
         {
-            "q": "*",
             "dateRange": "custom",
             "startdt": start,
             "enddt": end,
@@ -146,17 +146,24 @@ def filing_from_hit(source, ticker_map=None):
 
 
 def fetch_primary(client, cik, accession):
+    """Download ownership XML. Skip the XSL render, index pages, and the submission wrapper until one parses."""
     base = archive_base(cik, accession)
     index_url = base + "/index.json"
     _require_sec(index_url)
     index = client.json(index_url)
-    name = choose_form4_name(_index_names(index))
-    if not name:
-        return None, None
-    url = base + "/" + name
-    _require_sec(url)
-    body, _content_type = client.get(url, accept="application/xml,text/xml,text/plain")
-    return url, _decode(body)
+    last = (None, None)
+    for name in form4_candidates(_index_names(index), accession):
+        url = base + "/" + name
+        _require_sec(url)
+        try:
+            body, _content_type = client.get(url, accept="application/xml,text/xml,text/plain")
+        except EndpointError:
+            continue
+        text = _decode(body)
+        last = (url, text)
+        if _has_ownership(text):
+            return url, text
+    return last
 
 
 def fetch_asx_text(client, url):
@@ -169,16 +176,59 @@ def fetch_asx_text(client, url):
     return _decode(body)
 
 
+_REPORT_PAGE = re.compile(r"(?:^|/)r\d+\.html?$", re.I)
+_SUBMISSION_TXT = re.compile(r"(?:^|/)(?:\d{10}-\d{2}-\d{6}|\d{18})\.txt$", re.I)
+
+
 def choose_form4_name(names):
-    xmls = [name for name in names if name.lower().endswith(".xml")]
-    plain = [name for name in xmls if "xsl" not in name.lower()]
-    for name in plain + xmls:
-        lower = name.lower()
-        if any(token in lower for token in ("form4", "primary", "ownership", "doc4")):
-            return name
-    if plain:
-        return plain[0]
+    """Best ownership XML already listed on the index. None when every name is a render or an index page."""
+    xmls = [name for name in names if _keep_form4_name(name) and name.lower().endswith(".xml")]
+    xmls.sort(key=_form4_rank)
     return xmls[0] if xmls else None
+
+
+def form4_candidates(names, accession):
+    """Ownership XML first. The XSL path is HTML, and the accession .txt is only a fallback."""
+    xmls = []
+    for name in names:
+        if not _keep_form4_name(name):
+            continue
+        if name.lower().endswith(".xml"):
+            xmls.append(name)
+    xmls.sort(key=_form4_rank)
+    ordered = list(xmls)
+    for extra in ("primary_doc.xml", "doc4.xml", "ownership.xml"):
+        if not any(name.lower().rsplit("/", 1)[-1] == extra for name in ordered):
+            ordered.append(extra)
+    acc = (accession or "").strip()
+    if acc and not any(name.lower().endswith(acc.lower() + ".txt") for name in ordered):
+        ordered.append(acc + ".txt")
+    return ordered
+
+
+def _form4_rank(name):
+    base = name.lower().rsplit("/", 1)[-1]
+    if base == "primary_doc.xml":
+        return 0
+    if any(token in base for token in ("ownership", "form4", "doc4", "primary")):
+        return 1
+    return 2
+
+
+def _keep_form4_name(name):
+    lower = name.lower()
+    if "xsl" in lower or "-index" in lower:
+        return False
+    if _REPORT_PAGE.search(lower) or _SUBMISSION_TXT.search(lower):
+        return False
+    return True
+
+
+def _has_ownership(text):
+    raw = text or ""
+    if "ownershipdocument" in raw.casefold():
+        return True
+    return "&lt;ownershipdocument" in raw.casefold()
 
 
 def ticker_from_display(display_names):

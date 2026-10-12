@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<ownershipDocument>
+  <schemaVersion>X0508</schemaVersion>
+  <documentType>4</documentType>
+  <periodOfReport>2026-04-02</periodOfReport>
+  <issuer>
+    <issuerCik>0000999001</issuerCik>
+    <issuerName>Northwind Grid</issuerName>
+    <issuerTradingSymbol>NWT</issuerTradingSymbol>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000999222</rptOwnerCik>
+      <rptOwnerName>Ada North</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerAddress>
+      <rptOwnerStreet1>1 Example Street</rptOwnerStreet1>
+      <rptOwnerCity>Sample City</rptOwnerCity>
+      <rptOwnerState>NY</rptOwnerState>
+      <rptOwnerZipCode>10001</rptOwnerZipCode>
+    </reportingOwnerAddress>
+    <reportingOwnerRelationship>
+      <isDirector>1</isDirector>
+      <isOfficer>1</isOfficer>
+      <isTenPercentOwner>0</isTenPercentOwner>
+      <isOther>0</isOther>
+      <officerTitle>Chief Financial Officer</officerTitle>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <securityTitle><value>Common Stock</value></securityTitle>
+      <transactionDate><value>2026-04-01</value></transactionDate>
+      <deemedExecutionDate></deemedExecutionDate>
+      <transactionCoding>
+        <transactionFormType>4</transactionFormType>
+        <transactionCode>P</transactionCode>
+        <equitySwapInvolved>0</equitySwapInvolved>
+      </transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>1500</value></transactionShares>
+        <transactionPricePerShare>
+          <footnoteId id="F1"/>
+        </transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
+      </transactionAmounts>
+    </nonDerivativeTransaction>
+    <nonDerivativeTransaction>
+      <securityTitle><value>Common Stock</value></securityTitle>
+      <transactionDate><value>2026-04-01</value></transactionDate>
+      <transactionCoding>
+        <transactionFormType>4</transactionFormType>
+        <transactionCode>S</transactionCode>
+        <equitySwapInvolved>0</equitySwapInvolved>
+      </transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>100</value></transactionShares>
+        <transactionPricePerShare><value>22.50</value></transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode>
+      </transactionAmounts>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+  <footnotes>
+    <footnote id="F1">The price reported is a weighted average price of $22.50. These shares were purchased in multiple transactions at prices ranging from $22.00 to $23.00.</footnote>
+  </footnotes>
+  <ownerSignature>
+    <signatureName>/s/ Ada North</signatureName>
+    <signatureDate>2026-04-02</signatureDate>
+  </ownerSignature>
+</ownershipDocument>

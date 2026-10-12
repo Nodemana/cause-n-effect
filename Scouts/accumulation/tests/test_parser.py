@@ -181,6 +181,55 @@ class ParserTests(unittest.TestCase):
         self.assertIsNone(ceased.stake_pct)
         self.assertNotIn("unparseable_stake", ceased.flags)
 
+    def test_asx_table_layout_603_and_604(self):
+        initial = parse_document(Document(
+            source="asx", body=load("asx_603_layout.txt"), url="https://www.asx.com.au/layout603",
+            form_type="603", filing_date="2026-09-04", ticker="NWND",
+        ))[0]
+        self.assertEqual(initial.flags, [])
+        self.assertEqual(initial.filer, "Harbour Lane Capital")
+        self.assertEqual(initial.target_name, "Northwind Resources Limited")
+        self.assertEqual(initial.stake_pct, 8.4)
+        self.assertEqual(initial.share_count, 12500000)
+        self.assertEqual(initial.event_date, "2026-09-02")
+
+        change = parse_document(Document(
+            source="asx", body=load("asx_604_layout.txt"), url="https://www.asx.com.au/layout604",
+            form_type="604", filing_date="2026-09-21", ticker="BRMB",
+        ))[0]
+        self.assertEqual(change.flags, [])
+        self.assertEqual(change.filer, "Northbridge Partners LP")
+        self.assertEqual(change.target_name, "Bramble Medical Limited")
+        self.assertEqual(change.stake_pct, 11.25)
+        self.assertEqual(change.share_count, 9000000)
+        self.assertEqual(change.event_date, "2026-09-20")
+        self.assertTrue(any("5.1" in note for note in change.notes))
+
+        from Scouts.accumulation.pipeline import figure_from_position
+
+        figure = figure_from_position(
+            {
+                "source": "asx",
+                "form_type": "603",
+                "filer": initial.filer,
+                "target": {"name": initial.target_name, "ticker": initial.ticker},
+                "stake_pct": initial.stake_pct,
+                "share_count": initial.share_count,
+                "filing_date": initial.filing_date,
+                "document_url": "https://asx.api.markitdigital.com/asx-research/1.0/file/notice603",
+                "accession": "notice603",
+            },
+            "2026-09-04",
+            [],
+        )
+        self.assertEqual(figure["verified"], 1)
+        self.assertEqual(figure["currency"], "AUD")
+        self.assertEqual(figure["ticker"], "NWND.AX")
+        self.assertEqual(figure["value"], 8.4)
+        self.assertIn("12500000", figure["value_text"])
+        self.assertIn("notice603", figure["source_url"])
+        self.assertIn("notice603", figure["period"])
+
     def test_fixtures_contain_no_email(self):
         import re
         for path in FIX.iterdir():

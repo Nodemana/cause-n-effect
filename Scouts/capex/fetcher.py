@@ -19,6 +19,7 @@ for _entry in (str(_REPO), str(_HERE)):
         sys.path.insert(0, _entry)
 
 from shared.nethttp import EndpointError, asx_client, sec_client  # noqa: E402
+from shared.store import log_duplicate, prefer_fact  # noqa: E402
 
 COMPANYFACTS = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 EFTS_URL = "https://efts.sec.gov/LATEST/search-index"
@@ -39,6 +40,15 @@ CAPEX_TAGS = (
     "FinanceLeaseLiabilityCurrent",
 )
 STATEMENT_FORMS = frozenset({"10-K", "10-Q", "20-F", "10-K/A", "10-Q/A", "20-F/A"})
+RECENT_QUARTERS = 8
+FLOW_TAGS = frozenset(
+    {
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquireProductiveAssets",
+        "PaymentsForCapitalImprovements",
+        "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+    }
+)
 GUIDANCE_QUERY = '"capital expenditure" OR "capital expenditures" OR capex'
 GUIDANCE_FORMS = "8-K,8-K/A,10-K,10-K/A,10-Q,10-Q/A"
 _ASX_CAPEX = re.compile(
@@ -47,7 +57,7 @@ _ASX_CAPEX = re.compile(
 )
 
 
-def collect_companyfacts(companies, client=None, n=4):
+def collect_companyfacts(companies, client=None, n=4, quarters=RECENT_QUARTERS, as_of=None):
     """Latest reported facts for each capex tag. `client` is required in tests."""
     client = client or sec_client()
     found = []
@@ -61,7 +71,9 @@ def collect_companyfacts(companies, client=None, n=4):
                 "ticker": company["ticker"],
                 "cik": cik,
                 "company": payload.get("entityName") or company.get("name") or company["ticker"],
-                "facts": select_facts(payload, n),
+                "facts": select_facts(
+                    payload, n, quarters=quarters, as_of=as_of, ticker=company["ticker"]
+                ),
             }
         )
     return found
@@ -71,14 +83,26 @@ def companyfacts_url(cik):
     return COMPANYFACTS.format(cik=_cik(cik))
 
 
-def select_facts(payload, n=4):
-    """One row per tag, unit, and period. The first filing wins. Non-statements are dropped.
+def period_cutoff(quarters=RECENT_QUARTERS, as_of=None):
+    """First day of the window covering the last `quarters` quarters."""
+    as_of = as_of or date.today()
+    month = as_of.month - 3 * int(quarters)
+    year = as_of.year
+    while month <= 0:
+        month += 12
+        year -= 1
+    return date(year, month, 1).isoformat()
 
-    A later amendment or restatement does not replace the filing that first
-    reported the figure. Each duration is labelled quarter, ytd, ttm, or annual.
-    Year-to-date is only a span that starts on the fiscal-year start and is not
-    itself a quarter or a full year.
+
+def select_facts(payload, n=4, quarters=RECENT_QUARTERS, as_of=None, ticker=""):
+    """One row per tag, unit, and period. Non-statements and periods before the window are dropped.
+
+    A single-quarter value beats a year-to-date value for that same key. When
+    those are equal, the latest filing wins. Each duration is labelled quarter,
+    ytd, ttm, or annual. Year-to-date is only a span that starts on the
+    fiscal-year start and is not itself a quarter or a full year.
     """
+    cutoff = period_cutoff(quarters, as_of)
     gaap = (payload.get("facts") or {}).get("us-gaap") or {}
     fiscal_start = infer_fiscal_start(payload)
     chosen = []
@@ -92,12 +116,22 @@ def select_facts(payload, n=4):
                 if row.get("form") not in STATEMENT_FORMS:
                     continue
                 end = row.get("end")
-                if not end:
+                if not end or end < cutoff:
                     continue
                 key = (row.get("start"), end)
                 previous = best.get(key)
-                if previous is None or _filed_on(row) < _filed_on(previous):
+                if previous is None or prefer_fact(row, previous):
+                    if previous is not None:
+                        log_duplicate(
+                            _fact_view(tag, previous, ticker, unit),
+                            _fact_view(tag, row, ticker, unit),
+                        )
                     best[key] = row
+                else:
+                    log_duplicate(
+                        _fact_view(tag, row, ticker, unit),
+                        _fact_view(tag, previous, ticker, unit),
+                    )
             ordered = sorted(
                 best.values(),
                 key=lambda row: (row.get("end") or "", row.get("start") or ""),
@@ -172,11 +206,6 @@ def _span_days(start, end):
         return (date.fromisoformat(end) - date.fromisoformat(start)).days
     except ValueError:
         return None
-
-
-def _filed_on(row):
-    """Missing dates sort last so a dated original beats an undated repeat."""
-    return row.get("filed") or "9999-99-99"
 
 
 def collect_guidance(companies, client=None, start=None, end=None, limit=20):
@@ -255,6 +284,24 @@ def check_feed(payload, code):
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, dict) or "items" not in data:
         raise EndpointError(f"ASX announcements feed for {code} failed the health check")
+
+
+def _fact_view(tag, row, ticker, unit):
+    start = row.get("start")
+    end = row.get("end") or ""
+    return {
+        "ticker": ticker,
+        "figure_type": tag,
+        "instrument": "",
+        "period": f"{start}/{end}" if start else end,
+        "value": row.get("val"),
+        "currency": unit,
+        "filed": row.get("filed"),
+        "frame": row.get("frame"),
+        "fp": row.get("fp"),
+        "start": start,
+        "end": row.get("end"),
+    }
 
 
 def _cik(value):
