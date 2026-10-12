@@ -30,7 +30,7 @@ Path: `Centurions/rules/<lead_type>.md` (for example `Centurions/rules/capex.md`
 4. Instructions to estimate the timeframe: how long the thesis should take to play out.
 5. Instructions to set out the risks.
 6. Instructions to close with one recommendation and a full list of assumptions.
-7. Instructions for a second pass: if this lead is the single new lead the Legate formed from a merge, still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list, and include a priced-in check. A lead that was not merged is not sent back.
+7. Instructions for a second pass: if this lead is the single new lead the Legate formed from a merge, still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list, and include a priced-in check and the macro context from the Macro scout's cache. A lead that was not merged is not sent back.
 
 Figures come only from official sources: SEC filings, ASX announcements, and company releases.
 
@@ -42,10 +42,12 @@ Only a merged finding comes back, as one new lead, for a second, fresh full thes
 
 That second pass includes a priced-in check on any prior price run. The Centurion makes the call first, classifying the run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with its reasoning and evidence. It notes that call as a concern where relevant. There is no automatic rejection. The stock price and past performance come from quote data. The Praetorians then review that classification and state whether they agree or disagree, with counter-evidence. Spending and order figures stay on SEC filings, ASX announcements, and company releases.
 
+Macro context is a Centurion concern on this pass only. The Centurion reads the Macro scout's cache, `macro_series` and `macro_observations`, and does not re-pull those series. The cache holds official rates and yields, inflation, central-bank policy, credit and funding conditions, the dollar, oil and energy, fiscal policy and government spending, supply-chain disruptions, geopolitics, and election and regulatory risk. A series is refreshed only when its `fetched_at` is older than its staleness threshold. The first pass does not read this cache. The cache is specified in [Scouts/macro/README.md](../Scouts/macro/README.md).
+
 ## Job
 
 1. Grade this lead against the criteria in its rules file. On a second pass, grade each constituent type's criteria once, and classify any prior price run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence, noted as a concern where relevant.
-2. Research and write the investment thesis, including the potential ROI.
+2. Research and write the investment thesis, including the potential ROI. On a second pass, draw the macro context from the Macro scout's cache.
 3. Estimate the timeframe.
 4. Set out the risks.
 5. List every assumption made while researching and forming the thesis.
@@ -107,6 +109,8 @@ Figures only from SEC filings, ASX announcements, and company releases.
 If this lead is the single new lead from a Legate merge, this is the second, fresh full pass: still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged does not reach this pass.
 
 That second pass includes a priced-in check on any prior price run. The Centurion makes the call first, classifying the run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with its reasoning and evidence. It notes that call as a concern where relevant. There is no automatic rejection. The stock price and past performance come from quote data. The Praetorians then review that classification and state whether they agree or disagree, with counter-evidence.
+
+On this second pass, macro context is a Centurion concern. Read the Macro scout's cached series. Do not re-pull them.
 ```
 
 ## Expected output
@@ -121,6 +125,10 @@ That second pass includes a priced-in check on any prior price run. The Centurio
 Call: new thesis | acceleration of an existing thesis | tail end / likely priced in
 Reasoning and evidence:
 Noted concern:
+
+## Macro (second pass only)
+
+From the Macro scout cache:
 
 ## Recommendation
 

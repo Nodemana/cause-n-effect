@@ -10,6 +10,7 @@ flowchart LR
   S[Scouts] --> C1[Centurions] --> M[Legate: merge]
   M -->|merged only| C2[Centurion: second pass] --> P[Praetorians]
   M -->|not merged| P
+  MAC[Macro cache] --> C2
   P --> R[Legate: rank] --> I[Imperator]
 ```
 
@@ -19,7 +20,9 @@ flowchart LR
 
 **Legate merge.** After those individual theses exist, the Legate merges any the research shows are linked, chiefly a buyer's capex thesis with a different company's orders_backlog thesis, and only when official-source evidence from that research is stored in `legate_merges.rationale` (a sector match is not enough); same-company supportive merges are allowed. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass, and a thesis that is not merged gets no second pass and goes straight to the Praetorians.
 
-**Second pass.** That Centurion runs a fresh full pass on the merged lead alone: grade, thesis, potential ROI, risks, timeframe, and stated assumptions. On any prior price run it classifies the run first as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence, and notes that call as a concern where relevant.
+**Macro.** The Macro scout caches official macro context and does not emit leads ([Scouts/macro/README.md](Scouts/macro/README.md)). Each series keeps a `fetched_at` time and a staleness threshold, and a series is fetched again only when that threshold has passed, so the second-pass Centurion reads the cache instead of pulling it again.
+
+**Second pass.** That Centurion runs a fresh full pass on the merged lead alone: grade, thesis, potential ROI, risks, timeframe, stated assumptions, and the macro context from the Macro scout's cache. On any prior price run it classifies the run first as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence, and notes that call as a concern where relevant.
 
 **Praetorians.** Praetorians critique an unmerged thesis straight from the first pass, and a merged finding only after its second-pass thesis, attacking stated assumptions, weak sources, and conclusions with counter-evidence ([Praetorians/README.md](Praetorians/README.md)). They then review the Centurion's price-run classification and state whether they agree or disagree, with counter-evidence, and they state no assumptions of their own.
 
@@ -30,7 +33,7 @@ flowchart LR
 ## Data
 - SQLite history DB: time-stamped figures with source links and a verified flag, diffed run to run.
 - How to open a read-only snapshot is in [docs/database-access.md](docs/database-access.md).
-- Figures come only from SEC EDGAR, ASX announcements, and company releases. Media and aggregators may be checked only to judge whether a lead was already noticed. Prices come from quote data.
+- Figures come only from SEC EDGAR, ASX announcements, and company releases. Macro series come from official statistics agencies, central banks, and treasuries, including FRED, the BLS, the ABS, and the RBA. Media and aggregators may be checked only to judge whether a lead was already noticed. Prices come from quote data.
 - Access: free SEC API throttled to 0.15s per request with an email User-Agent, ASX website feed with 2s gaps and health checks. All requests go through `shared/nethttp.py`.
 
 ## Scouts
@@ -45,9 +48,10 @@ That second pass includes a priced-in check on any prior price run. The Centurio
 3. **orders_backlog**: customer-reported backlog plus supplier order announcements.
 4. **Accumulation**: 13D/13G filings and ASX substantial holder notices.
 5. **Insider buying**: Form 4s and ASX 3Ys, with CEO buys and cluster buying flagged.
+6. **Macro**: official macro context (rates and yields, inflation, central-bank policy, credit and funding, the dollar, oil and energy, fiscal spending, supply chains, geopolitics, election and regulatory risk), cached per series and refreshed only when stale. It does not emit leads.
 
 ## Roles
-- **Scouts** find leads. They do not merge them.
+- **Scouts** find leads. They do not merge them. The Macro scout caches context and does not emit leads.
 - **Centurions** research one lead into one thesis. Spin-up is in [Centurions/README.md](Centurions/README.md). Only a merged finding comes back for a second, fresh full thesis pass.
 - **Praetorians** critique theses only: an unmerged thesis straight from the first pass, and a merged finding after its second-pass thesis. They review the Centurion's price-run classification after that call is made. The job is in [Praetorians/README.md](Praetorians/README.md).
 - **Legate** is the AI Portfolio Manager. After the individual theses exist it merges linked ones, sends only each merge back for a second pass, and ranks after critique.
