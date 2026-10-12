@@ -12,7 +12,9 @@ at most five announcements per company.
 
 The default database is /tmp/cause-n-effect-capex.sqlite. SEC names are
 AMZN, ORCL, and MSFT in universe_sec.json. Guidance search covers the last
-90 days. Cash-flow tags are stored as the year-to-date span SEC reported.
+90 days. Cash-flow tags keep the reported span. A single quarter is derived when the
+prior year-to-date figure is present. Periods older than --quarters (default 8)
+are dropped.
 """
 
 import json
@@ -49,6 +51,9 @@ def main(argv=None):
     db_path = DEFAULT_DB
     if "--db" in args:
         db_path = Path(args[args.index("--db") + 1])
+    quarters = fetcher.RECENT_QUARTERS
+    if "--quarters" in args:
+        quarters = int(args[args.index("--quarters") + 1])
     sec_companies = json.loads(SEC_UNIVERSE.read_text(encoding="utf-8"))["companies"]
     asx_companies = [] if "--no-asx" in args else json.loads(ASX_UNIVERSE.read_text(encoding="utf-8"))["companies"]
     facts = []
@@ -62,7 +67,7 @@ def main(argv=None):
                 "ticker": company["ticker"],
                 "cik": str(int(company["cik"])).zfill(10),
                 "company": payload.get("entityName") or company.get("name"),
-                "facts": fetcher.select_facts(payload),
+                "facts": fetcher.select_facts(payload, quarters=quarters),
             }
         ]
         print(f"SEC fixture {fixture}")
@@ -76,7 +81,7 @@ def main(argv=None):
             names = ", ".join(company["ticker"] for company in sec_companies)
             print(f"SEC companyfacts for {names}")
             print(f"EDGAR full-text capex guidance {start} to {end}")
-            facts = fetcher.collect_companyfacts(sec_companies)
+            facts = fetcher.collect_companyfacts(sec_companies, quarters=quarters)
             guidance = fetcher.collect_guidance(sec_companies, start=start, end=end)
     announcements = []
     if "--no-asx" in args:
@@ -94,7 +99,7 @@ def main(argv=None):
     notes = (
         "SEC companyfacts and EDGAR full-text guidance; "
         f"ASX list capped at {fetcher.ASX_CAP}. "
-        "Cash-flow tags are the reported year-to-date span."
+        f"Cash-flow tags are the reported span; quarters={quarters}."
     )
     summary = pipeline.run(
         db_path,
@@ -122,7 +127,7 @@ def main(argv=None):
         print("figures: (none)")
     for row in rows:
         print(
-            f"  {row['ticker']} {row['figure_type']} period={row['period']} "
+            f"  {row['ticker']} {row['figure_type']} {row['instrument']} period={row['period']} "
             f"value={row['value']} {row['currency'] or ''} text={row['value_text']} "
             f"announced_on={row['announced_on']} verified={row['verified']} "
             f"source_type={row['source_type']} url={row['source_url']}"
