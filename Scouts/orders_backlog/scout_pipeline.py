@@ -15,6 +15,7 @@ for _entry in (str(_REPO), str(_ROOT)):
 from Scouts.orders_backlog.parser import (  # noqa: E402
     DEFAULT_RECENT_QUARTERS,
     _recent_periods,
+    _row_period_end,
     parse_company_facts,
     parse_release,
 )
@@ -27,7 +28,10 @@ DEFAULT_STALE_DAYS = 180
 # A company-total backlog smaller than this share of the same company's other
 # total is not a second total. It is a misread award, cash-flow, or segment figure.
 _IMPLAUSIBLE_RATIO = 0.10
+_NEAR_DAYS = 7
+_NEAR_AMOUNT = 0.02
 _COMPANY_BACKLOG = {"backlog", *ACTIVE_BACKLOG_TAGS, *STALE_BACKLOG_TAGS}
+_REVENUE = {"revenue", "revenues"}
 
 _RECORD_KEYS = (
     "source_side",
@@ -72,6 +76,7 @@ def build_table(customer_facts=(), supplier_facts=(), releases=(), max_quarters=
                 accession=release.get("accession"),
             )
         )
+    rows = drop_same_quarter_duplicates(rows)
     rows = _recent_periods(rows, max_quarters)
     rows.sort(
         key=lambda row: (
@@ -142,25 +147,28 @@ def figures_from_records(records, seen_at):
 
 
 def drop_implausible_totals(figures, ratio=_IMPLAUSIBLE_RATIO):
-    """Drop a company-total backlog that is under 10% of that company's other total.
+    """Drop a company-total backlog that is under 10% of a larger total.
 
-    Segment rows stay. The larger total is the companyfacts figure or another
-    backlog total in the same run. The skip is printed.
+    The larger total is another company backlog or a revenue figure for the
+    same ticker. Segment rows stay. The skip is printed.
     """
-    prior = {}
+    backlog = {}
+    revenue = {}
     for row in figures or []:
-        if not _is_company_backlog(row):
-            continue
         value = _amount(row)
         if value is None:
             continue
         ticker = row.get("ticker") or ""
-        prior[ticker] = max(prior.get(ticker, 0.0), value)
+        if _is_company_backlog(row):
+            backlog[ticker] = max(backlog.get(ticker, 0.0), value)
+        elif _is_revenue(row):
+            revenue[ticker] = max(revenue.get(ticker, 0.0), value)
     kept = []
     for row in figures or []:
         if _is_company_backlog(row):
             value = _amount(row)
-            ceiling = prior.get(row.get("ticker") or "", 0.0)
+            ticker = row.get("ticker") or ""
+            ceiling = max(backlog.get(ticker, 0.0), revenue.get(ticker, 0.0))
             if value is not None and ceiling and value < ceiling * float(ratio):
                 print(
                     f"skipped implausible backlog ticker={row.get('ticker')} "
@@ -171,11 +179,86 @@ def drop_implausible_totals(figures, ratio=_IMPLAUSIBLE_RATIO):
     return kept
 
 
+def drop_same_quarter_duplicates(rows, days=_NEAR_DAYS, tolerance=_NEAR_AMOUNT):
+    """Keep one row when an 8-K repeats a companyfacts total.
+
+    Same ticker, same metric or segment, period ends within 7 days, and
+    amounts within 2%. The companyfacts row wins. The dropped row is logged.
+    """
+    kept = []
+    for row in rows or []:
+        match = None
+        for prior in kept:
+            if _same_quarter_metric(row, prior, days, tolerance):
+                match = prior
+                break
+        if match is None:
+            kept.append(row)
+            continue
+        winner = match if _prefer_companyfacts(match, row) else row
+        loser = row if winner is match else match
+        if winner is not match:
+            kept[kept.index(match)] = winner
+        value = loser.get("value")
+        if value is not None:
+            print(
+                f"skipped duplicate backlog ticker={loser.get('ticker')} "
+                f"value={float(value):.0f} period={loser.get('equipment_or_period') or ''} "
+                f"kept={winner.get('source_type') or ''} period={winner.get('equipment_or_period') or ''}"
+            )
+    return kept
+
+
+def _same_quarter_metric(left, right, days, tolerance):
+    if (left.get("ticker") or "") != (right.get("ticker") or ""):
+        return False
+    key_left = _metric_key(left)
+    key_right = _metric_key(right)
+    if not key_left or key_left != key_right:
+        return False
+    amount_left = left.get("value")
+    amount_right = right.get("value")
+    if amount_left is None or amount_right is None:
+        return False
+    amount_left = float(amount_left)
+    amount_right = float(amount_right)
+    ceiling = max(abs(amount_left), abs(amount_right))
+    if not ceiling or abs(amount_left - amount_right) / ceiling > float(tolerance):
+        return False
+    end_left = _row_period_end(left)
+    end_right = _row_period_end(right)
+    if end_left is None or end_right is None:
+        return False
+    return abs((end_left - end_right).days) <= int(days)
+
+
+def _metric_key(row):
+    disclosure = (row.get("disclosure") or "").strip()
+    if ":" in disclosure:
+        return disclosure.casefold()
+    if disclosure in {"backlog", "order_intake"}:
+        return disclosure
+    return None
+
+
+def _prefer_companyfacts(left, right):
+    left_facts = left.get("source_type") == "xbrl_company_facts"
+    right_facts = right.get("source_type") == "xbrl_company_facts"
+    if left_facts != right_facts:
+        return left_facts
+    return (left.get("filing_date") or "") >= (right.get("filing_date") or "")
+
+
 def _is_company_backlog(row):
     instrument = row.get("instrument") or ""
     if ":" in instrument:
         return False
     return instrument in _COMPANY_BACKLOG
+
+
+def _is_revenue(row):
+    instrument = (row.get("instrument") or "").split(":", 1)[0].casefold()
+    return instrument in _REVENUE
 
 
 def _amount(row):

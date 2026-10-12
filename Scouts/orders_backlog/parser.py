@@ -454,6 +454,8 @@ def _metric_rows(sentence, company, source_type, source_url, filing_date, filed_
         if value < 1_000_000:
             continue
         kind = match.group("kind").casefold()
+        if kind in {"revenue", "revenues"} and re.search(r"contract liabilit|deferr", sentence, re.I):
+            continue
         if (
             kind in {"revenue", "revenues"}
             and not _mentions_order(sentence)
@@ -487,10 +489,15 @@ def _metric_rows(sentence, company, source_type, source_url, filing_date, filed_
 
 
 _MILLIONS = re.compile(
-    r"\(\$?\s*in\s+millions\)|\(\s*dollars\s+in\s+millions\b|"
+    r"\(\$?\s*in\s+millions\b|\(\s*dollars\s+in\s+millions\b|"
     r"amounts?\s+are\s+in\s+millions|in\s+millions\s+of\s+dollars",
     re.I,
 )
+_INTANGIBLE = re.compile(
+    r"intangible|useful life|customer relationships|developed technology|trade names?|amortiz",
+    re.I,
+)
+_SALES_LINE = re.compile(r"\b(?:net sales|revenues?)\b", re.I)
 
 
 def _table_backlogs(text, company, source_type, source_url, filing_date, filed_period):
@@ -499,10 +506,12 @@ def _table_backlogs(text, company, source_type, source_url, filing_date, filed_p
     The header and the amount may be split across cells, spans, and blank
     lines. A dollar sign often sits in its own cell beside the number.
     """
-    if not _MILLIONS.search(text or ""):
+    millions = bool(_MILLIONS.search(text or ""))
+    if not millions:
         return []
     rows = []
     lines = text.splitlines()
+    sales = _sales_ceiling(lines, millions)
     section = None
     for index, line in enumerate(lines):
         stripped = line.strip(" |")
@@ -512,6 +521,14 @@ def _table_backlogs(text, company, source_type, source_url, filing_date, filed_p
         if not _backlog_label(line):
             continue
         if re.search(r"organic|book-to-bill|intangible", line, re.I):
+            continue
+        if _intangible_backlog(lines, index):
+            amount = _first_dollars(lines, index)
+            raw = float(amount[0].replace(",", "")) * 1_000_000 if amount else 0
+            print(
+                f"skipped intangible backlog ticker={company.get('ticker')} "
+                f"value={raw:.0f} period={filed_period or ''}"
+            )
             continue
         amounts = _first_dollars(lines, index)
         if not amounts:
@@ -524,6 +541,12 @@ def _table_backlogs(text, company, source_type, source_url, filing_date, filed_p
         value = float(amounts[0].replace(",", "")) * 1_000_000
         period = _nearby_period(lines, index, filed_period, filing_date) or filed_period
         label = f"backlog:{section}" if section else "backlog"
+        if not section and sales and value < sales * _IMPLAUSIBLE_RATIO:
+            print(
+                f"skipped implausible backlog ticker={company.get('ticker')} "
+                f"value={value:.0f} prior={sales:.0f} period={period or ''}"
+            )
+            continue
         if section:
             print(
                 f"segment backlog ticker={company.get('ticker')} instrument={label} "
@@ -546,6 +569,69 @@ def _table_backlogs(text, company, source_type, source_url, filing_date, filed_p
             )
         )
     return rows
+
+
+# A company backlog under this share of net sales is a scale miss or another metric.
+_IMPLAUSIBLE_RATIO = 0.10
+
+
+def _intangible_backlog(lines, index):
+    """A 'Backlog' row in an acquired-intangibles table is not an order backlog."""
+    window = "\n".join(lines[max(0, index - 40) : index + 6])
+    return _INTANGIBLE.search(window) is not None
+
+
+_SALES_AMOUNT = re.compile(
+    r"\b(?:net sales|revenues?)\b(?P<mid>[^$\n]{0,80}?)\$\s*"
+    r"(?P<num>\d[\d,]*(?:\.\d+)?)\s*(?P<scale>billion|million|bn|m)?",
+    re.I,
+)
+
+
+def _sales_ceiling(lines, millions):
+    """Largest net sales or revenue amount in the document, in dollars.
+
+    The scale word has to sit on the same line as the amount. A millions table
+    uses the document header. Deferred revenue is not sales.
+    """
+    best = 0.0
+    for index, line in enumerate(lines):
+        if not _SALES_LINE.search(line or ""):
+            continue
+        if re.search(r"\bdeferred revenue\b", line, re.I) and not re.search(r"\bnet sales\b", line, re.I):
+            continue
+        for match in _SALES_AMOUNT.finditer(line):
+            word = (match.group("scale") or "").casefold()
+            scale = _SCALE.get(word, 1_000_000 if millions and not word else 1)
+            value = float(match.group("num").replace(",", "")) * scale
+            if value > best:
+                best = value
+        if re.fullmatch(r"[\s|]*(?:net sales|revenues?)[\s|]*", line or "", re.I):
+            amounts = _first_dollars(lines, index)
+            if amounts:
+                value = float(amounts[0].replace(",", "")) * (1_000_000 if millions else 1)
+                if value > best:
+                    best = value
+    return best
+
+
+def _drop_small_backlogs(rows, plain, company):
+    """Drop a company-total backlog that is under 10% of net sales in the same document."""
+    sales = _sales_ceiling((plain or "").splitlines(), bool(_MILLIONS.search(plain or "")))
+    if not sales:
+        return rows
+    kept = []
+    for row in rows:
+        disclosure = row.get("disclosure") or ""
+        value = row.get("value")
+        if disclosure == "backlog" and value is not None and float(value) < sales * _IMPLAUSIBLE_RATIO:
+            print(
+                f"skipped implausible backlog ticker={company.get('ticker')} "
+                f"value={float(value):.0f} prior={sales:.0f} period={row.get('equipment_or_period') or ''}"
+            )
+            continue
+        kept.append(row)
+    return kept
 
 
 def _backlog_label(line):
@@ -714,6 +800,9 @@ def _supplier_text(text, company, source_type, source_url, filing_date):
         else:
             value = amounts[0]["value"]
             currency = amounts[0]["currency"]
+            # A 10-Q line such as "Currency exchange contracts $6" is not an order.
+            if value < 1_000_000:
+                continue
         if unnamed or not counterparty:
             flags.append("unnamed_customer")
             notes.append("customer not named")
@@ -736,7 +825,7 @@ def _supplier_text(text, company, source_type, source_url, filing_date):
                 notes=notes,
             )
         )
-    return rows
+    return _drop_small_backlogs(rows, plain, company)
 
 
 def _choose_point(points, company, concept, end, currency):

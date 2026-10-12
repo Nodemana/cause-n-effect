@@ -84,7 +84,7 @@ def collect_supplier_reports(companies, client=None):
         index_url = base + "/index.json"
         _require_sec(index_url)
         index = client.json(index_url)
-        name = _primary_html(index)
+        name = _primary_html(index, filing.get("primary_document"))
         if not name:
             continue
         doc_url = base + "/" + name
@@ -114,10 +114,12 @@ def latest_periodic(payload):
         if form not in {"10-Q", "10-K"}:
             continue
         filed = dates[index] if index < len(dates) else ""
+        primary_docs = recent.get("primaryDocument") or []
         row = {
             "form": form,
             "accession": accessions[index] if index < len(accessions) else "",
             "filing_date": filed,
+            "primary_document": primary_docs[index] if index < len(primary_docs) else "",
         }
         if not row["accession"] or not filed:
             continue
@@ -126,25 +128,54 @@ def latest_periodic(payload):
     return best
 
 
-def _primary_html(index):
+def _primary_html(index, preferred=None):
+    """The 10-Q or 10-K narrative, not the last R*.htm report in the index.
+
+    EDGAR lists rendered XBRL reports (R1.htm, R9.htm, ...) after the primary
+    document. The last HTML file is one of those reports. Eaton's segment
+    backlog is in the primary document; R9.htm only repeats the total.
+    """
+    names = []
     directory = (index or {}).get("directory") or {}
     items = directory.get("item") or []
     if isinstance(items, dict):
         items = [items]
-    htmls = []
     for item in items:
         name = item.get("name") or ""
-        lower = name.lower()
-        if not lower.endswith((".htm", ".html")):
-            continue
-        if "ex99" in lower or "exhibit" in lower or _is_exhibit(lower):
-            continue
-        htmls.append(name)
-    return htmls[-1] if htmls else None
+        if name.lower().endswith((".htm", ".html")):
+            names.append(name)
+    if preferred:
+        for name in names:
+            if name.lower() == str(preferred).lower():
+                return name
+    narrative = [name for name in names if _is_narrative_html(name)]
+    if narrative:
+        return narrative[0]
+    return None
+
+
+def _is_narrative_html(name):
+    lower = (name or "").lower()
+    if not lower.endswith((".htm", ".html")):
+        return False
+    if "index" in lower or _is_report_html(lower) or _is_exhibit(lower):
+        return False
+    return True
+
+
+def _is_report_html(name):
+    stem = name.rsplit(".", 1)[0]
+    return len(stem) > 1 and stem[0] == "r" and stem[1:].isdigit()
 
 
 def _is_exhibit(name):
-    return len(name) > 2 and name.startswith("ex") and name[2].isdigit()
+    lower = (name or "").lower().rsplit("/", 1)[-1]
+    if "exhibit" in lower:
+        return True
+    for index in range(len(lower) - 2):
+        if lower.startswith("ex", index) and lower[index + 2].isdigit():
+            return True
+    return False
 
 
 def collect_8k_exhibits(companies, client=None, items=_8K_SUPPLIER_ITEMS, since=None, limit_per_company=None):
