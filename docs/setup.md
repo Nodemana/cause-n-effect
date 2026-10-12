@@ -42,15 +42,28 @@ python3 Scouts/insider-buying/tests/test_insider_buying.py
 python3 Scouts/capex/tests/test_capex.py
 ```
 
-Debt-raise also has a report and a live entry point. The live script writes its database under `/tmp`. If `SEC_CONTACT_EMAIL` is unset it prints that and does not send an SEC request; the ASX watchlist still runs.
+## Live pulls
+
+These write the shared `figures` table. Each command exits nonzero when that run stores no figure. Use one `--db` path when the runs should share a file. The file stays out of git. SEC requests run only when `SEC_CONTACT_EMAIL` is set; otherwise the command says so and does not send one. ASX still runs.
+
+On the machine that has the contact email:
 
 ```bash
-python3 Scouts/debt-raise/report.py --db history.sqlite
-python3 Scouts/debt-raise/live.py
+python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite
+python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite
+python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite
 ```
 
-Capex has a live entry point for the owner. It is not part of the fixture tests. Set `SEC_CONTACT_EMAIL` before running it. The default database is `/tmp/cause-n-effect-capex.sqlite`.
+Offline SEC checks use a fixture instead of EDGAR and do not open a network connection:
 
 ```bash
-python3 Scouts/capex/live.py
+python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/debt-raise/fixtures/sec_check.json --no-asx
+python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/insider-buying/fixtures/sec_form4_ceo.xml --no-asx
+python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/capex/fixtures/companyfacts_amzn.json --no-asx
+```
+
+Debt-raise can print the threshold histogram for a database that already has a run:
+
+```bash
+python3 Scouts/debt-raise/report.py --db /tmp/cause-n-effect.sqlite
 ```
