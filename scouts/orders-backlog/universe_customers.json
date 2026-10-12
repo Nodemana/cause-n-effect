@@ -1,0 +1,14 @@
+{
+  "description": "Customer-side backlog universe. Defence, industrials, and semiconductor equipment only. Edit this file to add or remove names. CIKs are the SEC's public identifiers.",
+  "companies": [
+    {"ticker": "LMT", "name": "Lockheed Martin Corp", "cik": "0000936468", "sector": "defense", "backlog_tags": ["RevenueRemainingPerformanceObligation"], "stale_tags": ["BacklogOfOrders"]},
+    {"ticker": "NOC", "name": "Northrop Grumman Corp", "cik": "0001133421", "sector": "defense", "backlog_tags": ["RevenueRemainingPerformanceObligation"], "stale_tags": []},
+    {"ticker": "GD", "name": "General Dynamics Corp", "cik": "0000040533", "sector": "defense", "backlog_tags": ["RevenueRemainingPerformanceObligation"], "stale_tags": []},
+    {"ticker": "RTX", "name": "RTX Corp", "cik": "0000101829", "sector": "defense", "backlog_tags": ["RevenueRemainingPerformanceObligation"], "stale_tags": []},
+    {"ticker": "CAT", "name": "Caterpillar Inc", "cik": "0000018230", "sector": "industrial", "backlog_tags": ["RevenueRemainingPerformanceObligation"], "stale_tags": []},
+    {"ticker": "DE", "name": "Deere & Co", "cik": "0000315189", "sector": "industrial", "backlog_tags": ["RevenueRemainingPerformanceObligation"], "stale_tags": []},
+    {"ticker": "AMAT", "name": "Applied Materials Inc", "cik": "0000006951", "sector": "semiconductor_equipment", "backlog_tags": ["RevenueRemainingPerformanceObligation"], "stale_tags": ["BacklogOfOrders"]},
+    {"ticker": "LRCX", "name": "Lam Research Corp", "cik": "0000707549", "sector": "semiconductor_equipment", "backlog_tags": ["RevenueRemainingPerformanceObligation"], "stale_tags": []},
+    {"ticker": "KLAC", "name": "KLA Corp", "cik": "0000319201", "sector": "semiconductor_equipment", "backlog_tags": ["RevenueRemainingPerformanceObligation"], "stale_tags": []}
+  ]
+}

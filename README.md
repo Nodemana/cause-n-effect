@@ -13,9 +13,10 @@ cause-n-effect/
 ├── shared/          # utilities used by every scout
 │   └── nethttp.py   # SEC and ASX HTTP
 └── scouts/
-    ├── accumulation/  # 13D/13G and ASX substantial holder notices
-    ├── capex/         # big spenders' capex → 2nd/3rd-tier suppliers
-    └── debt-raise/    # new loans, credit facilities, and bond issues
+    ├── accumulation/   # 13D/13G and ASX substantial holder notices
+    ├── orders-backlog/ # customer backlog and supplier orders, one table
+    ├── capex/          # big spenders' capex → 2nd/3rd-tier suppliers
+    └── debt-raise/     # new loans, credit facilities, and bond issues
 ```
 
 ## Data rule
@@ -29,6 +30,7 @@ Every SEC and ASX request goes through `shared/nethttp.py`. That module spaces r
 ## Scouts
 
 - `scouts/accumulation` — early M&A positioning from SEC Schedules 13D and 13G (legacy `SC 13D`/`SC 13G` and XML `SCHEDULE 13D`/`SCHEDULE 13G`, including amendments) and ASX Forms 603, 604, and 605. Software in that folder fetches, parses, and screens. Ambiguous filings are flagged for the Portfolio Manager.
+- `scouts/orders-backlog` — one table for customer-side disclosed backlog (defence, industrials, chip equipment) and supplier-side orders (turbines, transformers, switchgear). A spotter's signal, not a full ledger.
 - `scouts/capex` — follow big spenders' capex to 2nd/3rd-tier suppliers.
 - `scouts/debt-raise` — track new loans, credit facilities and bond issues from SEC 8-K Items 1.01/2.03, 424B prospectuses and ASX announcements.
 

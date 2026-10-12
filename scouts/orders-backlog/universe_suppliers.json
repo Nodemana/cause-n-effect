@@ -1,0 +1,8 @@
+{
+  "description": "Supplier-side watchlist. Turbines, transformers, and switchgear. Separate from the customer universe. ir_urls are official company release pages the fetcher may request; leave the list empty to skip IR.",
+  "companies": [
+    {"ticker": "GEV", "name": "GE Vernova Inc", "cik": "0001996810", "market": "SEC", "equipment": ["turbines", "transformers", "switchgear"], "intake_tags": ["OrdersReceived"], "ir_urls": []},
+    {"ticker": "ETN", "name": "Eaton Corp plc", "cik": "0001551182", "market": "SEC", "equipment": ["transformers", "switchgear"], "intake_tags": ["OrdersReceived"], "ir_urls": []},
+    {"ticker": "HUBB", "name": "Hubbell Inc", "cik": "0000048898", "market": "SEC", "equipment": ["switchgear"], "intake_tags": [], "ir_urls": []}
+  ]
+}
