@@ -11,6 +11,7 @@ from Scouts.accumulation.fetcher import (
     asx_form_from_headline,
     choose_primary_name,
     collect_asx,
+    collect_asx_markit,
     collect_sec,
     efts_url,
     fetch_ticker_map,
@@ -62,6 +63,7 @@ class FetcherTests(unittest.TestCase):
         self.assertTrue(url.startswith("https://efts.sec.gov/LATEST/search-index?"))
         for form in ("SC 13D", "SC 13D/A", "SC 13G", "SC 13G/A", "SCHEDULE 13D", "SCHEDULE 13D/A", "SCHEDULE 13G", "SCHEDULE 13G/A"):
             self.assertIn(form.replace(" ", "+").replace("/", "%2F"), url)
+        self.assertNotIn("q=", url)
 
     def test_collect_sec_uses_the_client_and_primary_doc(self):
         index = json.loads((FIX / "sec_index.json").read_text(encoding="utf-8"))
@@ -157,6 +159,64 @@ class FetcherTests(unittest.TestCase):
         self.assertIn('"scout": "accumulation"', text)
         parsed = json.loads(text)
         self.assertEqual(parsed["candidates"][0]["stake_pct"], 7.5)
+
+    def test_markit_feed_keeps_substantial_holder_forms(self):
+        code_url = "https://asx.api.markitdigital.com/asx-research/1.0/companies/bhp/announcements?count=5"
+        with self.assertRaises(EndpointError):
+            collect_asx_markit([{"ticker": "BHP"}], client=FakeClient({code_url: {"data": []}}))
+        notice = (FIX / "asx_603.txt").read_text(encoding="utf-8")
+        file_url = "https://asx.api.markitdigital.com/asx-research/1.0/file/abc"
+        payload = {
+            "data": {
+                "displayName": "BHP Group",
+                "items": [
+                    {"headline": "Becoming a substantial holder", "documentKey": "abc", "date": "2026-10-01"},
+                    {"headline": "Dividend", "documentKey": "div", "date": "2026-10-02"},
+                ],
+            }
+        }
+        documents = collect_asx_markit([{"ticker": "BHP"}], client=FakeClient({code_url: payload, file_url: notice}))
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0].form_type, "603")
+        self.assertEqual(documents[0].ticker, "BHP")
+        self.assertEqual(documents[0].filing_date, "2026-10-01")
+        self.assertIn(file_url, documents[0].url)
+
+    def test_live_fixture_stores_a_figure_and_empty_run_exits_nonzero(self):
+        import sqlite3
+        import sys
+        import tempfile
+
+        scout = pathlib.Path(__file__).resolve().parents[1]
+        repo = scout.parents[1]
+        for entry in (str(repo), str(scout)):
+            if entry not in sys.path:
+                sys.path.insert(0, entry)
+        import live
+
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = str(pathlib.Path(tmp) / "history.sqlite")
+                code = live.main(
+                    ["--db", db, "--sec-fixture", str(FIX / "sec_13d.xml"), "--no-asx"]
+                )
+                self.assertEqual(code, 0)
+                conn = sqlite3.connect(db)
+                row = conn.execute(
+                    "SELECT ticker, figure_type, value, verified, source_type FROM figures"
+                ).fetchone()
+                conn.close()
+                self.assertEqual(row[0], "NWND")
+                self.assertEqual(row[1], "substantial_holding")
+                self.assertEqual(row[2], 7.5)
+                self.assertEqual(row[3], 0)
+                self.assertEqual(row[4], "filing")
+                empty = live.main(["--db", str(pathlib.Path(tmp) / "empty.sqlite"), "--no-asx"])
+                self.assertEqual(empty, 1)
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
 
 
 if __name__ == "__main__":

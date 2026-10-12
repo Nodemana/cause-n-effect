@@ -1,0 +1,9 @@
+{
+  "description": "ASX codes scanned for Forms 603, 604, and 605 in the latest five announcements. Edit when those headlines move on.",
+  "companies": [
+    {"ticker": "BHP", "name": "BHP Group"},
+    {"ticker": "FMG", "name": "Fortescue"},
+    {"ticker": "MIN", "name": "Mineral Resources"},
+    {"ticker": "WES", "name": "Wesfarmers"}
+  ]
+}

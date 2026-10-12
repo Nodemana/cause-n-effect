@@ -6,7 +6,9 @@ on the supplier.
 """
 
 import json
+import subprocess
 import sys
+import tempfile
 import urllib.parse
 from pathlib import Path
 
@@ -19,6 +21,9 @@ from shared.nethttp import Client, EndpointError, asx_client, sec_client
 HERE = Path(__file__).resolve().parent
 CUSTOMERS_PATH = HERE / "universe_customers.json"
 SUPPLIERS_PATH = HERE / "universe_suppliers.json"
+ASX_PATH = HERE / "universe_asx.json"
+ASX_API = "https://asx.api.markitdigital.com/asx-research/1.0"
+ASX_CAP = 5
 
 _8K_CUSTOMER_ITEMS = ("2.02", "9.01")
 _8K_SUPPLIER_ITEMS = ("7.01", "8.01", "9.01")
@@ -57,7 +62,7 @@ def collect_supplier_facts(companies, client=None):
     return collect_customer_facts(companies, client)
 
 
-def collect_8k_exhibits(companies, client=None, items=_8K_SUPPLIER_ITEMS):
+def collect_8k_exhibits(companies, client=None, items=_8K_SUPPLIER_ITEMS, since=None, limit_per_company=None):
     """Download 8-K exhibit text for filings whose items overlap `items`."""
     client = client or sec_client()
     documents = []
@@ -68,7 +73,12 @@ def collect_8k_exhibits(companies, client=None, items=_8K_SUPPLIER_ITEMS):
         url = submissions_url(cik)
         _require_sec(url)
         payload = client.json(url)
-        for filing in _recent_8k(payload, items):
+        filings = _recent_8k(payload, items)
+        if since:
+            filings = [row for row in filings if (row.get("filing_date") or "") >= since]
+        if limit_per_company is not None:
+            filings = filings[: int(limit_per_company)]
+        for filing in filings:
             base = _archive_base(cik, filing["accession"])
             index_url = base + "/index.json"
             _require_sec(index_url)
@@ -89,29 +99,41 @@ def collect_8k_exhibits(companies, client=None, items=_8K_SUPPLIER_ITEMS):
     return documents
 
 
-def collect_asx(companies, client=None, count=40):
+def load_asx(path=ASX_PATH):
+    return _load(path, "companies")
+
+
+def collect_asx(companies, client=None, count=ASX_CAP):
+    """Latest ASX order and backlog headlines. The feed returns at most five per company."""
     client = client or asx_client()
+    count = min(int(count), ASX_CAP)
     documents = []
     for company in companies:
-        if (company.get("market") or "").upper() != "ASX":
+        code = (company.get("ticker") or "").strip().upper()
+        if not code:
             continue
-        url = "https://www.asx.com.au/asx/1/company/{}/announcements?{}".format(
-            urllib.parse.quote(company["ticker"]),
-            urllib.parse.urlencode({"count": str(count)}),
-        )
+        url = f"{ASX_API}/companies/{code.lower()}/announcements?count={count}"
         _require_asx(url)
         payload = client.json(url)
-        for item in _announcements(payload):
-            if not _supplier_headline(item["headline"]):
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict) or "items" not in data:
+            raise EndpointError(f"ASX announcements feed for {code} failed the health check")
+        name = data.get("displayName") or company.get("name") or code
+        company = {**company, "name": name, "ticker": code, "market": "ASX"}
+        for item in (data.get("items") or [])[:count]:
+            headline = (item.get("headline") or "").strip()
+            key = item.get("documentKey") or ""
+            if not headline or not key or not _supplier_headline(headline):
                 continue
-            _require_asx(item["url"])
-            body, _ctype = client.get(item["url"], accept="text/html,text/plain")
+            doc_url = f"{ASX_API}/file/{key}"
+            _require_asx(doc_url)
+            body, _ctype = client.get(doc_url, accept="application/pdf,text/html,text/plain")
             documents.append(
                 {
                     "company": company,
-                    "body": _decode(body),
-                    "url": item["url"],
-                    "filing_date": (item.get("date") or "")[:10] or None,
+                    "body": _asx_text(body),
+                    "url": doc_url,
+                    "filing_date": str(item.get("date") or "")[:10] or None,
                     "form": "ASX",
                 }
             )
@@ -224,7 +246,7 @@ def _announcements(payload):
 
 def _supplier_headline(headline):
     text = (headline or "").casefold()
-    return any(word in text for word in ("order", "contract", "turbine", "transformer", "switchgear"))
+    return any(word in text for word in ("order", "orders", "contract", "backlog", "turbine", "transformer", "switchgear"))
 
 
 def _require_sec(url):
@@ -232,7 +254,36 @@ def _require_sec(url):
 
 
 def _require_asx(url):
-    _require(url, "asx.com.au")
+    host = (urllib.parse.urlsplit(url).hostname or "").lower().rstrip(".")
+    official = host == "asx.com.au" or host.endswith(".asx.com.au") or host == "asx.api.markitdigital.com"
+    if not official:
+        raise EndpointError(f"refusing non-official host for {url}")
+
+
+def _asx_text(body):
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    if body.startswith(b"%PDF"):
+        return _pdf_text(body)
+    return _decode(body)
+
+
+def _pdf_text(body):
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "announcement.pdf"
+        txt_path = Path(tmp) / "announcement.txt"
+        pdf_path.write_bytes(body)
+        try:
+            completed = subprocess.run(
+                ["pdftotext", "-layout", str(pdf_path), str(txt_path)],
+                check=False,
+                capture_output=True,
+            )
+        except FileNotFoundError as exc:
+            raise EndpointError("pdftotext is not installed") from exc
+        if completed.returncode != 0 or not txt_path.exists():
+            raise EndpointError("pdftotext failed on ASX announcement")
+        return txt_path.read_text(encoding="utf-8", errors="replace")
 
 
 def _require(url, suffix):
