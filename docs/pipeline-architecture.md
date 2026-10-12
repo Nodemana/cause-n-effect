@@ -94,6 +94,8 @@ A new row starts at status `fresh`. The scout does not merge it with another lea
 
 A lead that is stored goes to one Centurion, which writes one individual thesis. After the Centurions write those theses, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis.
 
+That second pass includes a priced-in check. The Centurion looks at the actual stock price and past performance and asks whether the move already looks priced in. If the capex or backlog is just the tail end of an already massive run of spending or orders that has already come through, and the stock has already re-rated, the thesis is probably old and is marked stale or downgraded. The stock price and past performance come from quote data.
+
 ## Assign
 
 The Legate is the Portfolio Manager agent. After the scouts finish, it assigns fresh leads. This step does not merge.

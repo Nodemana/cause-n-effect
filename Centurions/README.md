@@ -30,7 +30,7 @@ Path: `Centurions/rules/<lead_type>.md` (for example `Centurions/rules/capex.md`
 4. Instructions to estimate the timeframe: how long the thesis should take to play out.
 5. Instructions to set out the risks.
 6. Instructions to close with one recommendation and a full list of assumptions.
-7. Instructions for a second pass: if this lead is the single new lead the Legate formed from a merge, still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged is not sent back.
+7. Instructions for a second pass: if this lead is the single new lead the Legate formed from a merge, still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list, and include a priced-in check. A lead that was not merged is not sent back.
 
 Figures come only from official sources: SEC filings, ASX announcements, and company releases.
 
@@ -40,9 +40,11 @@ Merging happens only at the Legate, after the individual theses exist, and only 
 
 Only a merged finding comes back, as one new lead, for a second, fresh full thesis pass: grade, thesis, potential ROI, risks, timeframe, and stated assumptions. The rules files for the constituent lead types are the grading criteria for that one lead. The output is still one thesis. A lead the Legate does not merge gets no second pass and goes straight to the Praetorians for critique. The merged finding goes to the Praetorians after this second-pass thesis.
 
+That second pass includes a priced-in check. The Centurion looks at the actual stock price and past performance and asks whether the move already looks priced in. If the capex or backlog is just the tail end of an already massive run of spending or orders that has already come through, and the stock has already re-rated, the thesis is probably old and is marked stale or downgraded. The stock price and past performance come from quote data. Spending and order figures stay on SEC filings, ASX announcements, and company releases.
+
 ## Job
 
-1. Grade this lead against the criteria in its rules file. On a second pass, grade each constituent type's criteria once.
+1. Grade this lead against the criteria in its rules file. On a second pass, grade each constituent type's criteria once, and grade the priced-in check.
 2. Research and write the investment thesis, including the potential ROI.
 3. Estimate the timeframe.
 4. Set out the risks.
@@ -103,12 +105,16 @@ List every assumption made while researching and forming the thesis.
 Figures only from SEC filings, ASX announcements, and company releases.
 
 If this lead is the single new lead from a Legate merge, this is the second, fresh full pass: still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged does not reach this pass.
+
+That second pass includes a priced-in check. The Centurion looks at the actual stock price and past performance and asks whether the move already looks priced in. If the capex or backlog is just the tail end of an already massive run of spending or orders that has already come through, and the stock has already re-rated, the thesis is probably old and is marked stale or downgraded. The stock price and past performance come from quote data.
 ```
 
 ## Expected output
 
 ```markdown
 ## Grade
+
+Priced-in (second pass only):
 
 ## Thesis
 
