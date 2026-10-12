@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from pipeline.load import is_quarter_figure
+
 REPO = Path(__file__).resolve().parents[1]
 RULES = REPO / "Centurions" / "rules"
 MACRO_CACHE = REPO / "cache" / "macro.json"
@@ -19,6 +21,17 @@ def rules_text(lead_type):
 
 def significance_prompt(candidate):
     figure = candidate.figure
+    quarter = candidate.lead_type in {"capex", "orders_backlog"} and is_quarter_figure(
+        figure, candidate.lead_type
+    )
+    novelty_rule = (
+        "This is a quarter-end capex or backlog figure. novelty follows GROWTH_PCT: "
+        "growth of at least 50 percent is first, and a smaller stored growth rate is routine. "
+        "An earlier quarter of the same figure is not by itself routine. "
+        "timing on_time is recorded and is not a failure for this figure."
+        if quarter
+        else "novelty is first only when EARLIER_FIGURE is no."
+    )
     return "\n".join(
         [
             "TASK: significance",
@@ -32,13 +45,15 @@ def significance_prompt(candidate):
             f"SOURCE_URL: {_one_line(figure.source_url)}",
             f"EARLIER_SIMILAR: {'yes' if getattr(figure, 'earlier_similar', False) else 'no'}",
             f"EARLIER_FIGURE: {'yes' if getattr(figure, 'earlier_type', False) else 'no'}",
+            f"GROWTH_PCT: {_number(getattr(figure, 'growth_pct', None))}",
+            f"QUARTER_FIGURE: {'yes' if quarter else 'no'}",
             f"PERIOD_AGE_DAYS: {_age(figure)}",
             "Reply with one JSON object and no other text.",
             "Keys: magnitude, magnitude_rationale, novelty, novelty_rationale, "
             "attention, attention_rationale, timing, timing_rationale.",
             "magnitude is large, moderate, or small. novelty is first or routine. "
-            "novelty is first only when EARLIER_FIGURE is no. "
-            "attention is unnoticed or noticed. "
+            + novelty_rule
+            + " attention is unnoticed or noticed. "
             "timing is early (event age at most 45 days), on_time (46 to 120 days), or late (older than 120).",
             "Each rationale is one sentence. Use only the fields above. "
             "Do not invent a figure, a source, or a media article.",
@@ -62,6 +77,8 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
         f"PERIOD: {_one_line(figure.period)}",
         f"SOURCE_URL: {_one_line(figure.source_url)}",
         f"PRIOR_COMPARISON: {prior}",
+        f"GROWTH_PCT: {_number(getattr(figure, 'growth_pct', None))}",
+        f"GROWTH_TEXT: {_one_line(getattr(figure, 'growth_text', None))}",
         f"MARKET_CAP: {_number(getattr(figure, 'market_cap', None))}",
         "CRITERIA_BEGIN",
     ]

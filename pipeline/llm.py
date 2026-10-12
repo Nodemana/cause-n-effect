@@ -189,6 +189,9 @@ _LARGE = {
     "insider_buying": 100_000,
     "accumulation": 10,
 }
+# A quarterly print that merely exists again is not the novelty test.
+# Growth at or above this percent is a sharp acceleration.
+STRONG_GROWTH_PCT = 50
 
 
 def _significance(prompt):
@@ -207,7 +210,11 @@ def _significance(prompt):
     else:
         magnitude = "moderate"
         magnitude_rationale = f"The stored figure {value:g} clears the threshold and sits under the large bar."
-    if (
+    quarter = _field(prompt, "QUARTER_FIGURE") == "yes" and lead_type in {"capex", "orders_backlog"}
+    growth = _optional_float(_field(prompt, "GROWTH_PCT"))
+    if quarter:
+        novelty, novelty_rationale = _growth_novelty(lead_type, growth)
+    elif (
         "low-signal" in text
         or "routine" in text
         or _field(prompt, "EARLIER_FIGURE") == "yes"
@@ -266,6 +273,27 @@ _TIMEFRAME = {
 }
 
 
+def _growth_novelty(lead_type, growth):
+    """Quarterly capex and backlog novelty comes from the growth rate."""
+    kind = "Capex" if lead_type == "capex" else "Backlog"
+    if growth is not None and growth >= STRONG_GROWTH_PCT:
+        shown = int(growth) if float(growth).is_integer() else growth
+        return (
+            "first",
+            f"{kind} is up {shown:g} percent, a sharp acceleration rather than a routine quarterly print.",
+        )
+    if growth is not None:
+        shown = int(growth) if float(growth).is_integer() else growth
+        return (
+            "routine",
+            f"{kind} growth of {shown:g} percent is not a sharp acceleration.",
+        )
+    return (
+        "first",
+        "No growth rate is stored, so this quarterly print is not marked routine.",
+    )
+
+
 def _expected_return(lead_type, value):
     """Percent return from the figure's magnitude, not a fixed number per lead type."""
     bar = float(_LARGE.get(lead_type or "capex", 1))
@@ -321,6 +349,9 @@ def _centurion(prompt):
         f"Thesis for {ticker} {lead_type}. "
         f"A return depends on the official-source figure stored for this lead."
     )
+    growth_text = _field(prompt, "GROWTH_TEXT")
+    if growth_text:
+        thesis = f"{thesis} {growth_text}"
     if suppliers:
         thesis += " Suppliers named: " + ", ".join(item["name"] for item in suppliers) + "."
     if customers:
@@ -368,7 +399,7 @@ def _grades(prompt):
                 evidence = "market cap is below the threshold"
         elif name == "raise_vs_company":
             if market is None:
-                passed = True
+                passed = False
                 evidence = "market cap unverified"
             elif value is not None and threshold is not None and (100.0 * value / market) >= threshold:
                 passed = True
@@ -377,8 +408,14 @@ def _grades(prompt):
                 passed = False
                 evidence = "the raise is below the percent of market cap"
         elif "growth" in name:
+            growth_text = _field(prompt, "GROWTH_TEXT")
             passed = "PRIOR_COMPARISON: yes" in prompt
-            evidence = "prior comparison in the figures table" if passed else "no prior comparison in the figures table"
+            if passed and growth_text:
+                evidence = growth_text
+            elif passed:
+                evidence = "prior comparison in the figures table"
+            else:
+                evidence = "no prior comparison in the figures table"
         else:
             passed = True
             evidence = "the stored figure is an official-source row"
