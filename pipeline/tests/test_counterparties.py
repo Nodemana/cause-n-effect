@@ -457,25 +457,26 @@ class CounterpartyTests(unittest.TestCase):
         self.assertIn("failed closed", blob)
         self.assertIn("GEV", blob)
         self.assertNotIn(CONTACT, blob)
-        legate = [row for row in rows if row["source_scout"] == "legate"]
-        self.assertTrue(legate)
-        self.assertIn("cross-company capex-to-backlog", legate[0]["summary"])
-        self.assertTrue(any("Suppliers named: Globex Power" in (row["thesis_text"] or "") for row in legate))
-        parties = [row for row in legate if row["name"] == "Globex Power"]
+        chain = [row for row in rows if row["source_scout"] == "capex_chain"]
+        self.assertTrue(chain)
+        self.assertTrue(all(row["ticker"] == "ORCL" for row in chain))
+        self.assertIn("Spender", chain[0]["summary"])
+        self.assertIn("Supplier", chain[0]["summary"])
+        self.assertIn("backlog", chain[0]["summary"])
+        self.assertTrue(any("Suppliers named: Globex Power" in (row["thesis_text"] or "") for row in chain))
+        parties = [row for row in chain if row["name"] == "Globex Power"]
         self.assertTrue(parties)
         self.assertEqual(parties[0]["role"], "supplier")
         self.assertEqual(parties[0]["party_ticker"], "GEV")
         self.assertIn("https://www.sec.gov/", parties[0]["source_url"])
         self.assertIn("d1dex101.htm", parties[0]["source_url"])
+        self.assertFalse(any(row["ticker"] == "GEV" for row in rows))
         stored_names = [row["name"] for row in rows if row["name"]]
         thesis_blob = "\n".join(row["thesis_text"] or "" for row in rows)
         for junk in JUNK:
             self.assertNotIn(junk, stored_names)
             self.assertNotIn(junk, thesis_blob)
         self.assertTrue(all("orcl-10k.htm" not in url for url in client.urls))
-        gev = [row for row in rows if row["ticker"] == "GEV" and row["source_scout"] != "legate"]
-        self.assertTrue(gev)
-        self.assertTrue(all(row["name"] is None for row in gev))
         self.assertTrue(all((urlsplit(url).hostname or "").endswith("sec.gov") for url in client.urls))
         self.assertEqual(client.urls.count(TICKERS_URL), 1)
 

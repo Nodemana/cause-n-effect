@@ -1,4 +1,4 @@
-"""Prompt text for the three model tasks. Rules files are included in full."""
+"""Prompt text for the agent tasks. Rules files are included in full."""
 
 import json
 from pathlib import Path
@@ -9,7 +9,7 @@ REPO = Path(__file__).resolve().parents[1]
 RULES = REPO / "Centurions" / "rules"
 MACRO_CACHE = REPO / "cache" / "macro.json"
 
-_LEAD_ORDER = ("capex", "debt_raise", "orders_backlog", "accumulation", "insider_buying")
+_LEAD_ORDER = ("capex", "debt_raise", "orders_backlog", "accumulation", "insider_buying", "macro")
 
 
 def rules_text(lead_type):
@@ -35,6 +35,12 @@ def significance_prompt(candidate):
     timing_rule = ""
     if candidate.lead_type == "orders_backlog" or quarter:
         timing_rule = "timing on_time is recorded and is not a failure for this figure. "
+    macro_rule = ""
+    if candidate.lead_type == "macro":
+        macro_rule = (
+            "This is a macro signal. Judge the series move or spread in VALUE_TEXT. "
+            "The series ids, values, dates, and source URLs in that text are the evidence. "
+        )
     return "\n".join(
         [
             "TASK: significance",
@@ -57,6 +63,7 @@ def significance_prompt(candidate):
             "magnitude is large, moderate, or small. novelty is first or routine. "
             + novelty_rule
             + timing_rule
+            + macro_rule
             + "attention is unnoticed or noticed. "
             "timing is early (event age at most 45 days), on_time (46 to 120 days), or late (older than 120).",
             "Each rationale is one sentence. Use only the fields above. "
@@ -65,7 +72,7 @@ def significance_prompt(candidate):
     )
 
 
-def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None):
+def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None, related=None, show_macro=False):
     figure = lead.figure
     prior = "yes" if getattr(figure, "prior_comparison", False) else "no"
     lines = [
@@ -114,14 +121,13 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
             seen.append(lead_type)
             lines.append(rules_text(lead_type))
     lines.append("RULES_END")
-    if pass_number == 2:
+    if constituents:
         lines.append("CONSTITUENTS_BEGIN")
-        for item in constituents or []:
+        for item in constituents:
             lines.append(json.dumps(item, sort_keys=True))
         lines.append("CONSTITUENTS_END")
         lines.append(
-            "This lead is the single new lead from a Legate merge. "
-            "A lead that was not merged is not sent back. "
+            "This lead joins the constituents into one finding. "
             "Still write one grade, one thesis, one ROI, one set of risks, one timeframe, "
             "and one assumptions list."
         )
@@ -130,15 +136,29 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
             "with reasoning and evidence. Note that call as a concern where relevant. "
             "There is no automatic rejection. Do not invent a stock price."
         )
+    if show_macro:
         if macro:
             lines.append(f"MACRO: {_one_line(macro)}")
             lines.append(
-                "Macro context is a concern on this pass only. "
+                "Macro context is a concern on a capex chain and on a later merged lead. "
                 "Use the macro line as supplied. Do not re-pull series and do not treat it as a company figure."
             )
         else:
             lines.append("MACRO: none")
             lines.append("No macro cache is available. Do not invent macro conditions.")
+    if related is not None:
+        lines.append("RELATED_FINDINGS_BEGIN")
+        if related:
+            for item in related:
+                lines.append(json.dumps(item, sort_keys=True))
+        else:
+            lines.append("none")
+        lines.append("RELATED_FINDINGS_END")
+        lines.append(
+            "RELATED_FINDINGS are capex-chain and smart-money leads from this sweep "
+            "whose text matches this series. Use them when naming likely effects. "
+            "A finding that is not listed here is not relevant to this series."
+        )
     lines.append(
         "Reply with one JSON object and no other text. "
         "Keys: thesis, roi, roi_pct, timeframe_days, risks, recommendation, assumptions, "
@@ -146,13 +166,14 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
         "grades is a list of {name, passed, evidence}. "
         "risks and assumptions are lists of sentences. "
         "suppliers, customers, and buyers are lists of {name, ticker} "
-        "taken from COUNTERPARTIES of that role and from the figure text. "
+        "taken from COUNTERPARTIES of that role, from CONSTITUENTS, and from the figure text. "
         "A customer on a capex lead stays a customer. A deal_party is not a "
         "supplier or a customer. "
         "When COUNTERPARTIES is empty, the thesis says none found for the "
         "suppliers line on a capex lead and for the customers line on a backlog lead. "
-        "price_run is null on a first pass. "
-        "Figures only from the source URL and the fields above."
+        "price_run is null when this task has no constituents. "
+        "When constituents are present, price_run is new, acceleration, or priced-in. "
+        "Figures only from the source URL, the constituents, the related findings, and the fields above."
     )
     return "\n".join(lines)
 

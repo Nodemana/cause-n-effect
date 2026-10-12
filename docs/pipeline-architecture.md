@@ -10,7 +10,7 @@ Today `shared/schema.sql` stores `runs` and `figures`, plus a small `leads` tabl
 
 ## Flow
 
-Scouts are the cheap filter. Centurions are the expensive research. A scout's existing code pulls and parses, deterministic thresholds and a dedupe run first, and an external agent then judges the shortlist from a task file. Only a lead that survives is lodged. Scouts do not merge. The Macro scout does not lodge leads. It refreshes a cached series only when that series is stale, and the second-pass Centurion reads that cache. Each surviving lead goes to one Centurion, which writes one thesis. After those individual theses exist, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis. The Legate ranks that set. The ranked list is what reaches the Imperator.
+Scouts are the cheap filter. Centurions are the expensive research. A scout's existing code pulls and parses, deterministic thresholds and a dedupe run first, and an external agent then judges the shortlist from a task file. Only a lead that survives is lodged. Data-collection scouts do not merge. The sweep combines linkable capex, backlog, and debt into one capex-chain lead, and same-ticker insider and accumulation signals into one smart-money lead, before the Centurion. Macro stays a lead of its own. The Macro scout does not lodge leads. It refreshes a cached series only when that series is stale, and a capex-chain Centurion reads that cache. Each combined or single lead goes to one Centurion, which writes one thesis. A leftover cross-group link can still be merged after those theses exist, and only that leftover goes back for a second pass. The Legate ranks that set. The ranked list is what reaches the Imperator.
 
 ```mermaid
 flowchart TD
@@ -52,13 +52,13 @@ flowchart TD
   DB -->|later scout hit near a position| ASSIGN
 ```
 
-Significance, the Centurion passes, and the Praetorian critiques are task files for an external agent. Legate merge and ranking stay in process. The Imperator sees the ranked list, then records an action. A later scout hit near a position the Imperator already took comes back as an update on that position. It is a new lead, not a merge into the open position.
+A market cap is shares outstanding times an official USD share-price figure. Shares without that price leave the cap unverified. Significance, the Centurion passes, and the Praetorian critiques are task files for an external agent. Capex chains and smart-money leads are combined in process before the first Centurion, and a macro Centurion task includes the related findings from those leads. Legate merge of a leftover cross-group link, and ranking, stay in process. The Imperator sees the ranked list, then records an action. A later scout hit near a position the Imperator already took comes back as an update on that position. It is a new lead, not a merge into the open position.
 
 ## Scouts
 
 Each scout pulls official findings (SEC, ASX, company releases) with the code already in its folder. That pull is not a lead. Deterministic gates run first: the scout's own thresholds, then a dedupe of the pull. What remains is a shortlist. An external agent reads that shortlist from a task file and applies four judgments. It emits a row into `leads` only when the item is genuinely interesting. A reject is written to `lead_rejects` and is not inserted into `leads`. The aim is that a Centurion never receives a run of low-value leads, such as hundreds of routine bond issues.
 
-A lodged lead is one finding: ticker, lead type, source link, the figure it rests on, and a significance assessment. Lead types match the scout folders: `capex`, `debt_raise`, `orders_backlog`, `accumulation`, `insider_buying`. The macro scout is not in that list. It does not lodge leads. It refreshes `macro_series` and `macro_observations`, and the second-pass Centurion reads that cache.
+A lodged lead is one finding: ticker, lead type, source link, the figure it rests on, and a significance assessment. Lead types match the scout folders: `capex`, `debt_raise`, `orders_backlog`, `accumulation`, `insider_buying`, plus `macro`. The macro scout still only refreshes `macro_series` and `macro_observations`, and the second-pass Centurion reads that cache. The sweep also reads those observations and lodges a `macro` lead when a series moves at least 10 percent in one month, 20 percent in three months, or two standard deviations versus the prior year, or when Brent minus WTI is outside its prior-year range. That lead carries the series ids, values, dates, and source URLs, and it enters the same agent queue as a company lead.
 
 Each dimension is a short label plus a one-line rationale, not necessarily a number:
 
@@ -126,23 +126,23 @@ The quality score is the Centurion's judgment at research time. It is a count of
 
 ## Legate merge
 
-Merging happens here, after the individual theses exist, and not before. The Legate reads across those theses and merges any the research shows are linked.
+Capex, orders backlog, and debt are combined before the Centurion when the filings name each other or share a ticker. That chain is one lead. Insider buying and accumulation on the same ticker, inside the window, are one smart-money lead. Those combinations do not come back as a Legate merge.
 
-The merge to prioritise is cross-company capex-to-backlog. A capex thesis that shows what the buyer is spending, and with which supplier, pairs with that supplier's orders_backlog thesis. Same-company merges of supportive theses are allowed. They are not the priority.
+A leftover cross-group link, such as a capex lead and an insider lead on the same company, is still merged here after the theses exist. Same-company merges of supportive theses are allowed when they were not already one chain.
 
-A merge rests on the Centurions' researched findings, not on the raw scout rows. It needs traceable official-source evidence that links the two: the buyer's capex filing names the supplier, the supplier's filing names the customer or contract, or another official-source link the research cites. A sector match is not enough. That evidence is stored in `legate_merges.rationale`. `survivor_lead_id` is the combined lead. Constituent ids are rows in `legate_merge_leads`.
+A leftover merge rests on the Centurions' researched findings. It needs traceable official-source evidence. A sector match is not enough. That evidence is stored in `legate_merges.rationale`. `survivor_lead_id` is the combined lead. Constituent ids are rows in `legate_merge_leads`.
 
 Only a merged finding goes back to one Centurion as a single new lead. That Centurion runs a second, fresh full thesis pass: grade, thesis, potential ROI, risks, timeframe, and stated assumptions. The rules files for the constituent types are the grading criteria. The output is one thesis. A lead that was not merged gets no second pass and keeps the thesis from the first pass. That unmerged thesis goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after its second-pass thesis.
 
 ## Praetorians
 
-Praetorians are ephemeral agents. Their only job is critique. A thesis the Legate does not merge gets no second pass and comes straight from the first thesis. A merged finding comes only after its second-pass thesis. They attack the stated assumptions, weak or non-official sources, and conclusions, with counter-evidence. On any prior price run they review the Centurion's classification, already made, and state whether they agree or disagree, with counter-evidence. They do not write an assumptions list of their own, and they do not merge or rank.
+Praetorian review is off unless the sweep is started with `--with-praetorians`. The code and the task schema stay. A run without that flag goes from the Centurion passes to ranking. Praetorians, when the flag is on, are ephemeral agents. Their only job is critique. A thesis the Legate does not merge gets no second pass and comes straight from the first thesis. A merged finding comes only after its second-pass thesis. They attack the stated assumptions, weak or non-official sources, and conclusions, with counter-evidence. On any prior price run they review the Centurion's classification, already made, and state whether they agree or disagree, with counter-evidence. They do not write an assumptions list of their own, and they do not merge or rank.
 
 Each pass is a row in `critiques`. The thesis that leaves this step is one the Legate may rank.
 
 ## Rank
 
-After the critiques, the Legate ranks the final theses. Rank 1 has the fewest surviving Praetorian issues, the highest ROI, and the shortest timeframe. Later ranks step down by how many risks remain and how large those risks are. A merged thesis is one entry. The Legate keeps three to five for the week. Those rows move to status `presented`. That ranked list is what the Imperator reads.
+After the critiques, the Legate ranks the final theses. Rank 1 has the fewest surviving Praetorian issues, the highest ROI, and the shortest timeframe. Later ranks step down by how many risks remain and how large those risks are. A merged thesis is one entry. `--max-theses` (default 5) is how many of those rows move to status `presented` and into `data/reports/<run_id>.md`. That file is what the Imperator reads: thesis, cause to effect chain, tickers, evidence links, Praetorian verdict and objections, and macro context.
 
 ## Outcome
 

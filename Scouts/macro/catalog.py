@@ -210,7 +210,7 @@ SERIES = (
         "frequency": "daily",
         "stale_after_hours": _DAILY,
         "provider": "eia",
-        "route": "natural-gas/pri/spt",
+        "route": "natural-gas/pri/fut",
         "remote_id": "RNGWHHD",
         "fixture": "eia_spot.json",
     },

@@ -70,8 +70,11 @@ def build_parser():
             "Affiliates, subsidiaries, and former parents are dropped. Only a "
             "matched SEC registrant or a company-suffix name is kept, as a whole word. "
             "A source error drops that company's parties and the contact address is not logged. "
-            "An official price source is TODO; the sweep does not call an unofficial price feed. "
-            "The figures summary is the lead figures used after --limit."
+            "A market cap is shares outstanding times an official share-price figure. "
+            "The figures summary is the lead figures used after --limit. "
+            "Ranking later writes at most --max-theses pending decisions and "
+            "data/reports/<run_id>.md beside the queue directory. "
+            "Praetorian review is off unless --with-praetorians is passed."
         ),
     )
     run.add_argument("--db", required=True, help="SQLite database that holds scout figures")
@@ -94,7 +97,25 @@ def build_parser():
     run.add_argument(
         "--macro-cache",
         default=None,
-        help="JSON file with a summary key. Missing file skips macro context on the second pass",
+        help="JSON file with a summary key. Missing file skips macro context on a capex chain and on a later merge",
+    )
+    run.add_argument(
+        "--with-praetorians",
+        action="store_true",
+        help=(
+            "Queue a Praetorian review after the Centurion passes and before ranking. "
+            "Off by default. Ranking then uses that review. "
+            "Without this flag, ranking uses the Centurion thesis and does not read a Praetorian verdict."
+        ),
+    )
+    run.add_argument(
+        "--max-theses",
+        type=int,
+        default=5,
+        help=(
+            "Pending decisions and data/reports/<run_id>.md include at most this many theses. "
+            "Default 5. With the default queue data/agent_queue the report is data/reports/<run_id>.md"
+        ),
     )
 
     status = sub.add_parser(
@@ -116,8 +137,14 @@ def build_parser():
             "A missing file or a value that breaks the output schema is an error "
             "and the stage does not advance. Valid results are stored. "
             "The next stage's task files are written. "
-            "Order: significance, centurion pass 1, legate merge, centurion pass 2 "
-            "(merged leads only), praetorian, then ranking and pending decisions. "
+            "Order: significance, then one Centurion task per lead. "
+            "Linkable capex, orders backlog, and debt raises are one capex-chain lead. "
+            "Same-ticker insider and accumulation signals inside the window are one smart-money lead. "
+            "A macro lead stays separate, and its Centurion task lists related findings from those scouts. "
+            "A leftover cross-group merge, when one exists, gets a second Centurion pass. "
+            "Praetorian runs only when the sweep was started with --with-praetorians. "
+            "Ranking and pending decisions follow. "
+            "Ranking writes at most the run's --max-theses theses to data/reports/<run_id>.md. "
             "Merge and ranking do not write task files. "
             "When SEC_CONTACT_EMAIL is set, the significance ingest names counterparties "
             "before the Centurion tasks are written. The address is not logged."
@@ -150,6 +177,8 @@ def build_parser():
 def _run(parser, args):
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be a positive integer")
+    if args.max_theses < 1:
+        parser.error("--max-theses must be a positive integer")
     shares_client = sec_client() if sec_contact_email() else None
     result = run_pipeline(
         args.db,
@@ -158,6 +187,8 @@ def _run(parser, args):
         macro_cache=args.macro_cache,
         shares_client=shares_client,
         queue_dir=args.queue_dir,
+        max_theses=args.max_theses,
+        with_praetorians=args.with_praetorians,
     )
     _print_result(result)
     return 0
@@ -210,6 +241,7 @@ def _print_result(result):
         "decisions",
         "dry_run",
         "macro",
+        "report",
     ):
         print(f"{key}: {result[key]}")
 

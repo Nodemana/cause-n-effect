@@ -185,11 +185,11 @@ class GateTests(unittest.TestCase):
                     for row in conn.execute(
                         """
                         SELECT l.ticker, t.thesis_text, t.assumptions,
-                               r.assumptions_that_fail, r.surviving_issues,
+                               t.assumptions AS assumptions_that_fail,
+                               k.surviving_issues,
                                k.surviving_issues AS ranked_issues
                         FROM leads AS l
                         JOIN theses AS t ON t.lead_id = l.lead_id
-                        JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
                         JOIN rankings AS k ON k.lead_id = l.lead_id
                         WHERE l.ticker IN ('NONE', 'SHR')
                         """
@@ -317,10 +317,10 @@ class GateTests(unittest.TestCase):
                 sim = conn.execute(
                     """
                     SELECT l.significance_novelty, l.significance_timing,
-                           r.assumptions_that_fail, r.surviving_issues
+                           t.assumptions AS assumptions_that_fail, k.surviving_issues
                     FROM leads AS l
                     JOIN theses AS t ON t.lead_id = l.lead_id
-                    JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
+                    JOIN rankings AS k ON k.lead_id = l.lead_id
                     WHERE l.ticker = 'SIM'
                     """
                 ).fetchone()
@@ -662,10 +662,11 @@ class GateTests(unittest.TestCase):
                 leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
                 kept = conn.execute(
                     """
-                    SELECT l.significance_timing, r.assumptions_that_fail, r.surviving_issues
+                    SELECT l.significance_timing, t.assumptions AS assumptions_that_fail,
+                           k.surviving_issues
                     FROM leads AS l
                     JOIN theses AS t ON t.lead_id = l.lead_id
-                    JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
+                    JOIN rankings AS k ON k.lead_id = l.lead_id
                     WHERE l.ticker = 'ONTIME'
                     """
                 ).fetchone()
@@ -910,10 +911,9 @@ class GateTests(unittest.TestCase):
                 ).fetchone()[0]
                 thesis = conn.execute(
                     """
-                    SELECT t.thesis_text, r.assumptions_that_fail, k.surviving_issues
+                    SELECT t.thesis_text, t.assumptions AS assumptions_that_fail, k.surviving_issues
                     FROM leads AS l
                     JOIN theses AS t ON t.lead_id = l.lead_id
-                    JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
                     JOIN rankings AS k ON k.lead_id = l.lead_id
                     WHERE l.ticker = 'NCP'
                     """
@@ -1117,10 +1117,10 @@ class GateTests(unittest.TestCase):
                     reasons.setdefault(row["ticker"], []).append(row)
                 large = conn.execute(
                     """
-                    SELECT t.thesis_text, r.assumptions_that_fail, r.surviving_issues, k.rank
+                    SELECT t.thesis_text, t.assumptions AS assumptions_that_fail,
+                           k.surviving_issues, k.rank
                     FROM leads AS l
                     JOIN theses AS t ON t.lead_id = l.lead_id
-                    JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
                     JOIN rankings AS k ON k.lead_id = l.lead_id
                     WHERE l.ticker = 'LARGE'
                     """
@@ -1448,10 +1448,10 @@ class GateTests(unittest.TestCase):
             try:
                 kept = conn.execute(
                     """
-                    SELECT l.significance_timing, l.significance_novelty, r.assumptions_that_fail
+                    SELECT l.significance_timing, l.significance_novelty,
+                           t.assumptions AS assumptions_that_fail
                     FROM leads AS l
                     JOIN theses AS t ON t.lead_id = l.lead_id
-                    JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
                     WHERE l.ticker = 'SUP'
                     """
                 ).fetchone()
@@ -1568,7 +1568,8 @@ class GateTests(unittest.TestCase):
             try:
                 leads = conn.execute(
                     """
-                    SELECT l.ticker, l.summary, l.significance_novelty, COUNT(link.figure_id) AS figures
+                    SELECT l.ticker, l.source_scout, l.summary, l.significance_novelty,
+                           COUNT(link.figure_id) AS figures
                     FROM leads AS l
                     JOIN lead_figures AS link ON link.lead_id = l.lead_id
                     GROUP BY l.lead_id
@@ -1591,16 +1592,17 @@ class GateTests(unittest.TestCase):
         self.assertEqual(mina[0]["significance_novelty"], "first")
         self.assertIn("A$175,000", mina[0]["summary"])
         self.assertEqual(mina[0]["figures"], 3)
+        self.assertEqual(mina[0]["source_scout"], "insider-buying")
         self.assertNotIn("MIN.AX", routine)
-        self.assertEqual(len(zzz), 2)
-        summed = [row for row in zzz if "lots totalling" in (row["summary"] or "")]
-        other = [row for row in zzz if "lots totalling" not in (row["summary"] or "")]
-        self.assertEqual(len(summed), 1)
-        self.assertIn("$120,000", summed[0]["summary"])
-        self.assertEqual(summed[0]["figures"], 2)
-        self.assertEqual(other[0]["figures"], 1)
-        self.assertIn("Bo West", other[0]["summary"])
-        self.assertTrue(all(row["significance_novelty"] == "routine" for row in zzz))
+        self.assertEqual(len(zzz), 1)
+        combined = zzz[0]
+        self.assertEqual(combined["source_scout"], "smart_money")
+        self.assertIn("lots totalling", combined["summary"])
+        self.assertIn("$120,000", combined["summary"])
+        self.assertIn("Bo West", combined["summary"])
+        self.assertIn("Form 4", combined["summary"])
+        self.assertEqual(combined["figures"], 3)
+        self.assertEqual(combined["significance_novelty"], "routine")
 
     def test_growth_numbers_are_quoted_and_outrank_a_small_stake(self):
         phrase = "Jun-Aug 2026 $28.5B vs Jun-Aug 2025 $8.5B, +235%"
@@ -1708,10 +1710,9 @@ class GateTests(unittest.TestCase):
                     for row in conn.execute(
                         """
                         SELECT l.ticker, l.significance_novelty, l.significance_timing,
-                               r.assumptions_that_fail
+                               t.assumptions AS assumptions_that_fail
                         FROM leads AS l
                         JOIN theses AS t ON t.lead_id = l.lead_id
-                        JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
                         """
                     )
                 }
@@ -1756,12 +1757,13 @@ class GateTests(unittest.TestCase):
             try:
                 grade = conn.execute(
                     """
-                    SELECT r.passed, r.evidence, t.thesis_text, v.assumptions_that_fail, v.surviving_issues
+                    SELECT r.passed, r.evidence, t.thesis_text,
+                           t.assumptions AS assumptions_that_fail, k.surviving_issues
                     FROM leads AS l
                     JOIN lead_criteria_results AS r ON r.lead_id = l.lead_id
                     JOIN rubric_criteria AS c ON c.criterion_id = r.criterion_id
                     JOIN theses AS t ON t.lead_id = l.lead_id
-                    JOIN praetorian_reviews AS v ON v.thesis_id = t.thesis_id
+                    JOIN rankings AS k ON k.lead_id = l.lead_id
                     WHERE l.ticker = 'DEBT' AND c.name = 'raise_vs_company'
                     """
                 ).fetchone()

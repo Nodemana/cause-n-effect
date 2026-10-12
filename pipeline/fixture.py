@@ -27,7 +27,7 @@ def fixture_response(prompt):
     raise FixtureError(f"fixture has no response for task {task!r}")
 
 
-def run_with_fixture(db_path, *, responder=None, queue_dir=None, **kwargs):
+def run_with_fixture(db_path, *, responder=None, queue_dir=None, with_praetorians=False, **kwargs):
     """Drive a sweep offline. Not used by the live CLI."""
     from pipeline.agent import read_tasks, result_path
     from pipeline.flow import ingest_run, run_pipeline
@@ -36,7 +36,7 @@ def run_with_fixture(db_path, *, responder=None, queue_dir=None, **kwargs):
         queue_dir = str(Path(db_path).parent / "agent_queue")
     responder = responder or (lambda task: fixture_response(task["prompt"]))
     parties_client = kwargs.pop("parties_client", None)
-    result = run_pipeline(db_path, queue_dir=queue_dir, **kwargs)
+    result = run_pipeline(db_path, queue_dir=queue_dir, with_praetorians=with_praetorians, **kwargs)
     prompts = []
     seen = set()
     while result.get("status") == "awaiting_agents":
@@ -186,6 +186,7 @@ _TIMEFRAME = {
     "debt_raise": 270,
     "insider_buying": 90,
     "accumulation": 120,
+    "macro": 120,
 }
 
 
@@ -234,12 +235,11 @@ def _constituent_value(item, fallback):
 def _centurion(prompt):
     lead_type = _field(prompt, "LEAD_TYPE") or "capex"
     ticker = _field(prompt, "TICKER")
-    pass_number = _field(prompt, "PASS") or "1"
     constituents = _constituents(prompt)
     suppliers, customers, buyers = _parties(prompt, constituents)
     grades = _grades(prompt)
     value = _optional_float(_field(prompt, "VALUE")) or 0
-    if pass_number == "2" and constituents:
+    if constituents:
         roi = max(_expected_return(item.get("lead_type") or lead_type, _constituent_value(item, value)) for item in constituents)
         roi += 3
         timeframe = min(_TIMEFRAME.get(item.get("lead_type"), 365) for item in constituents)
@@ -255,16 +255,23 @@ def _centurion(prompt):
     if not _field(prompt, "MARKET_CAP"):
         assumptions.insert(0, "market cap unverified")
     macro = _field(prompt, "MACRO")
-    if pass_number == "2" and macro and macro != "none":
+    if macro and macro != "none":
         assumptions.append(f"Macro context used: {macro}")
     where = ticker
-    if pass_number == "2" and suppliers:
+    if constituents and suppliers:
         named = suppliers[0]
         where = named.get("ticker") or named.get("name") or ticker
-    thesis = (
-        f"Thesis for {ticker} {lead_type}. "
-        f"A return depends on the official-source figure stored for this lead."
-    )
+    if lead_type == "macro":
+        thesis = (
+            f"Thesis for {ticker} macro. Cause: {_field(prompt, 'VALUE_TEXT')}. "
+            "Likely effects follow from that cause. "
+            "Winning tickers and losing tickers are named from that cause."
+        )
+    else:
+        thesis = (
+            f"Thesis for {ticker} {lead_type}. "
+            f"A return depends on the official-source figure stored for this lead."
+        )
     growth_text = _field(prompt, "GROWTH_TEXT")
     if growth_text:
         thesis = f"{thesis} {growth_text}"
@@ -338,7 +345,7 @@ def _grades(prompt):
 
 
 def _parties(prompt, constituents):
-    if _field(prompt, "PASS") == "2":
+    if constituents:
         suppliers, customers, buyers = [], [], []
         for item in constituents:
             suppliers.extend(item.get("suppliers") or [])

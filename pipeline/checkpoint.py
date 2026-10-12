@@ -105,6 +105,10 @@ class SweepState:
         self.final_ids = []
         self.judgement_rejects = []
         self.queue_dir = ""
+        self.reports_dir = ""
+        self.max_theses = 5
+        self.with_praetorians = False
+        self.limit = None
         self.figures = 0
         self.deterministic_rejects = 0
         self.pending_persist = False
@@ -143,6 +147,10 @@ def _dump_state(state):
         "final_ids": list(state.final_ids),
         "judgement_rejects": [_dump_reject(item) for item in state.judgement_rejects],
         "queue_dir": state.queue_dir,
+        "reports_dir": state.reports_dir,
+        "max_theses": state.max_theses,
+        "with_praetorians": bool(state.with_praetorians),
+        "limit": state.limit,
         "figures": state.figures,
         "deterministic_rejects": state.deterministic_rejects,
         "pending_persist": bool(state.pending_persist),
@@ -163,6 +171,10 @@ def _load_state(data):
     state.final_ids = list(data.get("final_ids") or [])
     state.judgement_rejects = [_load_reject(item) for item in data.get("judgement_rejects") or []]
     state.queue_dir = data.get("queue_dir") or ""
+    state.reports_dir = data.get("reports_dir") or ""
+    state.max_theses = int(data.get("max_theses") or 5)
+    state.with_praetorians = bool(data.get("with_praetorians"))
+    state.limit = data.get("limit")
     state.figures = data.get("figures") or 0
     state.deterministic_rejects = data.get("deterministic_rejects") or 0
     state.pending_persist = bool(data.get("pending_persist"))
@@ -236,7 +248,7 @@ def _load_thesis(data):
     return thesis
 
 
-def _dump_lead(lead):
+def _dump_lead(lead, nested=False):
     payload = {key: getattr(lead, key, None) for key in _LEAD}
     payload["figure_ids"] = list(lead.figure_ids or [])
     payload["grade_types"] = list(lead.grade_types or [])
@@ -245,7 +257,13 @@ def _dump_lead(lead):
     payload["thesis"] = _dump_thesis(lead.thesis)
     payload["counterparties"] = list(lead.counterparties or [])
     payload["parties"] = list(getattr(lead, "parties", None) or [])
-    payload["member_ids"] = [member.synthetic_id for member in (lead.members or [])]
+    payload["related_findings"] = list(getattr(lead, "related_findings", None) or [])
+    if nested:
+        payload["members"] = []
+        payload["member_ids"] = []
+    else:
+        payload["members"] = [_dump_lead(member, nested=True) for member in (lead.members or [])]
+        payload["member_ids"] = [member.synthetic_id for member in (lead.members or [])]
     return payload
 
 
@@ -262,12 +280,17 @@ def _load_lead(data, by_id=None):
     lead.thesis = _load_thesis(data.get("thesis"))
     lead.counterparties = list(data.get("counterparties") or [])
     lead.parties = list(data.get("parties") or [])
-    member_ids = list(data.get("member_ids") or [])
-    if by_id is None:
-        lead.members = []
-        lead._member_ids = member_ids
+    lead.related_findings = list(data.get("related_findings") or [])
+    nested = data.get("members") or []
+    if nested:
+        lead.members = [_load_lead(item) for item in nested]
     else:
-        lead.members = [by_id[item] for item in member_ids]
+        member_ids = list(data.get("member_ids") or [])
+        if by_id is None:
+            lead.members = []
+            lead._member_ids = member_ids
+        else:
+            lead.members = [by_id[item] for item in member_ids]
     return lead
 
 

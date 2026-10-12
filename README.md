@@ -14,11 +14,11 @@ flowchart LR
   P --> R[Legate: rank] --> I[Imperator]
 ```
 
-**Scouts.** Scouts are the cheap filter: thresholds and dedupe run first, then an external agent judges magnitude, novelty, attention, and timing from a task file, and only a surviving lead is stored. Each of those leads is one-to-one with a Centurion, and scouts do not merge them. The sweep does not call a model. The handoff is in [docs/agent-protocol.md](docs/agent-protocol.md).
+**Scouts.** Scouts are the cheap filter: thresholds and dedupe run first, then an external agent judges magnitude, novelty, attention, and timing from a task file, and only a surviving lead is stored. Data-collection modules stay separate. The sweep then combines a capex chain and a smart-money lead where the filings link, and each of those findings is one Centurion task. The sweep does not call a model. The handoff is in [docs/agent-protocol.md](docs/agent-protocol.md).
 
 **Centurions.** One Centurion takes one lead and the rules file for that lead's type, researches only that lead, and writes one thesis ([Centurions/README.md](Centurions/README.md)). A capex Centurion works out what the spending is on and which suppliers it reaches; an orders_backlog Centurion works out which customers the orders came from.
 
-**Legate merge.** After those individual theses exist, the Legate merges any the research shows are linked, chiefly a buyer's capex thesis with a different company's orders_backlog thesis, and only when official-source evidence from that research is stored in `legate_merges.rationale` (a sector match is not enough); same-company supportive merges are allowed. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass, and a thesis that is not merged gets no second pass and goes straight to the Praetorians.
+**Capex chain and smart money.** Before the Centurion, linkable capex, orders backlog, and debt raises become one lead (spender, suppliers with backlog, and the funding raise). Insider buying and accumulation on the same ticker, inside the window, become one smart-money lead. Macro stays a lead of its own, and its Centurion task includes related findings such as refiners and tankers on a Brent move. An unlinked figure stays a single lead. A leftover cross-group link can still be merged after the theses exist, and only that leftover goes back for a second pass.
 
 **Macro.** The Macro scout caches official macro context and does not emit leads ([Scouts/macro/README.md](Scouts/macro/README.md)). Each series keeps a `fetched_at` time and a staleness threshold, and a series is fetched again only when that threshold has passed, so the second-pass Centurion reads the cache instead of pulling it again.
 

@@ -51,9 +51,28 @@ class PipelineFlowTests(unittest.TestCase):
             self.assertEqual(result["stage"], "ranking")
             self.assertEqual(result["macro"], "skipped")
             self.assertFalse(result["dry_run"])
-            self.assertEqual(result["merges"], 1)
+            self.assertEqual(result["merges"], 0)
             self.assertEqual(result["decisions"], 3)
             self.assertEqual(result["rankings"], 3)
+            report_path = Path(result["report"])
+            self.assertEqual(report_path.parent.name, "reports")
+            self.assertEqual(report_path.name, f"{result['run_id']}.md")
+            report = report_path.read_text(encoding="utf-8")
+            self.assertEqual(report.count("\n## Rank "), 3)
+            self.assertIn("Spender AMZN", report)
+            self.assertIn("Supplier (backlog) GEV", report)
+            self.assertIn(AMZN_URL, report)
+            self.assertIn(GEV_URL, report)
+            self.assertIn("### Thesis", report)
+            self.assertIn("### Cause → effect", report)
+            self.assertIn("**Tickers:**", report)
+            self.assertIn("### Evidence", report)
+            self.assertIn("### Praetorian", report)
+            self.assertIn("Stage skipped.", report)
+            self.assertNotIn("**Verdict:**", report)
+            self.assertFalse(any(prompt.startswith("TASK: praetorian") for prompt in result["prompts"]))
+            self.assertIn("### Macro context", report)
+            self.assertIn("Sweep macro context: none", report)
 
             conn = connect(path)
             try:
@@ -73,7 +92,7 @@ class PipelineFlowTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_priced_in_and_macro_cache_on_the_return_pass_only(self):
+    def test_priced_in_and_macro_cache_on_the_capex_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "history.sqlite")
             cache = Path(tmp) / "macro.json"
@@ -137,40 +156,44 @@ class PipelineFlowTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_with_fixture(path, macro_cache=str(cache))
+            result = run_with_fixture(path, macro_cache=str(cache), with_praetorians=True)
             conn = connect(path)
             try:
                 merged = conn.execute(
                     """
-                    SELECT t.price_run, t.macro_context, t.assumptions, t.pass_number, l.ticker
+                    SELECT t.price_run, t.macro_context, t.assumptions, t.pass_number, l.ticker, l.source_scout
                     FROM theses AS t
                     JOIN leads AS l ON l.lead_id = t.lead_id
-                    WHERE t.pass_number = 2
+                    WHERE l.source_scout = 'capex_chain'
                     """
                 ).fetchone()
                 self.assertEqual(merged["price_run"], "priced-in")
+                self.assertEqual(merged["pass_number"], 1)
+                self.assertEqual(merged["source_scout"], "capex_chain")
                 self.assertEqual(merged["macro_context"], "Policy rates unchanged.")
                 self.assertIn("Macro context used: Policy rates unchanged.", merged["assumptions"])
-                first = conn.execute(
-                    "SELECT price_run, macro_context FROM theses WHERE pass_number = 1"
-                ).fetchall()
-                self.assertTrue(first)
-                for row in first:
-                    self.assertIsNone(row["price_run"])
-                    self.assertIsNone(row["macro_context"])
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM theses WHERE pass_number = 2").fetchone()[0],
+                    0,
+                )
                 review = conn.execute(
                     """
                     SELECT r.surviving_issues, r.assumptions_that_fail,
                            r.price_run_stance, r.price_run_counterevidence
                     FROM praetorian_reviews AS r
                     JOIN theses AS t ON t.thesis_id = r.thesis_id
-                    WHERE t.pass_number = 2
+                    JOIN leads AS l ON l.lead_id = t.lead_id
+                    WHERE l.source_scout = 'capex_chain'
                     """
                 ).fetchone()
                 self.assertGreaterEqual(review["surviving_issues"], 1)
                 self.assertIn("priced-in", review["assumptions_that_fail"])
                 self.assertEqual(review["price_run_stance"], "agree")
                 self.assertIn("priced-in", review["price_run_counterevidence"])
+                report = Path(result["report"]).read_text(encoding="utf-8")
+                self.assertIn("Policy rates unchanged.", report)
+                self.assertIn("### Macro context", report)
+                self.assertIn("priced-in", report)
             finally:
                 conn.close()
 
@@ -301,7 +324,12 @@ class PipelineFlowTests(unittest.TestCase):
             conn = connect(path)
             try:
                 merged = conn.execute(
-                    "SELECT macro_context, assumptions FROM theses WHERE pass_number = 2"
+                    """
+                    SELECT t.macro_context, t.assumptions
+                    FROM theses AS t
+                    JOIN leads AS l ON l.lead_id = t.lead_id
+                    WHERE l.source_scout = 'capex_chain'
+                    """
                 ).fetchone()
                 self.assertIn("DGS10", merged["macro_context"])
                 self.assertIn("4.2", merged["macro_context"])
@@ -310,15 +338,10 @@ class PipelineFlowTests(unittest.TestCase):
                 self.assertNotIn("JSON cache should not be used.", merged["macro_context"])
                 self.assertIn("Macro context used:", merged["assumptions"])
                 self.assertNotIn("JSON cache should not be used.", merged["assumptions"])
-                review = conn.execute(
-                    """
-                    SELECT price_run_stance, price_run_counterevidence
-                    FROM praetorian_reviews AS r
-                    JOIN theses AS t ON t.thesis_id = r.thesis_id
-                    WHERE t.pass_number = 2
-                    """
-                ).fetchone()
-                self.assertEqual(review["price_run_stance"], "agree")
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM praetorian_reviews").fetchone()[0],
+                    0,
+                )
             finally:
                 conn.close()
 
@@ -402,10 +425,20 @@ class PipelineFlowTests(unittest.TestCase):
                 conn = connect(path)
                 try:
                     merged = conn.execute(
-                        "SELECT macro_context FROM theses WHERE pass_number = 2"
+                        """
+                        SELECT t.macro_context
+                        FROM theses AS t
+                        JOIN leads AS l ON l.lead_id = t.lead_id
+                        WHERE l.source_scout = 'capex_chain'
+                        """
                     ).fetchone()
                     first = conn.execute(
-                        "SELECT macro_context FROM theses WHERE pass_number = 1"
+                        """
+                        SELECT t.macro_context
+                        FROM theses AS t
+                        JOIN leads AS l ON l.lead_id = t.lead_id
+                        WHERE l.source_scout != 'capex_chain'
+                        """
                     ).fetchall()
                 finally:
                     conn.close()
@@ -428,7 +461,6 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertIn("FRED (no key): DFF, DGS2", tail)
         self.assertIn("EIA (no key): WTI, BRENT, HENRY_HUB", tail)
         self.assertIn("BLS (not loaded): US_CPI", tail)
-        self.assertTrue(first)
         for row in first:
             self.assertIsNone(row["macro_context"])
 
@@ -498,25 +530,19 @@ class PipelineFlowTests(unittest.TestCase):
             finally:
                 conn.close()
             result = run_with_fixture(path, macro_cache=str(cache))
+            report_text = Path(result["report"]).read_text(encoding="utf-8")
             conn = connect(path)
             try:
-                self.assertEqual(result["merges"], 1)
+                self.assertEqual(result["merges"], 0)
                 merged = conn.execute(
                     """
-                    SELECT t.thesis_text, t.macro_context, t.pass_number, t.roi, l.source_scout
+                    SELECT t.thesis_text, t.macro_context, t.pass_number, t.roi, l.source_scout, l.lead_id
                     FROM theses AS t
                     JOIN leads AS l ON l.lead_id = t.lead_id
-                    WHERE t.pass_number = 2
+                    WHERE l.source_scout = 'capex_chain'
                     """
                 ).fetchone()
-                review = conn.execute(
-                    """
-                    SELECT r.surviving_issues
-                    FROM praetorian_reviews AS r
-                    JOIN theses AS t ON t.thesis_id = r.thesis_id
-                    WHERE t.pass_number = 2
-                    """
-                ).fetchone()
+                reviews = conn.execute("SELECT COUNT(*) FROM praetorian_reviews").fetchone()[0]
                 ranking = conn.execute(
                     """
                     SELECT k.rank, l.source_scout
@@ -524,22 +550,30 @@ class PipelineFlowTests(unittest.TestCase):
                     JOIN leads AS l ON l.lead_id = k.lead_id
                     """
                 ).fetchone()
-                evidence = json.loads(
-                    conn.execute("SELECT evidence_refs FROM legate_merges").fetchone()["evidence_refs"]
-                )
+                evidence = conn.execute(
+                    """
+                    SELECT f.source_url, f.ticker
+                    FROM lead_figures AS link
+                    JOIN figures AS f ON f.figure_id = link.figure_id
+                    WHERE link.lead_id = ?
+                    """,
+                    (merged["lead_id"],),
+                ).fetchall()
             finally:
                 conn.close()
-        self.assertEqual(merged["source_scout"], "legate")
+        self.assertEqual(merged["source_scout"], "capex_chain")
+        self.assertEqual(merged["pass_number"], 1)
         self.assertEqual(merged["macro_context"], summary)
         self.assertIn("Globex Power", merged["thesis_text"])
         self.assertIn("Amazon", merged["thesis_text"])
         self.assertEqual(merged["roi"], "27%")
-        self.assertIsNotNone(review)
-        self.assertGreaterEqual(review["surviving_issues"], 0)
+        self.assertEqual(reviews, 0)
         self.assertEqual(ranking["rank"], 1)
-        self.assertEqual(ranking["source_scout"], "legate")
+        self.assertEqual(ranking["source_scout"], "capex_chain")
         self.assertEqual({item["source_url"] for item in evidence}, {AMZN_URL, GEV_URL})
         self.assertEqual({item["ticker"] for item in evidence}, {"AMZN", "GEV"})
+        self.assertIn(summary, report_text)
+        self.assertIn("### Macro context", report_text)
 
     def test_run_stops_before_judgement(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -589,6 +623,8 @@ class PipelineFlowTests(unittest.TestCase):
             self.assertGreater(result["tasks"], 0)
             self.assertEqual(result["leads"], 0)
             self.assertFalse(queue.exists())
+            self.assertIsNone(result["report"])
+            self.assertFalse((Path(tmp) / "reports").exists())
             conn = connect(path)
             try:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0], 1)
@@ -613,6 +649,11 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertNotIn("LLM_MODEL", completed.stdout)
         self.assertIn("awaiting_agents", completed.stdout)
         self.assertIn("agent_queue", completed.stdout)
+        self.assertIn("--max-theses", completed.stdout)
+        self.assertIn("--with-praetorians", completed.stdout)
+        self.assertIn("data/reports", completed.stdout)
+        self.assertNotIn("TODO", completed.stdout)
+        self.assertNotIn("yahoo", completed.stdout.casefold())
 
         def bomb(*_args, **_kwargs):
             raise AssertionError("socket opened")
@@ -637,6 +678,66 @@ class PipelineFlowTests(unittest.TestCase):
         finally:
             socket.socket = real_socket
             urllib.request.urlopen = real_open
+
+    def test_max_theses_caps_the_report_and_the_decisions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                rows = []
+                tickers = ("T01", "T02", "T03", "T04", "T05", "T06")
+                for ticker in tickers:
+                    rows.append(
+                        _figure(
+                            ticker,
+                            ticker,
+                            "insider_purchase",
+                            "ceo",
+                            "2026-10-01|Ada",
+                            250000,
+                            "250000 shares",
+                            f"https://www.sec.gov/Archives/edgar/data/1/{ticker.lower()}.xml",
+                        )
+                    )
+                rows.extend(_caps(*tickers))
+                save_run(conn, "insider-buying", "2026-10-12T16:10:00Z", rows)
+            finally:
+                conn.close()
+            with self.assertRaises(SystemExit) as caught:
+                main(["run", "--db", path, "--max-theses", "0"])
+            self.assertEqual(caught.exception.code, 2)
+            result = run_with_fixture(path, max_theses=2)
+            report = Path(result["report"]).read_text(encoding="utf-8")
+            conn = connect(path)
+            try:
+                ranked = conn.execute(
+                    """
+                    SELECT l.ticker, k.rank, k.presented
+                    FROM rankings AS k
+                    JOIN leads AS l ON l.lead_id = k.lead_id
+                    ORDER BY k.rank
+                    """
+                ).fetchall()
+                decisions = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+            finally:
+                conn.close()
+        self.assertEqual(result["rankings"], 6)
+        self.assertEqual(result["decisions"], 2)
+        self.assertEqual(decisions, 2)
+        self.assertEqual(len(ranked), 6)
+        self.assertEqual(report.count("\n## Rank "), 2)
+        self.assertIn("2 theses. Cap 2.", report)
+        presented = [row["ticker"] for row in ranked if row["presented"]]
+        held = [row["ticker"] for row in ranked if not row["presented"]]
+        self.assertEqual(len(presented), 2)
+        self.assertEqual(len(held), 4)
+        for ticker in presented:
+            self.assertIn(ticker, report)
+            self.assertIn(f"https://www.sec.gov/Archives/edgar/data/1/{ticker.lower()}.xml", report)
+        for ticker in held:
+            self.assertNotIn(ticker, report)
+        self.assertIn("### Praetorian", report)
+        self.assertIn("Form 4", report)
 
     def test_rejects_cli_finds_ticker_and_counterparty(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -684,6 +785,7 @@ class PipelineFlowTests(unittest.TestCase):
             finally:
                 conn.close()
             result = run_pipeline(path, queue_dir=queue)
+            self.assertEqual(result["stage"], "significance")
             report = pipeline_status(path, result["run_id"])
             task = Path(report["outstanding"][0]["task"])
             task.with_name(task.name.replace(".task.json", ".result.json")).write_text(
@@ -719,8 +821,12 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertEqual(names.count("004_lead_counterparties.sql"), 1)
         self.assertEqual(names.count("005_deal_party_role.sql"), 1)
         self.assertEqual(names.count("006_agent_handoff.sql"), 1)
+        self.assertEqual(names.count("008_macro_leads.sql"), 1)
+        self.assertNotIn("007_prices_cleanup.sql", names)
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         self.assertIn("lead_counterparties", tables)
+        self.assertNotIn("prices", tables)
+        self.assertNotIn("cleanup_log", tables)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}
         for name in (
             "significance_magnitude",
@@ -757,17 +863,18 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertNotIn("TINY", rows)
         tiny = conn.execute(
             """
-            SELECT l.significance_novelty, l.significance_timing, r.assumptions_that_fail, r.surviving_issues
+            SELECT l.significance_novelty, l.significance_timing, t.assumptions, k.surviving_issues
             FROM leads AS l
             JOIN theses AS t ON t.lead_id = l.lead_id
-            JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
+            JOIN rankings AS k ON k.lead_id = l.lead_id
             WHERE l.ticker = 'TINY'
             """
         ).fetchone()
         self.assertEqual(tiny["significance_novelty"], "routine")
         self.assertEqual(tiny["significance_timing"], "early")
-        self.assertIn("novelty routine", tiny["assumptions_that_fail"])
+        self.assertIn("novelty routine", tiny["assumptions"])
         self.assertGreaterEqual(tiny["surviving_issues"], 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM praetorian_reviews").fetchone()[0], 0)
         self.assertEqual(rows["UNV"]["reason"], "unverified figure")
         self.assertIsNone(rows["UNV"]["significance_magnitude"])
         self.assertEqual(rows["NWT"]["significance_magnitude"], "small")
@@ -788,7 +895,7 @@ class PipelineFlowTests(unittest.TestCase):
                 FROM leads AS l
                 JOIN lead_figures AS link ON link.lead_id = l.lead_id
                 JOIN figures AS f ON f.figure_id = link.figure_id
-                WHERE l.ticker = 'AMZN' AND l.source_scout = 'capex'
+                WHERE l.ticker = 'AMZN' AND l.source_scout = 'capex_chain' AND f.ticker = 'AMZN'
                 """
             )
         ]
@@ -796,16 +903,17 @@ class PipelineFlowTests(unittest.TestCase):
 
     def _assert_leads_and_theses(self, conn, prompts):
         pass_two = conn.execute("SELECT COUNT(*) FROM theses WHERE pass_number = 2").fetchone()[0]
-        self.assertEqual(pass_two, 1)
-        self.assertEqual(sum(1 for prompt in prompts if prompt.startswith("TASK: centurion") and "\nPASS: 2\n" in prompt), 1)
-        return_pass = next(prompt for prompt in prompts if "\nPASS: 2\n" in prompt)
-        self.assertIn("what the spending is actually on", return_pass)
-        self.assertIn("which customers placed the orders", return_pass)
-        self.assertIn("MACRO: none", return_pass)
-        self.assertNotIn("CONSTITUENTS_BEGIN", next(prompt for prompt in prompts if "\nPASS: 1\n" in prompt and "LEAD_TYPE: insider_buying" in prompt))
-        first_capex = next(prompt for prompt in prompts if "\nPASS: 1\n" in prompt and "LEAD_TYPE: capex" in prompt and "TICKER: AMZN" in prompt)
-        self.assertIn("what the spending is actually on", first_capex)
-        self.assertNotIn("PASS: 2", first_capex)
+        self.assertEqual(pass_two, 0)
+        self.assertEqual(sum(1 for prompt in prompts if prompt.startswith("TASK: centurion") and "\nPASS: 2\n" in prompt), 0)
+        chain_prompt = next(prompt for prompt in prompts if "TICKER: AMZN" in prompt and "CONSTITUENTS_BEGIN" in prompt)
+        self.assertIn("what the spending is actually on", chain_prompt)
+        self.assertIn("which customers placed the orders", chain_prompt)
+        self.assertIn("MACRO: none", chain_prompt)
+        self.assertIn("\nPASS: 1\n", chain_prompt)
+        insider = next(prompt for prompt in prompts if "\nPASS: 1\n" in prompt and "LEAD_TYPE: insider_buying" in prompt)
+        self.assertNotIn("CONSTITUENTS_BEGIN", insider)
+        self.assertNotIn("MACRO:", insider)
+        self.assertNotIn("RELATED_FINDINGS", insider)
 
         orcl = conn.execute(
             "SELECT parent_position_id, status FROM leads WHERE ticker = 'ORCL' AND source_url = ?",
@@ -821,45 +929,51 @@ class PipelineFlowTests(unittest.TestCase):
             row["source_scout"]
             for row in conn.execute(
                 """
-                SELECT l.source_scout, l.ticker, t.pass_number
-                FROM praetorian_reviews AS r
-                JOIN theses AS t ON t.thesis_id = r.thesis_id
-                JOIN leads AS l ON l.lead_id = t.lead_id
+                SELECT l.source_scout
+                FROM rankings AS k
+                JOIN leads AS l ON l.lead_id = k.lead_id
                 """
             )
         }
-        self.assertEqual(reviewed, {"legate", "insider-buying"})
+        self.assertEqual(reviewed, {"capex_chain", "insider-buying"})
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM praetorian_reviews").fetchone()[0], 0)
 
     def _assert_merge_rank_and_decisions(self, conn):
-        merge = conn.execute("SELECT survivor_lead_id, rationale, evidence_refs, priority_rank FROM legate_merges").fetchone()
-        self.assertIn(AMZN_URL, merge["rationale"])
-        self.assertIn(GEV_URL, merge["rationale"])
-        self.assertIn("sector match is not the link", merge["rationale"])
-        evidence = json.loads(merge["evidence_refs"])
-        urls = {item["source_url"] for item in evidence}
-        self.assertEqual(urls, {AMZN_URL, GEV_URL})
-        members = {
-            row["lead_id"]
-            for row in conn.execute("SELECT lead_id FROM legate_merge_leads WHERE merge_id = (SELECT merge_id FROM legate_merges)")
-        }
-        self.assertNotIn(merge["survivor_lead_id"], members)
-        self.assertEqual(len(members), 2)
-        survivor = conn.execute("SELECT ticker, source_scout, status, priority FROM leads WHERE lead_id = ?", (merge["survivor_lead_id"],)).fetchone()
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM legate_merges").fetchone()[0], 0)
+        survivor = conn.execute(
+            "SELECT lead_id, ticker, source_scout, status, priority, summary FROM leads WHERE source_scout = 'capex_chain'"
+        ).fetchone()
+        self.assertIn(AMZN_URL, survivor["summary"])
+        self.assertIn(GEV_URL, survivor["summary"])
+        self.assertIn("Spender", survivor["summary"])
+        self.assertIn("Supplier", survivor["summary"])
         self.assertEqual(survivor["ticker"], "AMZN")
-        self.assertEqual(survivor["source_scout"], "legate")
         self.assertEqual(survivor["status"], "presented")
         self.assertEqual(survivor["priority"], 1)
+        urls = {
+            row["source_url"]
+            for row in conn.execute(
+                """
+                SELECT f.source_url
+                FROM lead_figures AS link
+                JOIN figures AS f ON f.figure_id = link.figure_id
+                WHERE link.lead_id = ?
+                """,
+                (survivor["lead_id"],),
+            )
+        }
+        self.assertEqual(urls, {AMZN_URL, GEV_URL})
         thesis = conn.execute(
             "SELECT price_run, recommendation, macro_context, pass_number FROM theses WHERE lead_id = ?",
-            (merge["survivor_lead_id"],),
+            (survivor["lead_id"],),
         ).fetchone()
-        self.assertEqual(thesis["pass_number"], 2)
+        self.assertEqual(thesis["pass_number"], 1)
         self.assertEqual(thesis["price_run"], "acceleration")
         self.assertEqual(thesis["recommendation"], "GEV")
         self.assertIsNone(thesis["macro_context"])
         self.assertNotIn(
             "Macro context used:",
-            conn.execute("SELECT assumptions FROM theses WHERE lead_id = ?", (merge["survivor_lead_id"],)).fetchone()["assumptions"],
+            conn.execute("SELECT assumptions FROM theses WHERE lead_id = ?", (survivor["lead_id"],)).fetchone()["assumptions"],
         )
         decisions = conn.execute("SELECT status FROM decisions").fetchall()
         self.assertEqual([row["status"] for row in decisions], ["pending", "pending", "pending"])
@@ -870,7 +984,7 @@ class PipelineFlowTests(unittest.TestCase):
             WHERE k.rank = 1
             """
         ).fetchone()
-        self.assertEqual(rank["source_scout"], "legate")
+        self.assertEqual(rank["source_scout"], "capex_chain")
         tokens = conn.execute("SELECT tokens_used, token_budget, provider, status, stage FROM pipeline_runs").fetchone()
         self.assertEqual(tokens["provider"], "agent")
         self.assertEqual(tokens["tokens_used"], 0)

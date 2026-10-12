@@ -71,7 +71,7 @@ class PipelineMigrationTests(unittest.TestCase):
             types = [row["lead_type"] for row in conn.execute("SELECT lead_type FROM rubrics ORDER BY lead_type")]
             self.assertEqual(types, sorted(LEAD_TYPES))
             fixed = [row["fixed"] for row in conn.execute("SELECT fixed FROM rubrics")]
-            self.assertEqual(fixed, [1, 1, 1, 1, 1])
+            self.assertEqual(fixed, [1, 1, 1, 1, 1, 1])
             notes = conn.execute(
                 "SELECT notes FROM rubrics WHERE lead_type = 'capex'"
             ).fetchone()["notes"]
@@ -100,11 +100,11 @@ class PipelineMigrationTests(unittest.TestCase):
                     (rubric_id,),
                 )
             conn.executescript(MIGRATION_PATH.read_text(encoding="utf-8"))
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM rubrics").fetchone()[0], 5)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM rubrics").fetchone()[0], 6)
             again = connect(str(Path(tmp) / "fresh.sqlite"))
             names = [row["name"] for row in again.execute("SELECT name FROM schema_migrations")]
             self.assertEqual(names.count(MIGRATION_NAME), 1)
-            self.assertEqual(again.execute("SELECT COUNT(*) FROM rubrics").fetchone()[0], 5)
+            self.assertEqual(again.execute("SELECT COUNT(*) FROM rubrics").fetchone()[0], 6)
             again.close()
             conn.close()
 
@@ -242,7 +242,7 @@ class PipelineMigrationTests(unittest.TestCase):
             )
             ensure_pipeline(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0], 2)
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM rubrics").fetchone()[0], 5)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM rubrics").fetchone()[0], 6)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM scout_tests").fetchone()[0], 1)
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute(

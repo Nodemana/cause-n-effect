@@ -352,6 +352,21 @@ class MacroTests(unittest.TestCase):
             "government-finance-statistics-australia/jun-2026/Jun%20Quarter%202026.xlsx",
         )
 
+    def test_henry_hub_uses_the_natural_gas_futures_route(self):
+        spec = catalog.by_id()["HENRY_HUB"]
+        self.assertEqual(spec["route"], "natural-gas/pri/fut")
+        self.assertEqual(spec["remote_id"], "RNGWHHD")
+        url = fetcher.eia_url(
+            spec["route"], spec["remote_id"], "eia-test-key", fetcher.HISTORY_START, 0
+        )
+        parts = urllib.parse.urlsplit(url)
+        self.assertEqual(parts.path, "/v2/natural-gas/pri/fut/data/")
+        self.assertNotIn("pri/spt", parts.path)
+        query = urllib.parse.parse_qs(parts.query)
+        self.assertEqual(query["facets[series][]"], ["RNGWHHD"])
+        self.assertEqual(catalog.by_id()["WTI"]["route"], "petroleum/pri/spt")
+        self.assertEqual(catalog.by_id()["BRENT"]["route"], "petroleum/pri/spt")
+
     def test_eia_pages_follow_the_total(self):
         spec = catalog.by_id()["WTI"]
         key = "eia-test-key"
