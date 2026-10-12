@@ -20,6 +20,15 @@ The scout uses a two-stage use-of-proceeds filter with threshold analytics. Stag
 
 Raising the threshold leaves mid-band scores on the cheap filter, so those raises are never read in full. The ASX feed is undocumented, returns only the latest five announcements per company (enough for a weekly run), and is health-checked. This is a spotter for specific uses of proceeds, not a list of every borrowing. Earnings-call transcripts are not a source.
 
+## Run
+
+The live command writes this run into the shared figures table. It exits nonzero when the run stores no figure. SEC is skipped until `SEC_CONTACT_EMAIL` is set on the machine that runs it. The offline check uses a fixture instead of EDGAR.
+
+```bash
+python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite
+python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/debt-raise/fixtures/sec_check.json --no-asx
+```
+
 ## Status
 
-Structure and tests only, no live runs.
+Fixture tests, plus an ASX live pull from the command above. SEC live runs where `SEC_CONTACT_EMAIL` is set.

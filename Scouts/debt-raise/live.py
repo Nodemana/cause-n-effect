@@ -1,7 +1,11 @@
-"""Live debt-raise pull. Writes a gitignored SQLite file and prints what came back.
+"""Live debt-raise pull. Writes figures into the shared SQLite history and exits
+nonzero when this run stores none.
+
+    python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite
 
 SEC is contacted only when SEC_CONTACT_EMAIL is set. When it is missing, this
 script stops before any SEC request and still runs the ASX watchlist.
+`--sec-fixture FILE --no-asx` scores a recorded filings JSON instead of the network.
 """
 
 import json
@@ -36,21 +40,27 @@ def main(argv=None):
     if "--db" in args:
         db_path = Path(args[args.index("--db") + 1])
     filings = []
-    blocked = sec_block_message()
-    if blocked:
-        print(blocked)
+    fixture = None
+    if "--sec-fixture" in args:
+        fixture = Path(args[args.index("--sec-fixture") + 1])
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        filings.extend(payload.get("filings") or [])
+        print(f"SEC fixture {fixture}")
     else:
-        end = date.today().isoformat()
-        start = (date.today() - timedelta(days=3)).isoformat()
-        print(f"SEC window {start} to {end}, at most 5 in-scope filings")
-        filings.extend(fetcher.collect(start, end, limit=5))
-    companies = json.loads(UNIVERSE.read_text(encoding="utf-8"))["companies"]
-    filings.extend(fetcher.collect_asx(companies))
+        blocked = sec_block_message()
+        if blocked:
+            print(blocked)
+        else:
+            end = date.today().isoformat()
+            start = (date.today() - timedelta(days=3)).isoformat()
+            print(f"SEC window {start} to {end}, at most 5 in-scope filings")
+            filings.extend(fetcher.collect(start, end, limit=5))
+    if "--no-asx" not in args:
+        companies = json.loads(UNIVERSE.read_text(encoding="utf-8"))["companies"]
+        filings.extend(fetcher.collect_asx(companies))
     if not filings:
-        print("ASX watchlist returned no debt headlines.")
+        print("No filings to score.")
         return 1
-    if db_path.exists():
-        db_path.unlink()
     summary = pipeline.run(filings, db_path)
     print(
         f"run {summary['run_id']} threshold {summary['threshold']:g} "
@@ -65,8 +75,10 @@ def main(argv=None):
         SELECT ticker, company, figure_type, instrument, period, value, value_text,
                currency, announced_on, source_url, source_type, verified
         FROM figures
+        WHERE run_id = ?
         ORDER BY ticker
-        """
+        """,
+        (summary["run_id"],),
     ).fetchall()
     if not rows:
         print("  (none)")
@@ -82,8 +94,10 @@ def main(argv=None):
         """
         SELECT ticker, accession, form, score, cheap_score, stage_reached, flags
         FROM debt_scout_filing_scores
+        WHERE run_id = ?
         ORDER BY ticker
-        """
+        """,
+        (summary["run_id"],),
     ):
         print(
             f"  {row['ticker']} score={row['score']} cheap={row['cheap_score']} "

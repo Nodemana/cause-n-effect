@@ -1,0 +1,17 @@
+{
+  "note": "Synthetic EDGAR-shaped filing for the offline end-to-end check. Not a live SEC download.",
+  "filings": [
+    {
+      "accession": "0000999001-26-000010",
+      "cik": "0000999001",
+      "ticker": "NWT",
+      "company": "Northwind Grid",
+      "form": "8-K",
+      "items": ["1.01"],
+      "filed": "2026-03-01",
+      "summary": "Item 1.01. A $180 million credit facility for general corporate purposes.",
+      "document_url": "https://www.sec.gov/Archives/edgar/data/999001/000099900126000010/",
+      "source_type": "filing"
+    }
+  ]
+}

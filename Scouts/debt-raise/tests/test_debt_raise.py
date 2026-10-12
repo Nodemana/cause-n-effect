@@ -391,6 +391,31 @@ class DebtRaiseTests(unittest.TestCase):
             self.assertEqual(applied, 2)
             again.close()
 
+    def test_live_fixture_stores_a_figure_and_empty_run_exits_nonzero(self):
+        import live
+
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = str(Path(tmp) / "history.sqlite")
+                code = live.main(
+                    ["--db", db, "--sec-fixture", str(FIX / "sec_check.json"), "--no-asx"]
+                )
+                self.assertEqual(code, 0)
+                conn = sqlite3.connect(db)
+                row = conn.execute(
+                    "SELECT ticker, value, currency FROM figures"
+                ).fetchone()
+                conn.close()
+                self.assertEqual(row[0], "NWT")
+                self.assertEqual(row[1], 180_000_000)
+                self.assertEqual(row[2], "USD")
+                empty = live.main(["--db", str(Path(tmp) / "empty.sqlite"), "--no-asx"])
+                self.assertEqual(empty, 1)
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
+
 
 if __name__ == "__main__":
     unittest.main()
