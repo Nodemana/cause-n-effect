@@ -1096,10 +1096,29 @@ class DebtRaiseTests(unittest.TestCase):
                 row = conn.execute(
                     "SELECT ticker, value, currency FROM figures"
                 ).fetchone()
+                scope = conn.execute("SELECT scope FROM runs").fetchone()
                 conn.close()
                 self.assertEqual(row[0], "NWT")
                 self.assertEqual(row[1], 180_000_000)
                 self.assertEqual(row[2], "USD")
+                self.assertIsNone(scope[0])
+                scoped = str(Path(tmp) / "scoped.sqlite")
+                scoped_code = live.main(
+                    [
+                        "--db",
+                        scoped,
+                        "--sec-fixture",
+                        str(FIX / "sec_check.json"),
+                        "--tickers",
+                        "nwt",
+                        "--no-asx",
+                    ]
+                )
+                self.assertEqual(scoped_code, 0)
+                conn = sqlite3.connect(scoped)
+                scoped_row = conn.execute("SELECT scope FROM runs").fetchone()
+                conn.close()
+                self.assertEqual(scoped_row[0], "NWT")
                 empty = live.main(["--db", str(Path(tmp) / "empty.sqlite"), "--no-asx"])
                 self.assertEqual(empty, 1)
         finally:

@@ -13,7 +13,6 @@ import argparse
 from shared.pipeline_store import connect
 
 from pipeline.flow import run_pipeline
-from pipeline.load import FIGURE_WINDOW_DAYS
 from pipeline.store import search_rejects
 from shared.nethttp import sec_client, sec_contact_email
 
@@ -46,8 +45,12 @@ def build_parser():
         "run",
         help="Filter, research, merge, critique, rank, and record pending decisions",
         description=(
-            f"Read each scout's figures from the last {FIGURE_WINDOW_DAYS} days, "
-            "the latest row per ticker, figure type, instrument, and period. "
+            "Read each scout's current figures from its latest run. "
+            "A run recorded with a ticker scope replaces only those tickers; "
+            "earlier runs stay in the database as comparison history. "
+            "Identical figures collapse to the newest row. "
+            "An insider trade more than 30 days before its filing date is dropped. "
+            "Stub timing uses the event date against the sweep date. "
             "Thresholds and dedupe run first. A per-run token budget then rates "
             "magnitude, novelty, market attention, and timing. Surviving leads "
             "each get one Centurion thesis from Centurions/rules/<type>.md. "

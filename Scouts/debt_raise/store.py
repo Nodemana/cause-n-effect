@@ -54,13 +54,28 @@ def allocate_run_id(conn, started_at):
     return allocate(conn, started_at, "debt-raise")
 
 
-def save_run(conn, started_at, threshold, seen, cheap_n, full_n, score_histogram, scores, figures, notes):
+def save_run(
+    conn,
+    started_at,
+    threshold,
+    seen,
+    cheap_n,
+    full_n,
+    score_histogram,
+    scores,
+    figures,
+    notes,
+    scope=None,
+):
+    from shared.store import ensure_history, format_scope
+
+    ensure_history(conn)
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         run_id = allocate_run_id(conn, started_at)
         conn.execute(
-            "INSERT INTO runs (run_id, scout, started_at, notes) VALUES (?, ?, ?, ?)",
-            (run_id, "debt-raise", started_at, notes),
+            "INSERT INTO runs (run_id, scout, started_at, notes, scope) VALUES (?, ?, ?, ?, ?)",
+            (run_id, "debt-raise", started_at, notes, format_scope(scope)),
         )
         conn.execute(
             """

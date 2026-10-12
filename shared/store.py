@@ -90,7 +90,41 @@ def ensure_history(conn):
             "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
             (SCHEMA_NAME, utc_now()),
         )
+    _ensure_run_scope(conn)
     conn.commit()
+
+
+def _ensure_run_scope(conn):
+    """Add runs.scope on a history file created before that column existed."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+    if columns and "scope" not in columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN scope TEXT")
+
+
+def format_scope(scope):
+    """Comma-separated tickers, or None for a full-universe run.
+
+    `None`, `""`, and `"all"` are a full universe. A list or a comma string
+    is only those tickers. Matching is case-insensitive and keeps a `.AX` suffix.
+    """
+    if scope is None:
+        return None
+    if isinstance(scope, str):
+        if scope.strip().casefold() == "all":
+            return None
+        parts = [part.strip() for part in scope.split(",")]
+    else:
+        parts = [str(part).strip() for part in scope]
+    seen = []
+    for part in parts:
+        if not part:
+            continue
+        token = part.upper()
+        if token not in seen:
+            seen.append(token)
+    if not seen:
+        return None
+    return ",".join(seen)
 
 
 def figure_key(row):
@@ -149,7 +183,7 @@ def log_duplicate(dropped, kept):
     )
 
 
-def save_run(conn, scout, started_at, figures, notes=None):
+def save_run(conn, scout, started_at, figures, notes=None, scope=None):
     """Insert one new run and its figures. Return the run id.
 
     The id is the UTC date, the UTC time as HHMMSS, and the scout name.
@@ -158,6 +192,9 @@ def save_run(conn, scout, started_at, figures, notes=None):
     Duplicate keys in this batch are collapsed first (single-quarter, then
     latest filing; drops are logged). A leftover duplicate is skipped.
     Leads are left for the Legate.
+
+    `scope` is the ticker list for a partial run (`--tickers`). None stores
+    a full-universe run, which supersedes every ticker when the pipeline loads.
     """
     ensure_history(conn)
     rows = _unique_figures(dedupe_figures(figures))
@@ -166,10 +203,10 @@ def save_run(conn, scout, started_at, figures, notes=None):
         run_id = allocate_run_id(conn, started_at, scout)
         conn.execute(
             """
-            INSERT INTO runs (run_id, scout, started_at, notes)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO runs (run_id, scout, started_at, notes, scope)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (run_id, scout, started_at, notes),
+            (run_id, scout, started_at, notes, format_scope(scope)),
         )
         _insert_figures(conn, run_id, rows)
     return run_id
