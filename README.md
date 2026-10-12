@@ -10,7 +10,7 @@ flowchart LR
   S[Scouts] --> M[Legate: merge] --> C[Centurions] --> P[Praetorians] --> R[Legate: rank] --> I[Imperator]
 ```
 
-**Scouts to Centurions.** Scouts surface leads from each dataset, and supportive leads may be merged. Each Centurion gets a lead-matched rules file and autonomously grades the lead, then writes a thesis with potential ROI, risks, timeframe, and stated assumptions ([Centurions/README.md](Centurions/README.md)).
+**Scouts to Centurions.** Scouts surface leads from each dataset, and the merge to prioritise pairs a buyer's capex lead with a different company's orders_backlog lead only when a filing links them (the buyer names the supplier, the supplier names the customer or contract, or another official-source link, recorded on `legate_merges`; a bare sector match is not enough), with same-company supportive merges still allowed under that evidence rule. Each Centurion gets a lead-matched rules file for that single lead and autonomously grades it, then writes one thesis with potential ROI, risks, timeframe, and stated assumptions ([Centurions/README.md](Centurions/README.md)).
 
 **Praetorians.** Praetorians only critique, attacking the stated assumptions, weak sources, and conclusions with counter-evidence ([Praetorians/README.md](Praetorians/README.md)). They state no assumptions of their own.
 
@@ -35,7 +35,7 @@ flowchart LR
 - **Scouts** find leads.
 - **Centurions** research one lead. Spin-up is in [Centurions/README.md](Centurions/README.md).
 - **Praetorians** critique that output. The job is in [Praetorians/README.md](Praetorians/README.md).
-- **Legate** is the AI Portfolio Manager. It merges supporting leads before research, then ranks what survives critique.
+- **Legate** is the AI Portfolio Manager. It prioritises a cross-company capex-to-backlog merge when a filing links the two leads, still merges other supportive leads on the same evidence, then ranks what survives critique.
 - **Imperator** is the human who decides and places trades himself.
 
 ## Legate

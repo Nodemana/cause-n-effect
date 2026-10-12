@@ -58,7 +58,7 @@ A new row starts at status `fresh`. The scout does not rank it against other lea
 The Legate is the Portfolio Manager agent. After the scouts finish, it sweeps the fresh leads. The sweep has four jobs, and none of them are shown to the Imperator:
 
 1. Drop leads that fail the scout's own gate or that duplicate a lead already in flight.
-2. Merge leads that overlap or support each other across lead types. A capex print and a supplier order on the same spend become one lead, with the merge written to `legate_merges`.
+2. Merge leads that overlap or support each other. The merge to prioritise is cross-company capex-to-backlog: a capex lead on the buyer (the company spending the money) and an orders_backlog lead on a different company (the supplier receiving those orders). The same money shows up in both scouts. When that pairing is detected, the two become one combined lead for a single Centurion, which writes one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. Same-company merges of supportive leads stay allowed, and they are not the priority. Any merge, and the cross-company pair especially, needs traceable evidence that links the two leads: the buyer's capex filing names the supplier, the supplier's filing names the customer or contract, or another official-source link between the filings. A bare sector match is not enough. That link is stored on the `legate_merges` row (`rationale`); `survivor_lead_id` is the combined lead, and the constituent ids are in `legate_merge_leads`.
 3. Rank what remains by priority.
 4. Assign the ranked leads to Centurions. Assigned rows move to status `assigned`.
 
