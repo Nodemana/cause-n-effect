@@ -51,6 +51,8 @@ The sweep, the research, the critiques, and the merge audit stay inside the run.
 
 Each scout pulls official findings (SEC, ASX, company releases) and lodges leads into `leads`. A lead is one finding: ticker, lead type, source link, and the figure it rests on. Lead types match the scout folders: `capex`, `debt_raise`, `orders_backlog`, `accumulation`, `insider_buying`.
 
+The macro scout is not in that list. It does not lodge leads. It refreshes `macro_series` and `macro_observations`, and Centurions read that cache while they research a lead.
+
 A new row starts at status `fresh`. The scout does not rank it against other lead types and does not write a thesis.
 
 ## Legate sweep

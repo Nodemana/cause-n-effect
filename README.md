@@ -19,6 +19,7 @@ The sweep from scouts to the weekly shortlist is designed in [docs/pipeline-arch
 3. **orders_backlog**: customer-reported backlog plus supplier order announcements.
 4. **Accumulation**: 13D/13G filings and ASX substantial holder notices.
 5. **Insider buying**: Form 4s and ASX 3Ys, with CEO buys and cluster buying flagged.
+6. **Macro**: cached rates, inflation, central-bank balance sheets, credit spreads, the dollar, oil and gas, fiscal balances, and supply-chain pressure for Centurions. It does not lodge leads.
 
 ## Roles
 ```mermaid

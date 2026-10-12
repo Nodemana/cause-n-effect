@@ -1,0 +1,15 @@
+{
+  "status": "REQUEST_SUCCEEDED",
+  "Results": {
+    "series": [
+      {
+        "seriesID": "CUUR0000SA0",
+        "data": [
+          {"year": "2024", "period": "M13", "periodName": "Annual", "value": "313.689"},
+          {"year": "2024", "period": "M12", "periodName": "December", "value": "315.605"},
+          {"year": "2024", "period": "M01", "periodName": "January", "value": "308.417"}
+        ]
+      }
+    ]
+  }
+}
