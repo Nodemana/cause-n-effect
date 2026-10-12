@@ -696,6 +696,7 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertEqual(names.count("002_lead_pipeline.sql"), 1)
         self.assertEqual(names.count("003_holder_role.sql"), 1)
         self.assertEqual(names.count("004_lead_counterparties.sql"), 1)
+        self.assertEqual(names.count("005_deal_party_role.sql"), 1)
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         self.assertIn("lead_counterparties", tables)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}

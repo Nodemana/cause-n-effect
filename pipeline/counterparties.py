@@ -1,26 +1,37 @@
 """Named counterparties from official SEC filings.
 
-Capex leads take suppliers from 8-K Item 1.01 agreements and their EX-10
-exhibits. Backlog leads take customers from 8-K contract announcements and
-10-K customer-concentration notes. A direct EDGAR full-text search also
-looks for each backlog company's name inside the capex company's filings
-and the other way around.
+Capex and backlog leads read 8-K Item 1.01 agreements, their EX-10
+exhibits, and, for backlog leads, 10-K customer-concentration notes. A
+direct EDGAR full-text search also looks for each backlog company's name
+inside the capex company's filings and the other way around.
+
+The role comes from the sentence, not from the lead type. Customer cues
+are customer, agreement to deploy, sales to, revenue from, and uses our.
+Supplier cues are purchase from, supplier, vendor, supply agreement, and
+procure. Acquisition cues to acquire, merger, and separation store
+deal_party. A customer named in a capex filing stays a customer.
 
 A name is kept only when it matches a known SEC registrant in
 company_tickers.json or it ends in a company suffix, and it is not a
-heading or a common word. Incorporated, Corporation, Company, and Limited
-fold to Inc, Corp, Co, and Ltd before that match, so "Dana Incorporated"
-hits the title "DANA INC". A match is stored under the registrant's title
-and ticker. The caller passes a sec_client(); the User-Agent is that
-client's, built from SEC_CONTACT_EMAIL. This module never logs the
-address. company_tickers.json is fetched once per enrich_leads call.
+heading or a common word. The registrant match is whole words only, so
+Unity does not match inside community. Incorporated, Corporation, Company,
+and Limited fold to Inc, Corp, Co, and Ltd before that match, so "Dana
+Incorporated" hits the title "DANA INC". A match is stored under the
+registrant's title and ticker. Names that share the issuer's root token,
+and names described as a wholly owned subsidiary, former parent, or
+spin-off, are dropped. Exhibit-index lines and spin-off boilerplate are
+not contract-party sources.
+
+The caller passes a sec_client(); the User-Agent is that client's, built
+from SEC_CONTACT_EMAIL. This module never logs the address.
+company_tickers.json is fetched once per enrich_leads call.
 
 Full-text hits carry _source metadata and no highlight. Each hit's
 document is fetched from _id "adsh:filename" and read as filing text.
-Those fetches share one per-sweep cap and stay at or under 10 requests
-per second. A cross-reference hit is the link by itself: the matched
-company is recorded without parsing that hit's prose. A submissions,
-full-text, index, or document error drops every party for that company.
+Those fetches allow 5 documents per company and 40 per sweep, at or under
+10 requests per second. A cross-reference hit is the link by itself when
+the sentence did not already classify that name. A submissions, full-text,
+index, or document error drops every party for that company.
 """
 
 import html
@@ -45,8 +56,10 @@ _PARTY_CAP = 8
 _EIGHT_K_LIMIT = 3
 _EX10_LIMIT = 4
 # Full-text hits have no highlight, so each one becomes a document fetch.
-# The cap is for the whole enrich_leads call. 0.1s is SEC's 10 requests/second.
-FTS_DOCUMENT_CAP = 24
+# Five documents per company, forty for the whole enrich_leads call.
+# 0.1s is SEC's 10 requests/second.
+FTS_COMPANY_CAP = 5
+FTS_DOCUMENT_CAP = 40
 FTS_MIN_INTERVAL = 0.1
 
 CAPEX_8K_ITEMS = frozenset({"1.01", "8.01"})
@@ -61,8 +74,9 @@ _STYLE = re.compile(r"(?is)<style\b.*?>.*?</style>")
 _TAG = re.compile(r"(?is)<[^>]+>")
 _EX10 = re.compile(r"(?i)(?:ex[-_]?10|exhibit[-_]?10)")
 _WORD = r"(?:N\.V\.|S\.A\.|[A-Z][A-Za-z0-9&'’–-]*)"
-_NAME_CORE = rf"{_WORD}(?:[ \t]+{_WORD}){{0,5}}"
-_NAME = rf"({_NAME_CORE})"
+_NAME_GAP = r"(?:[ \t]+|[ \t]*,[ \t]*)"
+_NAME_CORE = rf"{_WORD}(?:{_NAME_GAP}{_WORD}){{0,5}}"
+_NAME = rf"({_NAME_CORE})\.?"
 _COMPANY_AND = r"(?:(?i:the\s+company\s+and\s+))?"
 _AND_NAME = r"(?:(?i:\s+and\s+)" + _NAME + r")?"
 _AGREEMENT = re.compile(r"(?i:\bagreement\s+with\s+)" + _NAME)
@@ -83,6 +97,36 @@ _LARGEST_BEFORE = re.compile(_NAME + r"(?i:,\s+(?:our|its|the)\s+largest\s+custo
 _LARGEST_INCLUDE = re.compile(
     r"(?i:\blargest\s+customers?\s+(?:include|includes|included|are|were)\s+)" + _NAME
 )
+_ARE_CUSTOMERS = re.compile(_NAME + r"(?i:\s+and\s+)" + _NAME + r"(?i:\s+are\s+customers\b)")
+_IS_CUSTOMER = re.compile(_NAME + r"(?i:\s+is\s+a\s+customer\b)")
+_DEPLOY = re.compile(r"(?i:\bagreement\s+to\s+deploy\s+)" + _NAME)
+_USES_OUR = re.compile(_NAME + r"(?i:\s+uses\s+our\b)")
+_PURCHASE_FROM = re.compile(r"(?i:\bpurchases?\s+from\s+)" + _NAME)
+_PROCURE = re.compile(r"(?i:\bprocure[sd]?\s+(?:from\s+)?)" + _NAME)
+_IS_SUPPLIER = re.compile(_NAME + r"(?i:\s+is\s+(?:the\s+|a\s+|our\s+)?(?:supplier|vendor)\b)")
+_TO_ACQUIRE = re.compile(r"(?i:\bto\s+acquire\s+)" + _NAME)
+_MERGER_WITH = re.compile(
+    r"(?i:\bmerger\s+(?:with|of|between)\s+)" + _COMPANY_AND + _NAME + _AND_NAME
+)
+_SEPARATION_OF = re.compile(r"(?i:\bseparation\s+(?:of|from|with)\s+)" + _NAME)
+_CUSTOMER_CUES = re.compile(
+    r"(?i)\b(?:customers?|agreement\s+to\s+deploy|sales\s+to|revenue\s+from|uses\s+our)\b"
+)
+_SUPPLIER_CUES = re.compile(
+    r"(?i)\b(?:purchase\s+from|suppliers?|vendors?|supply\s+agreement|procures?|procured)\b"
+)
+_DEAL_CUES = re.compile(r"(?i)\b(?:to\s+acquire|merger|separation)\b")
+_AFFILIATE_PHRASE = re.compile(
+    r"(?i)\b(?:wholly[\s-]+owned\s+subsidiary|former\s+parent|spin[\s-]?off)\b"
+)
+_CONTRACT_BOILERPLATE = re.compile(
+    r"(?i)\b(?:spin[\s-]?off|separation|wholly[\s-]+owned\s+subsidiary|former\s+parent)\b"
+)
+_EXHIBIT_INDEX_LINE = re.compile(
+    r"(?i)^(?:\d+(?:\.\d+)*\s+)?(?:exhibit\s+(?:no\.?\s*)?\d+(?:\.\d+)*|index\s+of\s+exhibits|exhibit\s+index)\b"
+)
+_EXHIBIT_INDEX_ANY = re.compile(r"(?i)\b(?:index\s+of\s+exhibits|exhibit\s+index)\b")
+_BLOCK_BREAK = re.compile(r"(?i)<br\s*/?>|</(?:p|div|tr|li|h[1-6]|table|section|br)>")
 
 _SUFFIXES = {
     "inc",
@@ -353,6 +397,8 @@ def accept_party(name, registrants=None, names=None):
     hit = _lookup_registrant(core, registrants)
     if hit is None and core != (name or ""):
         hit = _lookup_registrant(name, registrants)
+    if hit and not _tokens_align(core or name, hit[0]):
+        hit = None
     if hit:
         title, ticker = hit
         if is_common_heading(title):
@@ -427,26 +473,27 @@ def enrich_leads(leads, *, client=None, names=None, as_of=None):
             _log_closed(group)
             continue
         for lead in group:
-            want = "supplier" if lead.lead_type == "capex" else "customer"
             lead.counterparties = [
                 dict(party)
                 for party in found
-                if party["role"] == want and not _is_self(party, lead)
+                if party["role"] in {"supplier", "customer", "buyer", "deal_party"}
+                and not _is_self(party, lead)
+                and not _shares_root(party, [lead], registrants)
             ]
 
 
 def parties_from_text(text, role, registrants=None, names=None):
     """Accepted party names of one role in filing text.
 
-    Suppliers come from contract language. Customers come from contract
-    language and from customer-concentration language. Headings are dropped.
+    The role comes from cues in the sentence. Headings are dropped.
     """
-    if role not in {"supplier", "customer"}:
+    if role not in {"supplier", "customer", "deal_party"}:
         return []
-    mode = "contract" if role == "supplier" else "both"
     found = []
     seen = set()
-    for raw in _raw_names(_plain(text), mode):
+    for raw, found_role, _sentence in _classified_names(_plain(text)):
+        if found_role != role:
+            continue
         party = accept_party(raw, registrants, names)
         if not party:
             continue
@@ -532,35 +579,26 @@ def _company_parties(client, cik, suppliers, customers, as_of, names, registrant
             (url, text, "both")
             for url, text in _query_documents(client, cik, BACKLOG_QUERY, start, end, cache, budget)
         )
-    found = _collect(texts, suppliers, customers, names, registrants, group)
+    found = _collect(texts, names, registrants, group)
     _add_cross_hits(client, cik, peers, suppliers, customers, start, end, names, registrants, group, found)
     return found["rows"]
 
 
-def _collect(texts, suppliers, customers, names, registrants, group):
-    found = {"rows": [], "seen": set(), "counts": {"supplier": 0, "customer": 0}}
-    for url, text, mode in texts:
-        _absorb(found, text, mode, url, suppliers, customers, names, registrants, group)
+def _collect(texts, names, registrants, group):
+    found = {"rows": [], "seen": set(), "counts": {}}
+    for url, text, _mode in texts:
+        _absorb(found, text, url, names, registrants, group)
     return found
 
 
-def _absorb(found, text, mode, url, suppliers, customers, names, registrants, group):
-    if mode == "concentration":
-        roles = ["customer"] if customers else []
-    elif mode == "both":
-        roles = ["customer"] if customers else []
-    else:
-        roles = []
-        if suppliers:
-            roles.append("supplier")
-        if customers:
-            roles.append("customer")
-    for raw in _raw_names(text, mode):
+def _absorb(found, text, url, names, registrants, group):
+    for raw, role, sentence in _classified_names(text):
         party = accept_party(raw, registrants, names)
         if not party or _is_self_group(party, group):
             continue
-        for role in roles:
-            _add(found, role, party, url)
+        if _is_affiliate(party, sentence, group, registrants):
+            continue
+        _add(found, role, party, url)
 
 
 def _add_cross_hits(client, cik, peers, suppliers, customers, start, end, names, registrants, group, found):
@@ -582,7 +620,10 @@ def _add_cross_hits(client, cik, peers, suppliers, customers, start, end, names,
         if not url:
             continue
         party = _party_from_peer(peer, registrants, names)
-        if not party or _is_self_group(party, group):
+        if not party or _is_self_group(party, group) or _shares_root(party, group, registrants):
+            continue
+        # A sentence that already classified this name keeps that role.
+        if _known_name(found, party):
             continue
         _add(found, role, party, url)
 
@@ -598,6 +639,7 @@ def _party_from_peer(peer, registrants, names):
 
 
 def _add(found, role, party, url):
+    found["counts"].setdefault(role, 0)
     if found["counts"][role] >= _PARTY_CAP:
         return
     key = (role, party["name_normalised"])
@@ -627,7 +669,7 @@ def _query_documents(client, cik, query, start, end, cache, budget):
         url = _hit_url(cik, hit)
         if not url:
             continue
-        if url not in cache and not budget.take():
+        if url not in cache and not budget.take(cik):
             break
         text = _cached_text(client, url, cache, budget=None)
         if text:
@@ -656,12 +698,110 @@ def _search_page(client, cik, query, start, end):
     return page
 
 
-def _raw_names(text, mode):
+def _known_name(found, party):
+    target = party.get("name_normalised") or ""
+    if not target:
+        return False
+    return any(key[1] == target for key in found["seen"])
+
+
+def _classified_names(text):
+    """(raw name, role, sentence) from cues in each sentence."""
     found = []
-    if mode in {"contract", "both"}:
-        found.extend(_contract_names(text))
-    if mode in {"concentration", "both"}:
-        found.extend(_concentration_names(text))
+    for sentence in _sentences(text):
+        if _is_exhibit_index_line(sentence):
+            continue
+        deal = bool(_DEAL_CUES.search(sentence))
+        supplier = bool(_SUPPLIER_CUES.search(sentence))
+        customer = bool(_CUSTOMER_CUES.search(sentence))
+        boilerplate = bool(_CONTRACT_BOILERPLATE.search(sentence))
+        if deal:
+            for raw in _unique(_deal_names(sentence) + _contract_names(sentence)):
+                found.append((raw, "deal_party", sentence))
+            continue
+        if boilerplate:
+            continue
+        if supplier and not customer:
+            raws = _contract_names(sentence) + _supplier_extra(sentence) + _concentration_names(sentence)
+            for raw in _unique(raws):
+                found.append((raw, "supplier", sentence))
+            continue
+        if customer and not supplier:
+            raws = _contract_names(sentence) + _concentration_names(sentence) + _customer_extra(sentence)
+            for raw in _unique(raws):
+                found.append((raw, "customer", sentence))
+            continue
+        if customer and supplier:
+            for raw in _unique(_contract_names(sentence) + _supplier_extra(sentence)):
+                found.append((raw, "supplier", sentence))
+            for raw in _unique(_concentration_names(sentence) + _customer_extra(sentence)):
+                found.append((raw, "customer", sentence))
+            continue
+        if _has_concentration(sentence):
+            for raw in _unique(_concentration_names(sentence)):
+                found.append((raw, "customer", sentence))
+    return found
+
+
+def _sentences(text):
+    sentences = []
+    for line in str(text or "").splitlines():
+        cleaned = " ".join(line.split())
+        if not cleaned or _is_exhibit_index_line(cleaned):
+            continue
+        for part in re.split(r"(?<=[.!?])\s+", cleaned):
+            part = part.strip()
+            if part and not _is_exhibit_index_line(part):
+                sentences.append(part)
+    return sentences
+
+
+def _is_exhibit_index_line(line):
+    text = " ".join(str(line or "").split())
+    if not text:
+        return False
+    if _EXHIBIT_INDEX_LINE.match(text):
+        return True
+    return bool(_EXHIBIT_INDEX_ANY.search(text))
+
+
+def _has_concentration(sentence):
+    return any(
+        pattern.search(sentence)
+        for pattern in (_ACCOUNTED, _REPRESENTED, _SALES_TO, _LARGEST_AFTER, _LARGEST_BEFORE, _LARGEST_INCLUDE)
+    )
+
+
+def _unique(items):
+    found = []
+    seen = set()
+    for item in items:
+        key = " ".join(str(item).split())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        found.append(item)
+    return found
+
+
+def _deal_names(text):
+    found = []
+    for pattern in (_TO_ACQUIRE, _MERGER_WITH, _SEPARATION_OF):
+        found.extend(_groups(pattern, text))
+    return found
+
+
+def _supplier_extra(text):
+    found = []
+    for pattern in (_PURCHASE_FROM, _PROCURE, _IS_SUPPLIER):
+        found.extend(_groups(pattern, text))
+    return found
+
+
+def _customer_extra(text):
+    found = []
+    for pattern in (_ARE_CUSTOMERS, _IS_CUSTOMER, _DEPLOY, _USES_OUR):
+        found.extend(_groups(pattern, text))
     return found
 
 
@@ -796,25 +936,61 @@ def _title_for_ticker(registrants, ticker):
 
 
 def _lookup_registrant(name, registrants):
+    """Whole-word registrant match. 'unity' is not a match inside 'community'."""
     if not registrants:
         return None
     by_name = registrants.get("by_name") or {}
     canon = _canon_key(name)
-    if canon and canon in by_name:
-        return by_name[canon]
+    hit = _whole_key(by_name, canon)
+    if hit:
+        return hit
     key = normalise_name(_core_text(name) or name)
-    if key in by_name:
-        return by_name[key]
+    hit = _whole_key(by_name, key)
+    if hit:
+        return hit
     stripped = normalise_name(" ".join(_stem_tokens(name)))
-    if stripped and stripped in by_name:
-        return by_name[stripped]
+    hit = _whole_key(by_name, stripped)
+    if hit:
+        return hit
     tokens = (_core_text(name) or "").split()
     if len(tokens) == 1:
         ticker = _fold_token(tokens[0]).upper()
         hit = (registrants.get("by_ticker") or {}).get(ticker)
-        if hit:
+        if hit and _tokens_align(name, hit[0]):
             return hit
     return None
+
+
+def _whole_key(mapping, key):
+    """Equal the whole key. A shorter word inside a longer token is not a hit."""
+    if not key:
+        return None
+    return mapping.get(key)
+
+
+def _tokens_align(candidate, title):
+    """True when title tokens equal candidate tokens, never a substring of one."""
+    cand = [_fold_token(token) for token in (_core_text(candidate) or "").split()]
+    titled = [_fold_token(token) for token in (_core_text(title) or "").split()]
+    cand = [token for token in cand if token]
+    titled = [token for token in titled if token]
+    if not cand or not titled:
+        return False
+    cand_set = set(cand)
+    for token in titled:
+        if token in _SUFFIXES or token in _DOTTED_SUFFIXES:
+            continue
+        if token not in cand_set:
+            return False
+    for token in cand:
+        if token in _SUFFIXES or token in _DOTTED_SUFFIXES:
+            continue
+        for other in titled:
+            if other in _SUFFIXES or other in _DOTTED_SUFFIXES:
+                continue
+            if token != other and (other in token or token in other):
+                return False
+    return True
 
 
 def _party(name, ticker):
@@ -838,6 +1014,48 @@ def _ticker_from_names(core, names):
 
 def _is_self_group(party, group):
     return any(_is_self(party, lead) for lead in group)
+
+
+def _is_affiliate(party, sentence, group, registrants):
+    if sentence and _AFFILIATE_PHRASE.search(sentence):
+        return True
+    return _shares_root(party, group, registrants)
+
+
+def _shares_root(party, group, registrants):
+    """True when a whole issuer token equals a whole party token.
+
+    'GE' matches 'GE Infrastructure Technology'. 'GE' does not match
+    'GENERAL ELECTRIC'. 'unity' does not match 'community'.
+    """
+    party_roots = _root_tokens(party.get("name") or "")
+    if not party_roots:
+        return False
+    for lead in group or []:
+        if party_roots & _issuer_roots(lead, registrants):
+            return True
+    return False
+
+
+def _issuer_roots(lead, registrants):
+    roots = _root_tokens(getattr(lead, "company", None) or "")
+    ticker = (getattr(lead, "ticker", None) or "").strip().upper()
+    roots |= _root_tokens(_title_for_ticker(registrants, ticker))
+    return roots
+
+
+def _root_tokens(name):
+    found = set()
+    for token in (_core_text(name) or "").split():
+        folded = _fold_token(token)
+        if len(folded) < 2:
+            continue
+        if folded in _COMMON or folded in _SUFFIXES or folded in _DOTTED_SUFFIXES:
+            continue
+        if folded == "com":
+            continue
+        found.add(folded)
+    return found
 
 
 def _is_self(party, lead):
@@ -928,9 +1146,11 @@ def _plain(body):
     text = _COMMENT.sub(" ", text)
     text = _SCRIPT.sub(" ", text)
     text = _STYLE.sub(" ", text)
+    text = _BLOCK_BREAK.sub("\n", text)
     text = _TAG.sub(" ", text)
     text = html.unescape(text)
-    return " ".join(text.split())
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    return "\n".join(line for line in lines if line)
 
 
 def _split_items(value):
@@ -951,20 +1171,26 @@ def _cik10(cik):
 class _RequestBudget:
     """Cap and pace full-text document fetches for one enrich_leads call.
 
-    SEC fair access is 10 requests per second. The first fetch in a sweep
-    is immediate. Each later fetch waits until 0.1s after the previous one.
+    Each company may fetch 5 documents. The sweep may fetch 40. SEC fair
+    access is 10 requests per second. The first fetch in a sweep is
+    immediate. Each later fetch waits until 0.1s after the previous one.
+    A fetch that would pass either cap returns before sleeping.
     """
 
-    def __init__(self, cap=None, interval=None, sleep=None, clock=None):
+    def __init__(self, cap=None, company_cap=None, interval=None, sleep=None, clock=None):
         self.cap = FTS_DOCUMENT_CAP if cap is None else cap
+        self.company_cap = FTS_COMPANY_CAP if company_cap is None else company_cap
         self.interval = FTS_MIN_INTERVAL if interval is None else interval
         self.used = 0
+        self.by_company = {}
         self._last = None
         self._sleep = time.sleep if sleep is None else sleep
         self._clock = time.monotonic if clock is None else clock
 
-    def take(self):
+    def take(self, company=None):
         if self.used >= self.cap:
+            return False
+        if company is not None and self.by_company.get(company, 0) >= self.company_cap:
             return False
         now = self._clock()
         if self._last is not None:
@@ -974,6 +1200,8 @@ class _RequestBudget:
                 now = self._clock()
         self._last = now
         self.used += 1
+        if company is not None:
+            self.by_company[company] = self.by_company.get(company, 0) + 1
         return True
 
 

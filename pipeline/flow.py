@@ -117,8 +117,8 @@ def run_pipeline(
 ):
     """Run one sweep. `dry_run` computes the result and writes nothing.
 
-    `parties_client` is a sec_client() used to name suppliers and customers
-    from SEC filings. With no client that step is skipped.
+    `parties_client` is a sec_client() used to name counterparties from SEC
+    filings. The role comes from the sentence. With no client that step is skipped.
     """
     if limit is not None and int(limit) < 1:
         raise ValueError("limit must be a positive integer")
