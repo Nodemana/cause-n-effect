@@ -10,7 +10,10 @@ from urllib.parse import urlsplit
 from pipeline.counterparties import (
     BACKLOG_QUERY,
     CAPEX_QUERY,
+    FTS_DOCUMENT_CAP,
+    FTS_MIN_INTERVAL,
     TICKERS_URL,
+    _RequestBudget,
     _require_sec,
     accept_party,
     archive_document_url,
@@ -23,6 +26,7 @@ from pipeline.counterparties import (
     select_filings,
     submissions_url,
 )
+import pipeline.counterparties as counterparties
 from pipeline.flow import PlannedLead, run_pipeline
 from pipeline.llm import StubProvider
 from pipeline.prompts import centurion_prompt
@@ -68,13 +72,14 @@ class CounterpartyTests(unittest.TestCase):
         eight = (FIXTURES / "orcl_8k.html").read_text(encoding="utf-8")
         tenk = (FIXTURES / "orcl_10k.html").read_text(encoding="utf-8")
         exhibit = (FIXTURES / "orcl_ex10.html").read_text(encoding="utf-8")
-        highlight = json.loads((FIXTURES / "orcl_efts.json").read_text(encoding="utf-8"))
-        snippet = highlight["hits"]["hits"][0]["highlight"]["doc_text"][0]
         customers = (FIXTURES / "customer_10k.html").read_text(encoding="utf-8")
         contract = (FIXTURES / "customer_8k.html").read_text(encoding="utf-8")
         self.assertEqual(parties_from_text(eight, "supplier", registrants), [])
         self.assertEqual(parties_from_text(tenk, "supplier", registrants), [])
-        self.assertEqual(parties_from_text(snippet, "supplier", registrants), [])
+        self.assertEqual(
+            parties_from_text("entered into an agreement with Network", "supplier", registrants),
+            [],
+        )
         self.assertEqual(
             parties_from_text(exhibit, "supplier", registrants),
             ["Oracle Corporation", "Globex Power"],
@@ -149,6 +154,47 @@ class CounterpartyTests(unittest.TestCase):
         self.assertEqual(party["name"], "GE Vernova")
         self.assertEqual(party["ticker"], "GEV")
         self.assertEqual(party["name_normalised"], "ge vernova")
+
+    def test_incorporated_matches_an_edgar_title(self):
+        empty = registrant_index({})
+        plain = accept_party("Dana Incorporated", empty)
+        self.assertEqual(plain["name"], "Dana Incorporated")
+        self.assertIsNone(plain["ticker"])
+        dana = registrant_index(
+            {
+                "0": {"cik_str": 26780, "ticker": "DAN", "title": "DANA INC"},
+                "1": {"cik_str": 26781, "ticker": "DC", "title": "DANA CO"},
+                "2": {"cik_str": 26782, "ticker": "FOO", "title": "FOO CORP"},
+                "3": {"cik_str": 26783, "ticker": "BAR", "title": "BAR LTD"},
+            }
+        )
+        party = accept_party("Dana Incorporated", dana)
+        self.assertEqual(party["name"], "DANA INC")
+        self.assertEqual(party["ticker"], "DAN")
+        self.assertEqual(accept_party("The Dana Company", dana)["ticker"], "DC")
+        self.assertEqual(accept_party("DANA INC.", dana)["name"], "DANA INC")
+        self.assertEqual(accept_party("Foo Corporation", dana)["ticker"], "FOO")
+        self.assertEqual(accept_party("Bar Limited", dana)["ticker"], "BAR")
+        self.assertIsNone(accept_party("The Company", dana))
+
+    def test_wider_contract_and_concentration_phrases(self):
+        registrants = registrant_index({"0": {"cik_str": 26780, "ticker": "DAN", "title": "DANA INC"}})
+        samples = [
+            "The Company entered into a supply agreement with Dana Incorporated.",
+            "agreement between the Company and Dana Incorporated.",
+            "This agreement is by and among the Company and Dana Incorporated.",
+            'Dana Incorporated (the "Supplier") accounted for approximately 18% of net sales.',
+            "Dana Incorporated represented more than 11% of revenue.",
+            "Sales to Dana Incorporated were material.",
+            "Our largest customers include Dana Incorporated.",
+        ]
+        for sample in samples:
+            names = parties_from_text(sample, "customer", registrants) + parties_from_text(
+                sample, "supplier", registrants
+            )
+            self.assertIn("DANA INC", names, sample)
+            for junk in JUNK:
+                self.assertNotIn(junk, names, sample)
 
     def test_ex10_filenames_match_exhibit_10(self):
         names = ex10_names(
@@ -474,21 +520,10 @@ class CounterpartyTests(unittest.TestCase):
             "directory": {"item": [{"name": "orcl-8k.htm"}]}
         }
         client.pages[efts_url(ORCL_CIK, CAPEX_QUERY, start, end)] = {"hits": {"hits": []}}
-        client.pages[efts_url(ORCL_CIK, '"GE Vernova"', start, end)] = {
-            "hits": {
-                "hits": [
-                    {
-                        "_id": f"{ORCL_8K}:orcl-8k.htm",
-                        "_source": {"adsh": ORCL_8K},
-                        "highlight": {
-                            "doc_text": [
-                                "agreement with Network. GE Vernova was named in the exhibit."
-                            ]
-                        },
-                    }
-                ]
-            }
-        }
+        cross_doc = archive_document_url(ORCL_CIK, ORCL_8K, "cross-ref.htm")
+        client.pages[efts_url(ORCL_CIK, '"GE Vernova"', start, end)] = _fts_hit(
+            ORCL_8K, "cross-ref.htm", ["0000999001"]
+        )
         gev_8k = "0002088000-26-000001"
         gev_10k = "0002088000-26-000002"
         client.pages[submissions_url(GEV_CIK)] = {
@@ -510,17 +545,10 @@ class CounterpartyTests(unittest.TestCase):
             "<p>agreement with Network. SUMMARY RESULTS OF OPERATIONS</p></body></html>"
         )
         client.pages[efts_url(GEV_CIK, BACKLOG_QUERY, start, end)] = {"hits": {"hits": []}}
-        client.pages[efts_url(GEV_CIK, '"Oracle"', start, end)] = {
-            "hits": {
-                "hits": [
-                    {
-                        "_id": f"{gev_10k}:gev-10k.htm",
-                        "_source": {"adsh": gev_10k},
-                        "highlight": {"doc_text": ["agreement with During. Oracle equipment."]},
-                    }
-                ]
-            }
-        }
+        oracle_doc = archive_document_url(GEV_CIK, gev_10k, "oracle-mention.htm")
+        client.pages[efts_url(GEV_CIK, '"Oracle"', start, end)] = _fts_hit(
+            gev_10k, "oracle-mention.htm", ["0002088000"]
+        )
         client.pages[efts_url(GEV_CIK, '"Oracle Corporation"', start, end)] = {"hits": {"hits": []}}
         capex = _lead("capex", "https://www.sec.gov/Archives/edgar/data/999001/orcl.htm")
         capex.company = "Oracle"
@@ -535,10 +563,14 @@ class CounterpartyTests(unittest.TestCase):
             [(party["role"], party["name"], party["ticker"]) for party in capex.counterparties],
             [("supplier", "GE Vernova", "GEV")],
         )
+        self.assertEqual(capex.counterparties[0]["source_url"], cross_doc)
+        self.assertNotIn(cross_doc, client.urls)
         self.assertEqual(
             [(party["role"], party["name"], party["ticker"]) for party in backlog.counterparties],
             [("customer", "Oracle Corporation", "ORCL")],
         )
+        self.assertEqual(backlog.counterparties[0]["source_url"], oracle_doc)
+        self.assertNotIn(oracle_doc, client.urls)
         named = [party["name"] for party in capex.counterparties + backlog.counterparties]
         for junk in JUNK:
             self.assertNotIn(junk, named)
@@ -599,6 +631,131 @@ class CounterpartyTests(unittest.TestCase):
         for junk in JUNK:
             self.assertNotIn(junk, thesis)
         self.assertTrue(all("orcl-10k.htm" not in url for url in client.urls))
+        page = json.loads((FIXTURES / "orcl_efts.json").read_text(encoding="utf-8"))
+        self.assertNotIn("highlight", page["hits"]["hits"][0])
+
+    def test_fts_without_highlight_reads_the_hit_document(self):
+        start, end = search_window(SWEEP_AT)
+        page = json.loads((FIXTURES / "efts_no_highlight.json").read_text(encoding="utf-8"))
+        hit = page["hits"]["hits"][0]
+        self.assertNotIn("highlight", hit)
+        self.assertIn("adsh", hit["_source"])
+        adsh, filename = hit["_id"].split(":", 1)
+        self.assertEqual(hit["_source"]["adsh"], adsh)
+        document = archive_document_url(ORCL_CIK, adsh, filename)
+        client = _Client()
+        client.pages[TICKERS_URL] = {
+            "0": {"cik_str": 26780, "ticker": "DAN", "title": "DANA INC"},
+            "1": {"cik_str": 999001, "ticker": "ORCL", "title": "Oracle Corporation"},
+        }
+        client.pages[submissions_url(ORCL_CIK)] = {
+            "filings": {
+                "recent": {
+                    "form": [],
+                    "accessionNumber": [],
+                    "filingDate": [],
+                    "primaryDocument": [],
+                    "items": [],
+                }
+            }
+        }
+        client.pages[efts_url(ORCL_CIK, CAPEX_QUERY, start, end)] = page
+        client.bodies[document] = (
+            "<html><body>"
+            "<p>The Company entered into a supply agreement with Dana Incorporated.</p>"
+            "<p>Dana Incorporated (the \"Supplier\") accounted for approximately 18% of net sales.</p>"
+            "<p>agreement with Network. SUMMARY RESULTS OF OPERATIONS</p>"
+            "</body></html>"
+        )
+        lead = _lead("capex", "https://www.sec.gov/Archives/edgar/data/999001/orcl.htm")
+        lead.company = "Oracle"
+        enrich_leads([lead], client=client, names={}, as_of=SWEEP_AT)
+        self.assertEqual(
+            [(party["role"], party["name"], party["ticker"]) for party in lead.counterparties],
+            [("supplier", "DANA INC", "DAN")],
+        )
+        self.assertEqual(lead.counterparties[0]["source_url"], document)
+        self.assertIn(document, client.urls)
+        for junk in JUNK:
+            self.assertNotIn(junk, [party["name"] for party in lead.counterparties])
+
+    def test_fts_document_cap_stops_later_hits(self):
+        start, end = search_window(SWEEP_AT)
+        first = archive_document_url(ORCL_CIK, "0000999001-26-000041", "dana.htm")
+        second = archive_document_url(ORCL_CIK, "0000999001-26-000042", "globex.htm")
+        client = _Client()
+        client.pages[TICKERS_URL] = {
+            "0": {"cik_str": 26780, "ticker": "DAN", "title": "DANA INC"},
+            "1": {"cik_str": 999001, "ticker": "ORCL", "title": "Oracle Corporation"},
+            "2": {"cik_str": 2088000, "ticker": "GEV", "title": "Globex Power"},
+        }
+        client.pages[submissions_url(ORCL_CIK)] = {
+            "filings": {"recent": {"form": [], "accessionNumber": [], "filingDate": [], "primaryDocument": [], "items": []}}
+        }
+        client.pages[efts_url(ORCL_CIK, CAPEX_QUERY, start, end)] = {
+            "hits": {
+                "hits": [
+                    {"_id": "0000999001-26-000041:dana.htm", "_source": {"adsh": "0000999001-26-000041", "form": "8-K"}},
+                    {"_id": "0000999001-26-000042:globex.htm", "_source": {"adsh": "0000999001-26-000042", "form": "8-K"}},
+                ]
+            }
+        }
+        client.bodies[first] = "<p>The Company entered into an agreement with Dana Incorporated.</p>"
+        client.bodies[second] = "<p>The Company entered into an agreement with Globex Power Inc.</p>"
+        lead = _lead("capex", "https://www.sec.gov/Archives/edgar/data/999001/orcl.htm")
+        lead.company = "Oracle"
+        previous = counterparties.FTS_DOCUMENT_CAP
+        counterparties.FTS_DOCUMENT_CAP = 1
+        try:
+            enrich_leads([lead], client=client, names={}, as_of=SWEEP_AT)
+        finally:
+            counterparties.FTS_DOCUMENT_CAP = previous
+        self.assertEqual([party["name"] for party in lead.counterparties], ["DANA INC"])
+        self.assertIn(first, client.urls)
+        self.assertNotIn(second, client.urls)
+
+    def test_a_missing_fts_document_drops_the_company(self):
+        start, end = search_window(SWEEP_AT)
+        client = _Client(email=CONTACT)
+        os.environ["SEC_CONTACT_EMAIL"] = CONTACT
+        client.pages[TICKERS_URL] = _tickers()
+        client.pages[submissions_url(ORCL_CIK)] = {
+            "filings": {"recent": {"form": [], "accessionNumber": [], "filingDate": [], "primaryDocument": [], "items": []}}
+        }
+        client.pages[efts_url(ORCL_CIK, CAPEX_QUERY, start, end)] = json.loads(
+            (FIXTURES / "efts_no_highlight.json").read_text(encoding="utf-8")
+        )
+        lead = _lead("capex", "https://www.sec.gov/Archives/edgar/data/999001/orcl.htm")
+        with self.assertLogs("pipeline.counterparties", level="WARNING") as caught:
+            enrich_leads([lead], client=client, names={}, as_of=SWEEP_AT)
+        self.assertEqual(lead.counterparties, [])
+        blob = "\n".join(caught.output)
+        self.assertIn("failed closed", blob)
+        self.assertIn("ORCL", blob)
+        self.assertNotIn(CONTACT, blob)
+        self.assertNotIn("@", blob)
+
+    def test_fts_fetches_stay_at_ten_per_second(self):
+        self.assertEqual(FTS_MIN_INTERVAL, 0.1)
+        self.assertGreaterEqual(FTS_DOCUMENT_CAP, 1)
+        now = {"t": 50.0}
+        slept = []
+
+        def clock():
+            return now["t"]
+
+        def sleep(seconds):
+            slept.append(seconds)
+            now["t"] += seconds
+
+        budget = _RequestBudget(cap=3, sleep=sleep, clock=clock)
+        self.assertTrue(budget.take())
+        self.assertEqual(slept, [])
+        self.assertTrue(budget.take())
+        self.assertTrue(budget.take())
+        self.assertEqual(slept, [0.1, 0.1])
+        self.assertFalse(budget.take())
+        self.assertEqual(slept, [0.1, 0.1])
 
 
 class _Client:
@@ -629,6 +786,34 @@ class _Client:
     def _maybe_fail(self, url):
         if self.fail_on and self.fail_on in url:
             raise EndpointError(f"HTTP 503 for {url} User-Agent cause-n-effect ({self.email})")
+
+
+def _fts_hit(adsh, filename, ciks):
+    """One EDGAR full-text hit: _source metadata only, _id is adsh:filename."""
+    return {
+        "took": 9,
+        "timed_out": False,
+        "hits": {
+            "total": {"value": 1, "relation": "eq"},
+            "max_score": 5.0,
+            "hits": [
+                {
+                    "_index": "edgar_file",
+                    "_id": f"{adsh}:{filename}",
+                    "_score": 5.0,
+                    "_source": {
+                        "ciks": ciks,
+                        "form": "8-K",
+                        "file_date": "2026-08-20",
+                        "adsh": adsh,
+                        "file_type": "8-K",
+                        "display_names": ["Example Corp  (EX)  (CIK 0000000001)"],
+                        "items": ["1.01"],
+                    },
+                }
+            ],
+        },
+    }
 
 
 def _tickers():
