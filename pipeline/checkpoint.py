@@ -38,6 +38,7 @@ _FIGURE_EXTRA = (
     "prior_comparison",
     "aggregated_ids",
     "growth_unverified",
+    "period_age_days",
 )
 _RATING = (
     "magnitude",
@@ -116,6 +117,8 @@ class SweepState:
         self.figures = 0
         self.deterministic_rejects = 0
         self.pending_persist = False
+        self.screened = False
+        self.waiting = []
 
 
 def state_path(queue_dir, run_id):
@@ -157,6 +160,8 @@ def _dump_state(state):
         "figures": state.figures,
         "deterministic_rejects": state.deterministic_rejects,
         "pending_persist": bool(state.pending_persist),
+        "screened": bool(getattr(state, "screened", False)),
+        "waiting": [_dump_candidate(item) for item in (getattr(state, "waiting", None) or [])],
     }
 
 
@@ -180,6 +185,8 @@ def _load_state(data):
     state.figures = data.get("figures") or 0
     state.deterministic_rejects = data.get("deterministic_rejects") or 0
     state.pending_persist = bool(data.get("pending_persist"))
+    state.screened = bool(data.get("screened"))
+    state.waiting = [_load_candidate(item) for item in data.get("waiting") or []]
     return state
 
 
@@ -260,6 +267,7 @@ def _dump_lead(lead, nested=False):
     payload["counterparties"] = list(lead.counterparties or [])
     payload["parties"] = list(getattr(lead, "parties", None) or [])
     payload["related_findings"] = list(getattr(lead, "related_findings", None) or [])
+    payload["gate_results"] = list(getattr(lead, "gate_results", None) or [])
     if nested:
         payload["members"] = []
         payload["member_ids"] = []
@@ -283,6 +291,7 @@ def _load_lead(data, by_id=None):
     lead.counterparties = list(data.get("counterparties") or [])
     lead.parties = list(data.get("parties") or [])
     lead.related_findings = list(data.get("related_findings") or [])
+    lead.gate_results = list(data.get("gate_results") or [])
     nested = data.get("members") or []
     if nested:
         lead.members = [_load_lead(item) for item in nested]
@@ -301,11 +310,16 @@ def _dump_candidate(candidate):
         "figure": _dump_figure(candidate.figure),
         "lead_type": candidate.lead_type,
         "parties": list(candidate.parties or []),
+        "gate_results": list(getattr(candidate, "gate_results", None) or []),
+        "screen_lead_id": getattr(candidate, "screen_lead_id", None),
     }
 
 
 def _load_candidate(data):
-    return Candidate(_load_figure(data["figure"]), data["lead_type"], list(data.get("parties") or []))
+    candidate = Candidate(_load_figure(data["figure"]), data["lead_type"], list(data.get("parties") or []))
+    candidate.gate_results = list(data.get("gate_results") or [])
+    candidate.screen_lead_id = data.get("screen_lead_id")
+    return candidate
 
 
 def _dump_reject(planned):

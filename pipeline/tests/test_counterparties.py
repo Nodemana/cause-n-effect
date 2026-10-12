@@ -425,13 +425,22 @@ class CounterpartyTests(unittest.TestCase):
                 supplier = _orders("GEV", "filing", "2026-06-30", 2_000_000_000, figure_type="supplier_order")
                 supplier["company"] = "Globex Power"
                 supplier["source_url"] = "https://www.sec.gov/Archives/edgar/data/2088000/gev.htm"
+                backlog = _orders(
+                    "GEV",
+                    "RevenueRemainingPerformanceObligation",
+                    "2026-03-31",
+                    40_000_000,
+                    figure_type="customer_backlog",
+                )
+                backlog["company"] = "Globex Power"
+                backlog["source_url"] = "https://www.sec.gov/Archives/edgar/data/2088000/gev-prior.htm"
                 save_run(
                     conn,
                     "capex",
                     "2026-10-12T14:30:52Z",
                     [current, prior, *_caps("ORCL", "GEV")],
                 )
-                save_run(conn, "orders-backlog", "2026-10-12T14:31:00Z", [supplier])
+                save_run(conn, "orders-backlog", "2026-10-12T14:31:00Z", [supplier, backlog])
             finally:
                 conn.close()
             with self.assertLogs("pipeline.counterparties", level="WARNING") as caught:

@@ -99,7 +99,7 @@ The Centurion still writes one result file. There is no shared evidence file and
 
 ### Centurion (pass 1 and pass 2)
 
-`thesis`, `roi`, and `recommendation` are strings. `roi_pct` is a number. `timeframe_days` is an integer. `risks` and `assumptions` are arrays of strings. `grades` is an array of `{name, passed, evidence}` with `passed` true or false. `suppliers`, `customers`, and `buyers` are arrays of `{name, ticker}`. `price_run` is null on a single lead. On a capex chain, a smart-money lead, and pass 2 it is `new`, `acceleration`, `priced-in`, or null.
+`thesis`, `roi`, and `recommendation` are strings. `roi_pct` is a number. `timeframe_days` is an integer. `risks` and `assumptions` are arrays of strings. `suppliers`, `customers`, and `buyers` are arrays of `{name, ticker}`. `price_run` is null on a single lead. On a capex chain, a smart-money lead, and pass 2 it is `new`, `acceleration`, `priced-in`, or null. The prompt includes GATE_RESULTS from the scout gate. The result does not grade the rubric.
 
 ### Praetorian
 

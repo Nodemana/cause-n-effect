@@ -324,7 +324,6 @@ def _centurion(prompt):
     ticker = _field(prompt, "TICKER")
     constituents = _constituents(prompt)
     suppliers, customers, buyers = _parties(prompt, constituents)
-    grades = _grades(prompt)
     value = _optional_float(_field(prompt, "VALUE")) or 0
     if constituents:
         roi = max(_expected_return(item.get("lead_type") or lead_type, _constituent_value(item, value)) for item in constituents)
@@ -339,8 +338,6 @@ def _centurion(prompt):
     assumptions = [
         "The figures used here are the ones stored from the filing or the announcement.",
     ]
-    if not _field(prompt, "MARKET_CAP"):
-        assumptions.insert(0, "market cap unverified")
     macro = _field(prompt, "MACRO")
     if macro and macro != "none":
         assumptions.append(f"Macro context used: {macro}")
@@ -374,61 +371,11 @@ def _centurion(prompt):
         "risks": risks,
         "recommendation": where,
         "assumptions": assumptions,
-        "grades": grades,
         "suppliers": suppliers,
         "customers": customers,
         "buyers": buyers,
         "price_run": price_run,
     }
-
-
-def _grades(prompt):
-    market = _optional_float(_field(prompt, "MARKET_CAP"))
-    value = _optional_float(_field(prompt, "VALUE"))
-    grades = []
-    for line in _block(prompt, "CRITERIA").splitlines():
-        line = line.strip()
-        if not line.startswith("- "):
-            continue
-        parts = [part.strip() for part in line[2:].split(" | ")]
-        name = parts[0] if parts else ""
-        if not name:
-            continue
-        threshold = _optional_float(parts[1]) if len(parts) > 1 else None
-        if "market_cap" in name:
-            if market is None:
-                passed = False
-                evidence = "market cap unverified"
-            elif threshold is not None and market >= threshold:
-                passed = True
-                evidence = "shares outstanding times an official price"
-            else:
-                passed = False
-                evidence = "market cap is below the threshold"
-        elif name == "raise_vs_company":
-            if market is None:
-                passed = False
-                evidence = "market cap unverified"
-            elif value is not None and threshold is not None and (100.0 * value / market) >= threshold:
-                passed = True
-                evidence = "the raise clears the percent of the official market cap"
-            else:
-                passed = False
-                evidence = "the raise is below the percent of market cap"
-        elif "growth" in name:
-            growth_text = _field(prompt, "GROWTH_TEXT")
-            passed = "PRIOR_COMPARISON: yes" in prompt
-            if passed and growth_text:
-                evidence = growth_text
-            elif passed:
-                evidence = "prior comparison in the figures table"
-            else:
-                evidence = "no prior comparison in the figures table"
-        else:
-            passed = True
-            evidence = "the stored figure is an official-source row"
-        grades.append({"name": name, "passed": passed, "evidence": evidence})
-    return grades
 
 
 def _parties(prompt, constituents):

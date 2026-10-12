@@ -191,8 +191,13 @@ def _fill_group(lead, primary, members, synthetic_id):
     lead.parties = _merged_named(members, "parties")
     lead.counterparties = _merged_named(members, "counterparties")
     lead.parent_position_id = None
-    lead.market_cap_unverified = any(getattr(member, "market_cap_unverified", False) for member in members)
-    lead.growth_unverified = any(getattr(member, "growth_unverified", False) for member in members)
+    lead.market_cap_unverified = False
+    lead.growth_unverified = False
+    gate_results = []
+    for member in members:
+        for item in getattr(member, "gate_results", None) or []:
+            gate_results.append(item)
+    lead.gate_results = gate_results
     issues = []
     for member in members:
         issue = getattr(member, "significance_issue", None)

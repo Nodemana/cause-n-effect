@@ -15,7 +15,7 @@ from pipeline.load import (
     period_end,
     period_span_days,
 )
-from pipeline.marketcap import criterion_threshold, resolve_market_cap
+from pipeline.marketcap import resolve_market_cap
 from pipeline.names import normalise_name
 from shared.money import format_money
 
@@ -321,55 +321,28 @@ def party_index(figures):
 
 
 def _threshold(conn, figure, lead_type, now=None):
+    """Screen a figure before the rubric gate.
+
+    Missing value, the debt scout minimum, and an implausible company-total
+    backlog are rejects. Rubric criteria, including market cap and growth,
+    are decided by pipeline.rubric_gate. This still stores the cap and the
+    prior comparison on the figure so that gate can read them.
+    """
     if figure.value is None or figure.value <= 0:
         return "missing value", _magnitude("missing value")
-    if lead_type == "insider_buying" and figure.value < INSIDER_MIN_DOLLARS:
-        reason = f"below insider_buy_dollars threshold {INSIDER_MIN_DOLLARS}"
-        return reason, _magnitude(reason)
     if lead_type == "debt_raise":
         currency = (figure.currency or "USD").upper()
         if currency == "USD" and figure.value < DEBT_MIN_DOLLARS:
             reason = f"below debt minimum {DEBT_MIN_DOLLARS} USD"
             return reason, _magnitude(reason)
-    if lead_type == "accumulation":
-        stake = _stake_pct(figure)
-        if stake is None:
-            reason = "stake percent missing"
-            return reason, _magnitude(reason)
-        if stake < STAKE_MIN_PCT:
-            reason = f"below min_stake_pct threshold {STAKE_MIN_PCT:g}"
-            return reason, _magnitude(reason)
-        window = _outside_window(figure)
-        if window:
-            return window, Rating(timing="outside window", timing_rationale=window)
     implausible = _implausible_total(conn, figure, lead_type)
     if implausible:
         return implausible, _magnitude(implausible)
     cap, _cap_note = resolve_market_cap(conn, figure.ticker, now=now)
     figure.market_cap = cap
-    threshold = criterion_threshold(conn, lead_type, "min_market_cap")
-    figure.market_cap_unverified = cap is None and threshold is not None
-    if threshold is not None and cap is not None and cap < threshold:
-        reason = f"min_market_cap: {cap:g} is below {threshold:g}"
-        return reason, _magnitude(reason)
-    if lead_type == "debt_raise" and cap:
-        need = criterion_threshold(conn, lead_type, "raise_vs_company")
-        if need is not None and figure.value is not None:
-            pct = 100.0 * figure.value / cap
-            if pct < need:
-                reason = f"raise_vs_company: {pct:.1f} percent of market cap is below {need:g}"
-                return reason, _magnitude(reason)
-    growth, compared = _growth_reason(conn, figure, lead_type)
+    figure.market_cap_unverified = cap is None
+    _growth, compared = _growth_reason(conn, figure, lead_type)
     figure.prior_comparison = compared
-    if lead_type in {"capex", "orders_backlog"} and not compared:
-        if getattr(figure, "growth_unverified", False):
-            pass
-        else:
-            label = "capex_growth_yoy" if lead_type == "capex" else "backlog_qoq_growth"
-            reason = f"{label}: no prior comparison in the figures table"
-            return reason, _magnitude(reason)
-    if growth:
-        return growth, _magnitude(growth)
     figure.earlier_similar = _earlier_similar(conn, figure)
     figure.earlier_type = _earlier_type(conn, figure)
     figure.period_age_days = _period_age_days(figure, now)
@@ -595,9 +568,6 @@ def _growth_reason(conn, figure, lead_type):
     ).fetchall()
     span = period_span_days(figure.period)
     best = _pick_prior(rows, lead_type, end, span, windows, require_span)
-    if best is None and lead_type == "orders_backlog" and figure.value >= ORDER_LARGE_VALUE:
-        figure.growth_unverified = True
-        return None, False
     if best is None and lead_type == "capex":
         pair = _trailing_yoy(rows, end)
         if pair is not None:

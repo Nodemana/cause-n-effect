@@ -2,13 +2,11 @@
 
 ## Criteria
 
-- signal_threshold: the stored 1-month move, 3-month move, z-score, or Brent-WTI spread versus its prior-year range clears the threshold the detector already applied. Grade it from the series ids, values, and dates on this lead.
+Macro leads have no rubric gate. The detector already applied the signal threshold before this lead was queued. Do not grade that check again.
+
+- signal_threshold: the stored 1-month move, 3-month move, z-score, or Brent-WTI spread versus its prior-year range cleared the detector.
 - cause_to_effects: the thesis maps that cause to the likely effects.
 - winners_and_losers: the thesis names winning tickers and losing tickers.
-
-## Grade
-
-Grade this lead only, against each criterion above. Pass or fail, with the series ids, values, dates, and source URLs stored on the lead.
 
 ## Thesis and ROI
 
@@ -33,7 +31,7 @@ List every assumption made while researching and forming the thesis.
 
 Observations only from the official source URLs stored on this lead. Those series come from FRED, BLS, ABS, the RBA, EIA, or the NY Fed. Do not invent a print, a ticker, or a media article.
 
-If this lead is the single new lead from a Legate merge, this is the second pass: still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged does not reach this pass.
+If this lead is the single new lead from a Legate merge, this is the second pass: still write one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged does not reach this pass.
 
 On that second pass, classify any prior price run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence. Note that call as a concern where relevant. There is no automatic rejection.
 

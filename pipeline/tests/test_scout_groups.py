@@ -177,7 +177,17 @@ def _seed(path):
                     2_000_000_000,
                     "2000000000 buyer: Harbor Spender",
                     SUPPLIER_URL,
-                )
+                ),
+                _figure(
+                    "NSUP",
+                    "Nordic Supply",
+                    "customer_backlog",
+                    "RevenueRemainingPerformanceObligation",
+                    "2026-06-30",
+                    40_000_000,
+                    "40000000",
+                    SUPPLIER_URL + "#prior",
+                ),
             ],
         )
         save_run(

@@ -152,6 +152,7 @@ class PriceTests(unittest.TestCase):
                     "2026-10-12T14:30:52Z",
                     [
                         _figure("AMZN"),
+                        _prior("AMZN"),
                         _figure("BHP.AX", source_type="asx_announcement"),
                         _shares("AMZN"),
                     ],
@@ -271,17 +272,23 @@ class PriceTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            from pipeline.prefilter import prefilter
             from pipeline.load import load_latest_figures
+            from pipeline.rubric_gate import evaluate
 
             conn = connect(path)
             try:
-                _candidates, rejects, _used = prefilter(
-                    conn, load_latest_figures(conn, as_of=SWEEP_AT), now=SWEEP_AT
+                figure = next(
+                    item
+                    for item in load_latest_figures(conn, as_of=SWEEP_AT)
+                    if item.ticker == "DEBT" and item.figure_type == "facility_amount"
                 )
+                outcome = evaluate(conn, figure, "debt_raise", now=SWEEP_AT)
             finally:
                 conn.close()
-        self.assertTrue(any("raise_vs_company" in planned.reason and "below" in planned.reason for planned in rejects))
+        failed = [item for item in outcome.results if item["name"] == "raise_vs_company"]
+        self.assertEqual(outcome.status, "filtered")
+        self.assertTrue(failed)
+        self.assertIn("below", failed[0]["evidence"])
 
     def test_sources_do_not_name_an_unofficial_feed(self):
         for relative in (
@@ -312,6 +319,15 @@ def _shares(ticker, value=1_000_000_000):
         "source_type": "filing",
         "verified": 1,
     }
+
+
+def _prior(ticker):
+    row = _figure(ticker)
+    row["figure_type"] = "PaymentsToAcquirePropertyPlantAndEquipment"
+    row["period"] = "2025-07-01/2025-09-30"
+    row["value"] = 1_000_000_000
+    row["value_text"] = "1000000000"
+    return row
 
 
 def _figure(ticker, source_type="filing"):
