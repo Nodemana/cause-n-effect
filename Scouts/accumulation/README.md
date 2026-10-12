@@ -27,7 +27,7 @@ Each emitted lead stores a short label and a one-line reason on four dimensions.
 - **Market attention.** Whether the stake is already written up. Media and aggregators are for that check only. The percent and the share count stay from the 13D, the 13G, or the ASX notice.
 - **Timing.** How soon the filing follows the event date, and how far it sits before the next earnings date or other catalyst.
 
-A candidate that fails is not a lead. It is a row in `lead_rejects`: scout `accumulation`, ticker of the target, CIK when known, filing date, source URL, accession, `rejection_stage` (`deterministic` or `llm`), and the reason. If Item 4 names a buyer, supplier, or customer, that party is a child row in `lead_reject_counterparties` with the matching role, a normalised name, and a ticker where it resolves. Search is by the target ticker or by that counterparty. Adding `lead_rejects`, `lead_reject_counterparties`, and the significance columns on `leads` is a follow-up migration.
+A candidate that fails is not a lead. It is a row in `lead_rejects`: scout `accumulation`, ticker of the target, CIK when known, filing date, source URL, accession, `rejection_stage` (`deterministic` or `llm`), and the reason. If Item 4 names a buyer, supplier, or customer, that party is a child row in `lead_reject_counterparties` with the matching role, a normalised name, and a ticker where it resolves. Search is by the target ticker or by that counterparty. Those columns and `lead_rejects` / `lead_reject_counterparties` are applied by `shared/migrations/002_lead_pipeline.sql`.
 
 ## Constraints and limitations
 

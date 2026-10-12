@@ -36,11 +36,24 @@ Run from the repository root. These use fixtures and do not open a network conne
 
 ```bash
 python3 -m unittest discover -s shared/tests -t .
+python3 -m unittest discover -s pipeline/tests -t .
 python3 -m unittest discover -s Scouts/accumulation/tests -t .
 python3 Scouts/orders_backlog/tests/test_orders_backlog.py
 python3 Scouts/debt_raise/tests/test_debt_raise.py
 python3 Scouts/insider_buying/tests/test_insider_buying.py
 python3 Scouts/capex/tests/test_capex.py
+```
+
+## Lead pipeline
+
+`python -m pipeline run` reads the latest figures each scout stored, then rates, researches, merges, critiques, ranks, and writes pending decisions. `--help` does not open a database or a network connection. With no `LLM_API_KEY`, the offline stub runs every stage. Set `LLM_API_KEY` to use an OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). The key is not written to the database or to a log line. A macro file is optional: `cache/macro.json` with a `summary` string, or `--macro-cache`. If that file is missing, the return pass skips macro context.
+
+```bash
+python3 -m pipeline run --help
+python3 -m pipeline run --db /tmp/cause-n-effect.sqlite --dry-run --token-budget 80000
+python3 -m pipeline run --db /tmp/cause-n-effect.sqlite --limit 50
+python3 -m pipeline rejects --db /tmp/cause-n-effect.sqlite --ticker AMZN
+python3 -m pipeline rejects --db /tmp/cause-n-effect.sqlite --counterparty "Globex Power"
 ```
 
 ## Live pulls

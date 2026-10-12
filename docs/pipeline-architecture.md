@@ -1,6 +1,6 @@
 # Pipeline architecture
 
-Design for the path from a scout finding to the few theses the Imperator reads each week. Scouts already fetch, parse, and store figures. The Legate, Centurions, and Praetorians are specified in this document, in [Centurions/README.md](../Centurions/README.md), and in [Praetorians/README.md](../Praetorians/README.md). Nothing in the repo runs those agents yet.
+Design for the path from a scout finding to the few theses the Imperator reads each week. Scouts already fetch, parse, and store figures. The Legate, Centurions, and Praetorians are specified in this document, in [Centurions/README.md](../Centurions/README.md), and in [Praetorians/README.md](../Praetorians/README.md). The sweep that runs those stages is `python -m pipeline run`. When `LLM_API_KEY` is unset it uses a deterministic offline stub and does not open a network connection.
 
 Each scout has a live command documented in [setup.md](setup.md).
 
@@ -88,7 +88,7 @@ WHERE ticker = 'ACME'
 ORDER BY filing_date;
 ```
 
-Adding `lead_rejects`, `lead_reject_counterparties`, and the eight significance columns on `leads` is a follow-up code change. None of them are in `shared/migrations/001_pipeline.sql`.
+`lead_rejects`, `lead_reject_counterparties`, and the eight significance columns on `leads` are applied by `shared/migrations/002_lead_pipeline.sql`. Market attention is the column `significance_attention`.
 
 A new row starts at status `fresh`. The scout does not merge it with another lead, does not rank it against other lead types, and does not write a thesis.
 
@@ -146,9 +146,9 @@ Sketch of the columns below. The migration that creates them is [Implemented sch
 `quality_score` is written when the Centurion finishes a pass. `outcome` is written only after the Imperator acts, and monitoring updates it from brokerage performance. `parent_position_id` is set when the row updates a position the Imperator already tracks.
 
 ```sql
--- Sketch of the pipeline tables. Applied by shared/migrations/001_pipeline.sql,
--- except the significance columns on leads and the lead_rejects tables,
--- which are a follow-up migration.
+-- Sketch of the pipeline tables. Applied by shared/migrations/001_pipeline.sql.
+-- Significance columns, lead_rejects, and lead_reject_counterparties are
+-- applied by shared/migrations/002_lead_pipeline.sql.
 
 CREATE TABLE leads (
   lead_id INTEGER PRIMARY KEY,
@@ -164,7 +164,7 @@ CREATE TABLE leads (
   priority INTEGER,                 -- Legate rank after critique
   quality_score INTEGER,            -- count of rubric criteria cleared
   outcome TEXT,                     -- empty until the Imperator acts
-  -- Follow-up migration. Not in 001_pipeline.sql yet.
+  -- Applied by shared/migrations/002_lead_pipeline.sql.
   significance_magnitude TEXT,             -- short label
   significance_magnitude_rationale TEXT,   -- one-line reason
   significance_novelty TEXT,
@@ -213,7 +213,7 @@ CREATE TABLE critiques (
   written_at TEXT NOT NULL
 );
 
--- Follow-up migration. Not in 001_pipeline.sql yet.
+-- Applied by shared/migrations/002_lead_pipeline.sql.
 -- Searchable log of candidates a scout did not emit.
 CREATE TABLE lead_rejects (
   reject_id INTEGER PRIMARY KEY,
@@ -281,4 +281,4 @@ Beyond the sketch:
 - `theses` stores the Centurion `run_id`, `thesis_text`, `risks`, and `quality_score`. One row is one lead's thesis.
 - `critiques` stores the Praetorian `run_id`, `critique`, `verdict` (`revise`, `accept`, or `reject`), and `round`.
 - `legate_merges` stores the rationale, `priority_rank`, and `bias_audit`. `rationale` is the official-source evidence from the Centurions' research that links the two theses. The row is written when the Legate merges, after the individual theses and before Praetorian critique. Constituent lead ids are rows in `legate_merge_leads`.
-- Significance on `leads`, plus `lead_rejects` and `lead_reject_counterparties`, is specified above and is not applied yet. A later migration adds the eight significance columns and the two reject tables, including the ticker and counterparty indexes.
+- Significance on `leads`, plus `lead_rejects` and `lead_reject_counterparties`, is applied by `shared/migrations/002_lead_pipeline.sql`. That migration also adds `evidence_refs` on `legate_merges`, return-pass columns on `theses` (`price_run`, `macro_context`, `pass_number`), `praetorian_reviews`, `rankings`, `decisions` (`acted_on`, `not_acted_on`, `pending`), and `pipeline_runs` for the token count. The sweep writes a pending decision for each presented lead.

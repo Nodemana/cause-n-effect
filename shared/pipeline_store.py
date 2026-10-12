@@ -1,9 +1,10 @@
 """Pipeline tables on top of the shared scout history.
 
-ensure_pipeline applies shared/migrations/001_pipeline.sql. An older leads
-table (no lead_id) is rebuilt and its rows are kept. lodge_lead,
-record_criterion_result, and compute_quality_score are the write path.
-quality_score is the number of criteria with passed = 1.
+ensure_pipeline applies shared/migrations/001_pipeline.sql, then
+002_lead_pipeline.sql, and records each filename in schema_migrations.
+An older leads table (no lead_id) is rebuilt and its rows are kept.
+lodge_lead, record_criterion_result, and compute_quality_score are the
+write path. quality_score is the number of criteria with passed = 1.
 """
 
 import sqlite3
@@ -14,6 +15,10 @@ from shared.store import ensure_history, utc_now
 HERE = Path(__file__).resolve().parent
 MIGRATION_NAME = "001_pipeline.sql"
 MIGRATION_PATH = HERE / "migrations" / MIGRATION_NAME
+MIGRATIONS = (
+    "001_pipeline.sql",
+    "002_lead_pipeline.sql",
+)
 
 LEAD_TYPES = (
     "capex",
@@ -61,24 +66,32 @@ def connect(path):
 
 
 def ensure_pipeline(conn):
-    """Create pipeline tables. Idempotent. Rebuilds a legacy leads table."""
+    """Create pipeline tables. Idempotent. Rebuilds a legacy leads table.
+
+    Each migration file is applied once. A database that already has
+    001_pipeline.sql still receives later files.
+    """
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     ensure_history(conn)
-    seen = conn.execute(
-        "SELECT 1 FROM schema_migrations WHERE name = ?",
-        (MIGRATION_NAME,),
-    ).fetchone()
-    if seen:
-        return
-    _rename_legacy_leads(conn)
-    conn.executescript(MIGRATION_PATH.read_text(encoding="utf-8"))
-    with conn:
-        _copy_legacy_leads(conn)
-        conn.execute(
-            "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
-            (MIGRATION_NAME, utc_now()),
-        )
+    for name in MIGRATIONS:
+        seen = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE name = ?",
+            (name,),
+        ).fetchone()
+        if seen:
+            continue
+        if name == MIGRATION_NAME:
+            _rename_legacy_leads(conn)
+        path = HERE / "migrations" / name
+        conn.executescript(path.read_text(encoding="utf-8"))
+        with conn:
+            if name == MIGRATION_NAME:
+                _copy_legacy_leads(conn)
+            conn.execute(
+                "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
+                (name, utc_now()),
+            )
     conn.execute("PRAGMA foreign_keys = ON")
 
 
