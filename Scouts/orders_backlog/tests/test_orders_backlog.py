@@ -80,6 +80,8 @@ class OrdersBacklogTests(unittest.TestCase):
         self.assertEqual(included[0]["timing"], "Q2 FY2026")
         self.assertEqual(included[0]["filing_date"], "2026-05-20")
         self.assertIn("0000006951-26-000010", included[0]["source_url"])
+        self.assertIn("accession:0000006951-26-000010", included[0]["notes"])
+        self.assertEqual(included[0]["notes"][0], "RevenueRemainingPerformanceObligation")
         self.assertEqual(included[0]["counterparty"], None)
         self.assertTrue(all(row["value"] != 3100000000 for row in rows))
         self.assertEqual(review[0]["flags"], ["stale_tag", "tag_switch"])
@@ -87,6 +89,26 @@ class OrdersBacklogTests(unittest.TestCase):
         periods = {row["equipment_or_period"] for row in rows}
         self.assertNotIn("2018-04-29", periods)
         self.assertNotIn(2100000000, {row["value"] for row in rows})
+
+    def test_live_company_facts_log_the_accession(self):
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = str(Path(tmp) / "history.sqlite")
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    code = live.main(
+                        ["--db", db, "--sec-fixture", str(FIX / "amat_facts.json"), "--no-asx"]
+                    )
+                self.assertEqual(code, 0)
+                printed = stdout.getvalue()
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
+        self.assertIn("accession=0000006951-26-000010", printed)
+        self.assertIn("accession=0000006951-25-000040", printed)
+        self.assertNotIn("accession=\n", printed)
+        self.assertIn("RevenueRemainingPerformanceObligation", printed)
 
     def test_release_backlog_and_not_deferred_revenue(self):
         text = (FIX / "exhibit99_backlog.txt").read_text(encoding="utf-8")
@@ -284,6 +306,74 @@ class OrdersBacklogTests(unittest.TestCase):
         for instrument, value in expected.items():
             self.assertEqual(stored[instrument], value)
 
+    def test_gev_live_release_keeps_one_row_per_metric_on_the_quarter_end(self):
+        text = (FIX / "exhibit99_gev_2q26_live.txt").read_text(encoding="utf-8")
+        self.assertIn("Orders of $24.2B", text)
+        self.assertIn("on a U.S.", text)
+        self.assertIn("led by Gas Power equipment", text)
+        self.assertIn("data center orders", text)
+        self.assertIn("reaching over $5 billion", text)
+        gev = {
+            "ticker": "GEV",
+            "name": "GE Vernova Inc",
+            "cik": "0001996810",
+            "equipment": ["turbines", "transformers", "switchgear"],
+        }
+        accession = "0001996810-26-000147"
+        rows = parser.parse_release(
+            text,
+            gev,
+            "supplier_order",
+            "8-K",
+            "https://www.sec.gov/Archives/edgar/data/1996810/000199681026000147/gev-ex99.htm",
+            "2026-07-22",
+            accession=accession,
+        )
+        figures = dedupe_figures(pipeline.keep_distinct_amounts(live._figures(rows, "2026-07-22")))
+        stored = {row["instrument"]: row for row in figures}
+        expected = {
+            "orders": 24_200_000_000,
+            "revenue": 11_100_000_000,
+            "backlog": 176_000_000_000,
+            "orders:Power": 16_700_000_000,
+            "revenue:Power": 5_500_000_000,
+            "orders:Electrification": 6_300_000_000,
+            "revenue:Electrification": 3_600_000_000,
+            "backlog:Electrification": 40_600_000_000,
+            "orders:Wind": 1_200_000_000,
+            "revenue:Wind": 2_000_000_000,
+            "orders:data center": 5_000_000_000,
+        }
+        self.assertEqual(set(stored), set(expected))
+        for instrument, value in expected.items():
+            row = stored[instrument]
+            self.assertEqual(row["value"], value)
+            self.assertEqual(row["period"], "2026-06-30")
+            self.assertEqual(row["announced_on"], "2026-07-22")
+            self.assertEqual(row["accession"], accession)
+            self.assertNotIn("|", instrument)
+        self.assertNotIn("2026-07-22", {row["period"] for row in figures})
+        self.assertNotIn(16_729_000_000, {row["value"] for row in figures})
+        self.assertNotIn(45_500_000_000, {row["value"] for row in figures})
+        self.assertTrue(all("accession:" + accession in row["notes"] for row in rows if row.get("value") is not None))
+
+        from shared.store import connect, save_run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            conn = connect(db)
+            try:
+                run_id = save_run(conn, "orders-backlog", "2026-07-22T00:00:00Z", figures)
+            finally:
+                conn.close()
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                live._print_rows(db, run_id, figures)
+            printed = stdout.getvalue()
+        self.assertEqual(printed.count(f"accession={accession}"), len(figures))
+        self.assertNotIn("accession=\n", printed)
+        self.assertNotIn("orders|16700000000", printed)
+
     def test_etn_10q_stores_total_and_segment_backlog(self):
         text = (FIX / "etn_10q_backlog.txt").read_text(encoding="utf-8")
         etn = {
@@ -339,6 +429,49 @@ class OrdersBacklogTests(unittest.TestCase):
         self.assertEqual(stored["backlog:Electrical Americas"], 15_175_000_000)
         self.assertEqual(stored["backlog:Electrical Global"], 3_602_000_000)
         self.assertEqual(stored["backlog:Aerospace"], 5_164_000_000)
+
+    def test_etn_html_10q_uses_the_balance_sheet_date_and_segment_cells(self):
+        text = (FIX / "etn_10q_backlog.html").read_text(encoding="utf-8")
+        self.assertIn("July 31, 2026", text)
+        self.assertIn("June&nbsp;30,&nbsp;2026", text)
+        self.assertIn("<td>Backlog</td><td>$15,175</td>", text)
+        self.assertNotIn("| Backlog |", text)
+        self.assertIn("governmental contractor", text)
+        self.assertIn("December 31, 2025", text)
+        etn = {
+            "ticker": "ETN",
+            "name": "Eaton Corp plc",
+            "cik": "0001551182",
+            "equipment": ["transformers", "switchgear"],
+        }
+        accession = "0001551182-26-000031"
+        rows = parser.parse_release(
+            text,
+            etn,
+            "supplier_order",
+            "10-Q",
+            "https://www.sec.gov/Archives/edgar/data/1551182/000155118226000031/eat-20260630.htm",
+            "2026-07-31",
+            accession=accession,
+        )
+        figures = dedupe_figures(pipeline.keep_distinct_amounts(live._figures(rows, "2026-07-31")))
+        stored = {row["instrument"]: row for row in figures}
+        self.assertEqual(set(stored), {
+            "backlog",
+            "backlog:Electrical Americas",
+            "backlog:Electrical Global",
+            "backlog:Aerospace",
+        })
+        self.assertEqual(stored["backlog"]["value"], 24_100_000_000)
+        self.assertEqual(stored["backlog"]["period"], "2026-06-30")
+        self.assertEqual(stored["backlog"]["announced_on"], "2026-07-31")
+        self.assertEqual(stored["backlog:Electrical Americas"]["value"], 15_175_000_000)
+        self.assertEqual(stored["backlog:Electrical Global"]["value"], 3_602_000_000)
+        self.assertEqual(stored["backlog:Aerospace"]["value"], 5_164_000_000)
+        for row in figures:
+            self.assertEqual(row["period"], "2026-06-30")
+            self.assertEqual(row["accession"], accession)
+        self.assertEqual(pipeline.report_stale_latest(rows, "2026-10-12", stream=io.StringIO()), [])
 
     def test_supplier_10q_is_collected_without_a_socket(self):
         text = (FIX / "etn_10q_backlog.txt").read_text(encoding="utf-8")
@@ -406,6 +539,7 @@ class OrdersBacklogTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["form"], "10-Q")
         self.assertEqual(found[0]["filing_date"], "2026-08-05")
+        self.assertEqual(found[0]["accession"], "0001551182-26-000020")
         self.assertTrue(found[0]["url"].endswith("/eat-20260630.htm"))
         self.assertTrue(all("sec.gov" in url for url in client.urls))
         self.assertNotIn("ex991.htm", found[0]["url"])
@@ -414,6 +548,18 @@ class OrdersBacklogTests(unittest.TestCase):
         )
         total = next(row for row in rows if row["disclosure"] == "backlog" and row["value"] == 24_100_000_000)
         self.assertEqual(total["equipment_or_period"], "2026-06-30")
+        table = pipeline.build_table(releases=[{
+            "company": etn,
+            "body": found[0]["body"],
+            "url": found[0]["url"],
+            "filing_date": found[0]["filing_date"],
+            "source_side": "supplier_order",
+            "source_type": "10-Q",
+            "accession": found[0]["accession"],
+        }])
+        valued = [row for row in table["records"] if row.get("value") is not None]
+        self.assertTrue(valued)
+        self.assertTrue(all("accession:0001551182-26-000020" in row["notes"] for row in valued))
 
     def test_one_table_shape(self):
         payload = json.loads((FIX / "amat_facts.json").read_text(encoding="utf-8"))

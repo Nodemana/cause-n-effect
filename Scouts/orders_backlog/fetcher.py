@@ -97,6 +97,7 @@ def collect_supplier_reports(companies, client=None):
                 "url": doc_url,
                 "filing_date": filing["filing_date"],
                 "form": filing["form"],
+                "accession": filing["accession"],
             }
         )
     return documents
@@ -178,6 +179,7 @@ def collect_8k_exhibits(companies, client=None, items=_8K_SUPPLIER_ITEMS, since=
                         "url": doc_url,
                         "filing_date": filing["filing_date"],
                         "form": "8-K",
+                        "accession": filing.get("accession") or "",
                     }
                 )
     return documents
