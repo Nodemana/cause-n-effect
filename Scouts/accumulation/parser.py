@@ -12,8 +12,8 @@ import html
 import re
 from xml.etree import ElementTree
 
-from scouts.accumulation.forms import canonical_form, sec_family
-from scouts.accumulation.model import Position, norm_acn, norm_cik
+from Scouts.accumulation.forms import canonical_form, sec_family
+from Scouts.accumulation.model import Position, norm_acn, norm_cik
 
 # Joint filers often report the same shares. A wider spread is treated as a conflict.
 _STAKE_SPREAD = 1.0

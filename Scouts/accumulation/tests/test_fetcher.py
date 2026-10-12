@@ -6,8 +6,8 @@ import pathlib
 import unittest
 import urllib.request
 
-from scouts.accumulation import fetcher
-from scouts.accumulation.fetcher import (
+from Scouts.accumulation import fetcher
+from Scouts.accumulation.fetcher import (
     asx_form_from_headline,
     choose_primary_name,
     collect_asx,
@@ -15,9 +15,9 @@ from scouts.accumulation.fetcher import (
     efts_url,
     fetch_ticker_map,
 )
-from scouts.accumulation.forms import SEC_FORM_TYPES
-from scouts.accumulation.pipeline import analyse, to_json
-from scouts.accumulation.filters import ScreenConfig
+from Scouts.accumulation.forms import SEC_FORM_TYPES
+from Scouts.accumulation.pipeline import analyse, to_json
+from Scouts.accumulation.filters import ScreenConfig
 from shared.nethttp import EndpointError
 from datetime import date
 
@@ -137,7 +137,7 @@ class FetcherTests(unittest.TestCase):
 
     def test_analyse_fixture_round_trip(self):
         body = (FIX / "sec_13d.xml").read_text(encoding="utf-8")
-        from scouts.accumulation.model import Document
+        from Scouts.accumulation.model import Document
         doc = Document(
             source="sec",
             body=body,

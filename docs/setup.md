@@ -1,6 +1,6 @@
 # Setup
 
-Scouts, in each folder under `scouts/`, do the deterministic work: fetching, parsing, storing, and diffing. The Legate applies thresholds. Centurions research leads past a threshold into theses, Praetorians attack each thesis, and the Imperator decides. Those role names are defined in the top-level README.
+Scouts, in each folder under `Scouts/`, do the deterministic work: fetching, parsing, storing, and diffing. The Legate applies thresholds. Centurions research leads past a threshold into theses, Praetorians attack each thesis, and the Imperator decides. Those role names are defined in the top-level README.
 
 ## Layout
 
@@ -8,7 +8,9 @@ Scouts, in each folder under `scouts/`, do the deterministic work: fetching, par
 cause-n-effect/
 ├── shared/          # utilities used by every scout
 │   └── nethttp.py   # SEC and ASX HTTP
-└── scouts/
+├── Centurions/      # research leads past the threshold into theses
+├── Praetorians/     # attack each thesis
+└── Scouts/
     ├── accumulation/   # 13D/13G and ASX substantial holder notices
     ├── orders-backlog/ # customer backlog and supplier orders, one table
     ├── debt-raise/     # use-of-proceeds gate for loans, facilities, and bonds
@@ -16,7 +18,7 @@ cause-n-effect/
     └── capex/          # big spenders' capex → 2nd/3rd-tier suppliers
 ```
 
-`scouts/capex` describes purpose only until that scout's software is added. Each other scout keeps its fetcher, parser, and tests in its own folder. Behaviour that used to sit in the top-level README (form types, filters, and what is flagged for the Legate) is in that scout's README.
+`Scouts/capex` describes purpose only until that scout's software is added. Each other scout keeps its fetcher, parser, and tests in its own folder. Behaviour that used to sit in the top-level README (form types, filters, and what is flagged for the Legate) is in that scout's README.
 
 ## Environment
 
@@ -33,15 +35,15 @@ Every SEC and ASX request goes through `shared/nethttp.py`. The client spaces re
 Run from the repository root. These use fixtures and do not open a network connection.
 
 ```bash
-python3 -m unittest discover -s scouts/accumulation/tests -t .
-python3 scouts/orders-backlog/tests/test_orders_backlog.py
-python3 scouts/debt-raise/tests/test_debt_raise.py
-python3 scouts/insider-buying/tests/test_insider_buying.py
+python3 -m unittest discover -s Scouts/accumulation/tests -t .
+python3 Scouts/orders-backlog/tests/test_orders_backlog.py
+python3 Scouts/debt-raise/tests/test_debt_raise.py
+python3 Scouts/insider-buying/tests/test_insider_buying.py
 ```
 
 Debt-raise also has a report and a live entry point. The live script writes its database under `/tmp`. If `SEC_CONTACT_EMAIL` is unset it prints that and does not send an SEC request; the ASX watchlist still runs.
 
 ```bash
-python3 scouts/debt-raise/report.py --db history.sqlite
-python3 scouts/debt-raise/live.py
+python3 Scouts/debt-raise/report.py --db history.sqlite
+python3 Scouts/debt-raise/live.py
 ```

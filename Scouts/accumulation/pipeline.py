@@ -2,9 +2,9 @@
 
 import json
 
-from scouts.accumulation.fetcher import collect_asx, collect_sec, fetch_ticker_map
-from scouts.accumulation.filters import ScreenConfig, screen
-from scouts.accumulation.parser import parse_document
+from Scouts.accumulation.fetcher import collect_asx, collect_sec, fetch_ticker_map
+from Scouts.accumulation.filters import ScreenConfig, screen
+from Scouts.accumulation.parser import parse_document
 
 
 def analyse(documents, config=None, ticker_by_cik=None, sectors=None):

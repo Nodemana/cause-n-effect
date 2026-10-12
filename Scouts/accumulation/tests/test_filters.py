@@ -3,8 +3,8 @@
 import unittest
 from datetime import date
 
-from scouts.accumulation.filters import ScreenConfig, has_activist_purpose, screen
-from scouts.accumulation.model import Position
+from Scouts.accumulation.filters import ScreenConfig, has_activist_purpose, screen
+from Scouts.accumulation.model import Position
 
 AS_OF = date(2026, 10, 1)
 SECTORS = {"NWND": "materials", "BRMB": "health", "CPRL": "materials"}

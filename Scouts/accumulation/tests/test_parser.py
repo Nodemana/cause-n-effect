@@ -4,8 +4,8 @@ import json
 import pathlib
 import unittest
 
-from scouts.accumulation.model import Document
-from scouts.accumulation.parser import parse_document
+from Scouts.accumulation.model import Document
+from Scouts.accumulation.parser import parse_document
 
 FIX = pathlib.Path(__file__).resolve().parents[1] / "fixtures"
 

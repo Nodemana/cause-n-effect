@@ -7,8 +7,8 @@ client is omitted, the call uses shared.nethttp.sec_client or asx_client.
 import re
 import urllib.parse
 
-from scouts.accumulation.forms import SEC_FORM_TYPES
-from scouts.accumulation.model import Document
+from Scouts.accumulation.forms import SEC_FORM_TYPES
+from Scouts.accumulation.model import Document
 from shared.nethttp import EndpointError, asx_client, sec_client
 
 EFTS_URL = "https://efts.sec.gov/LATEST/search-index"

@@ -3,7 +3,7 @@
 from datetime import date, timedelta
 import re
 
-from scouts.accumulation.model import norm_acn, norm_cik, norm_name, position_dict
+from Scouts.accumulation.model import norm_acn, norm_cik, norm_name, position_dict
 
 # Item 4 language that asserts a control purpose. Boilerplate denials are not a match.
 ACTIVIST_PHRASES = (
