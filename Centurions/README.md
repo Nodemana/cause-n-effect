@@ -1,18 +1,16 @@
 # Centurions
 
-Centurions are thesis researchers. The rules file is the structure. Inside it, a Centurion works on its own: it researches one lead, individual or merged, from the sources through to a final investment recommendation.
+Centurions are thesis researchers. The rules file is the structure. Inside it, a Centurion works on its own and writes one thesis for one lead.
 
-## How a lead arrives
+A Centurion is always spun up with one lead. On the first pass the second input is the rules file for that lead's type. Scouts do not merge leads, and this pass does not receive a merged lead.
 
-**Individual.** One scout produced the lead. The Centurion is given two things: the rules file for that lead's type, and the lead.
+## First pass
 
-**Merged.** The merge to prioritise is cross-company capex-to-backlog. A capex lead on the buyer (the company spending the money) and an orders_backlog lead on a different company (the supplier receiving those orders) are the same money in two scouts. When that pairing is detected, the Legate merges the two into one combined lead for a single Centurion.
+One scout produced the lead. The Centurion researches only that lead.
 
-Any merge, and that pairing especially, needs traceable evidence that links the two leads. Enough evidence is the buyer's capex filing naming the supplier, the supplier's filing naming the customer or contract, or another official-source link between the two companies' filings. A bare sector match is not enough. The linking evidence is stored on the `legate_merges` row (`rationale`). `survivor_lead_id` is the combined lead; the constituent lead ids are in `legate_merge_leads`.
-
-Same-company merges of supportive leads stay allowed, on that same evidence rule. They are not the merge to prioritise.
-
-The Centurion is given the rules file for each constituent lead type, plus the merged lead. A merged lead is still one lead. Grading, the thesis, the ROI, the risks, the timeframe, the recommendation, and the assumptions are each produced once.
+- A `capex` Centurion works out what the capex is actually being spent on, and which suppliers the spending reaches.
+- An `orders_backlog` Centurion works out where the backlog has come from, and which customers placed the orders.
+- A `debt_raise`, `accumulation`, or `insider_buying` Centurion researches that lead only.
 
 Lead types, one rules file each:
 
@@ -27,17 +25,24 @@ Path: `Centurions/rules/<lead_type>.md` (for example `Centurions/rules/capex.md`
 ## What each rules file contains
 
 1. The criteria for that lead type.
-2. Instructions to grade the lead against those criteria.
-3. Instructions to research and write an investment thesis on how a return can actually be achieved, including the potential ROI.
+2. Instructions to grade this lead against those criteria.
+3. Instructions to research this lead and write an investment thesis on how a return can actually be achieved, including the potential ROI. The capex file tells the Centurion to name what the spending is on and which suppliers. The orders_backlog file tells the Centurion to name which customers the orders came from.
 4. Instructions to estimate the timeframe: how long the thesis should take to play out.
 5. Instructions to set out the risks.
 6. Instructions to close with one recommendation and a full list of assumptions.
+7. Instructions for a return pass: if this lead is the single new lead the Legate formed from a merge, still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list.
 
 Figures come only from official sources: SEC filings, ASX announcements, and company releases.
 
+## Return pass
+
+Merging happens only at the Legate, after the individual theses exist, and only when the research shows a link. The merge to prioritise is cross-company capex-to-backlog: the buyer's capex thesis with a different company's orders_backlog thesis. Same-company merges of supportive theses are allowed. The link has to be traceable official-source evidence from that research, stored in `legate_merges.rationale`. A sector match is not enough. The Centurion does not make that merge.
+
+The Legate then sends each merged finding back as one new lead. One Centurion runs a fresh full pass on that lead alone: grade, thesis, potential ROI, risks, timeframe, and stated assumptions. The rules files for the constituent lead types are the grading criteria for that one lead. The output is still one thesis.
+
 ## Job
 
-1. Grade the lead against the criteria. On a merged lead, grade each constituent type's criteria.
+1. Grade this lead against the criteria in its rules file. On a return pass, grade each constituent type's criteria once.
 2. Research and write the investment thesis, including the potential ROI.
 3. Estimate the timeframe.
 4. Set out the risks.
@@ -53,11 +58,11 @@ The recommendation is the conclusion. It answers:
 - the risks
 - how long it will take
 
-It is a recommendation for the Imperator. He places the trades himself. The write-up, recommendation plus assumptions, goes to the Praetorians for critique before the Legate ranks it.
+It is a recommendation for the Imperator. He places the trades himself. The final thesis, recommendation plus assumptions, goes to the Praetorians. They critique unmerged individual theses and the new theses from the return pass. The Legate ranks after that critique.
 
 ## Assumptions
 
-The Assumptions section lists every assumption made while researching and forming the thesis, not only the ones behind the recommendation. The Praetorians use that list to pull the thesis apart.
+The Assumptions section lists every assumption made while researching and forming the thesis, not only the ones behind the recommendation. The Praetorians use that list to pull the thesis apart. They do not add an assumptions list of their own.
 
 ## Rules file skeleton
 
@@ -70,11 +75,14 @@ The Assumptions section lists every assumption made while researching and formin
 
 ## Grade
 
-Grade this lead against each criterion above. Pass or fail, with the figure and its source. If this lead was merged with other types, grade this file's criteria only. The thesis, ROI, risks, timeframe, recommendation, and assumptions are still written once for the merged lead.
+Grade this lead only, against each criterion above. Pass or fail, with the figure and its source.
 
 ## Thesis and ROI
 
-Research how a return on investment can actually be achieved. State the potential ROI. Carry the lead through to one conclusion.
+Research this lead only. State how a return on investment can actually be achieved, and the potential ROI.
+For capex: work out what the spending is actually on, and which suppliers.
+For orders_backlog: work out where the backlog came from, and which customers.
+Carry the lead through to one conclusion.
 
 ## Timeframe
 
@@ -93,6 +101,8 @@ State where to put the money (instrument or ticker), the expected return, the ri
 List every assumption made while researching and forming the thesis.
 
 Figures only from SEC filings, ASX announcements, and company releases.
+
+If this lead is the single new lead from a Legate merge, still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list.
 ```
 
 ## Expected output
