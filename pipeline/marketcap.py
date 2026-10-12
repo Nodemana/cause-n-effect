@@ -12,7 +12,7 @@ reject. A cap that is known and below the rubric threshold is still a reject.
 from shared.shares import SHARES_TYPES
 PRICE_TYPES = ("share_price", "closing_price", "stock_price")
 _OFFICIAL_TYPES = {"filing", "company_release", "asx_announcement"}
-_OFFICIAL_HOSTS = ("sec.gov", "asx.com.au")
+_OFFICIAL_HOSTS = ("sec.gov", "asx.com.au", "asx.api.markitdigital.com")
 
 
 UNVERIFIED = "market cap unverified"

@@ -207,15 +207,22 @@ def _significance(prompt):
     else:
         magnitude = "moderate"
         magnitude_rationale = f"The stored figure {value:g} clears the threshold and sits under the large bar."
-    if "low-signal" in text or "routine" in text or _field(prompt, "EARLIER_SIMILAR") == "yes":
+    if (
+        "low-signal" in text
+        or "routine" in text
+        or _field(prompt, "EARLIER_FIGURE") == "yes"
+        or _field(prompt, "EARLIER_SIMILAR") == "yes"
+    ):
         novelty = "routine"
-        if _field(prompt, "EARLIER_SIMILAR") == "yes":
+        if _field(prompt, "EARLIER_FIGURE") == "yes":
+            novelty_rationale = "An earlier figure of this type is already stored for the ticker."
+        elif _field(prompt, "EARLIER_SIMILAR") == "yes":
             novelty_rationale = "An earlier period stores a similar value, so this print is routine."
         else:
             novelty_rationale = "The stored text marks this as routine rather than a first occurrence."
     else:
         novelty = "first"
-        novelty_rationale = "No earlier period stores a similar value."
+        novelty_rationale = "No earlier figure of this type is stored for the ticker."
     if "already noticed" in text:
         attention = "noticed"
         attention_rationale = "The stored text says this item was already noticed."
@@ -223,15 +230,21 @@ def _significance(prompt):
         attention = "unnoticed"
         attention_rationale = "No media note is stored on the figure, so attention stays unnoticed."
     age = _age_days(prompt)
-    if "after earnings" in text or (age is not None and age > 120):
+    if "after earnings" in text:
         timing = "late"
-        if age is not None and age > 120:
-            timing_rationale = f"The period is {age} days old, past the 120 day staleness line."
+        timing_rationale = "The stored text places this after earnings."
+    elif age is None or age > 120:
+        timing = "late"
+        if age is None:
+            timing_rationale = "No event date is stored, so timing stays in the late band."
         else:
-            timing_rationale = "The stored text places this after earnings."
-    else:
+            timing_rationale = f"The event is {age:g} days before the sweep, past the 120 day late band."
+    elif age <= 45:
         timing = "early"
-        timing_rationale = "The period is inside 120 days and no earnings-date note is stored."
+        timing_rationale = f"The event is {age:g} days before the sweep, inside the 45 day early band."
+    else:
+        timing = "on_time"
+        timing_rationale = f"The event is {age:g} days before the sweep, inside the 46 to 120 day band."
     return {
         "magnitude": magnitude,
         "magnitude_rationale": magnitude_rationale,
@@ -244,13 +257,6 @@ def _significance(prompt):
     }
 
 
-_ROI = {
-    "capex": 18,
-    "orders_backlog": 14,
-    "debt_raise": 11,
-    "insider_buying": 9,
-    "accumulation": 10,
-}
 _TIMEFRAME = {
     "capex": 365,
     "orders_backlog": 180,
@@ -260,6 +266,27 @@ _TIMEFRAME = {
 }
 
 
+def _expected_return(lead_type, value):
+    """Percent return from the figure's magnitude, not a fixed number per lead type."""
+    bar = float(_LARGE.get(lead_type or "capex", 1))
+    amount = value or 0
+    if amount >= bar:
+        return 24
+    if amount >= bar / 10:
+        return 12
+    return 6
+
+
+def _constituent_value(item, fallback):
+    raw = item.get("value")
+    try:
+        if raw is None or raw == "":
+            return fallback
+        return float(raw)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _centurion(prompt):
     lead_type = _field(prompt, "LEAD_TYPE") or "capex"
     ticker = _field(prompt, "TICKER")
@@ -267,12 +294,14 @@ def _centurion(prompt):
     constituents = _constituents(prompt)
     suppliers, customers, buyers = _parties(prompt, constituents)
     grades = _grades(prompt)
+    value = _optional_float(_field(prompt, "VALUE")) or 0
     if pass_number == "2" and constituents:
-        roi = max(_ROI.get(item.get("lead_type"), 8) for item in constituents) + 3
+        roi = max(_expected_return(item.get("lead_type") or lead_type, _constituent_value(item, value)) for item in constituents)
+        roi += 3
         timeframe = min(_TIMEFRAME.get(item.get("lead_type"), 365) for item in constituents)
         price_run = _price_run(constituents)
     else:
-        roi = _ROI.get(lead_type, 8)
+        roi = _expected_return(lead_type, value)
         timeframe = _TIMEFRAME.get(lead_type, 180)
         price_run = None
     risks = _risks(lead_type, price_run)
@@ -501,6 +530,19 @@ def _grade_issues(thesis):
     return found
 
 
+def _official_citation(thesis):
+    text = (thesis or "").casefold()
+    marks = (
+        "sec.gov",
+        "asx.com.au",
+        "asx.api.markitdigital.com",
+        "company release",
+        "asx announcement",
+        "asx_announcement",
+    )
+    return any(mark in text for mark in marks)
+
+
 def _praetorian(prompt):
     price_run = _field(prompt, "PRICE_RUN")
     thesis = _block(prompt, "THESIS")
@@ -527,7 +569,7 @@ def _praetorian(prompt):
         stance = ""
         counterevidence = ""
         issues = 0
-    if "sec.gov" in thesis or "asx.com.au" in thesis or "company release" in thesis.casefold():
+    if _official_citation(thesis):
         bad_sources = ""
     else:
         bad_sources = "The thesis does not cite an SEC filing, an ASX announcement, or a company release."

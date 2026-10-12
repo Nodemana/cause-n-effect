@@ -224,6 +224,7 @@ def _lead_from_candidate(candidate, rating):
     lead.grade_types = [candidate.lead_type]
     lead.parties = list(candidate.parties)
     lead.market_cap_unverified = bool(getattr(figure, "market_cap_unverified", False))
+    lead.growth_unverified = bool(getattr(figure, "growth_unverified", False))
     return lead
 
 
@@ -282,6 +283,8 @@ def _hard_grade_reason(lead):
         seen.add(name)
         if _unverified_grade(lead, name, grade.get("evidence")):
             continue
+        if _open_growth_grade(lead, name, grade.get("evidence")):
+            continue
         if grade.get("passed"):
             evidence = _text(grade.get("evidence")).lower()
             if evidence in {"", "missing", "missing evidence", "not graded"}:
@@ -292,10 +295,20 @@ def _hard_grade_reason(lead):
     for criterion in thesis.criteria or []:
         name = criterion.get("name")
         if name in HARD_CRITERIA and name not in seen:
-            if _unverified_grade(lead, name, ""):
+            if _unverified_grade(lead, name, "") or _open_growth_grade(lead, name, ""):
                 continue
             failed.append(f"failed {name}: missing evidence")
     return "; ".join(failed)
+
+
+def _open_growth_grade(lead, name, evidence):
+    """A large order with no stored prior is a surviving issue, not a hard reject."""
+    if name != "backlog_qoq_growth" or not getattr(lead, "growth_unverified", False):
+        return False
+    text = _text(evidence).lower()
+    if text in {"", "missing", "missing evidence", "not graded"}:
+        return True
+    return "no prior" in text
 
 
 def _unverified_grade(lead, name, evidence):
@@ -339,6 +352,11 @@ def _merge(conn, provider, budget, leads, macro):
         lead.market_cap_unverified = bool(
             getattr(primary, "market_cap_unverified", False)
             or getattr(primary.figure, "market_cap_unverified", False)
+        )
+        lead.growth_unverified = any(
+            getattr(member, "growth_unverified", False)
+            or getattr(member.figure, "growth_unverified", False)
+            for member in members
         )
         criteria = store.criteria_for(conn, lead.grade_types)
         constituents = [_constituent_payload(member) for member in members]
@@ -709,6 +727,7 @@ def _constituent_payload(lead):
         "company": lead.company or "",
         "figure_type": figure.figure_type,
         "instrument": figure.instrument,
+        "value": figure.value,
         "value_text": figure.value_text,
         "source_url": lead.source_url or "",
         "suppliers": lead.thesis.suppliers,

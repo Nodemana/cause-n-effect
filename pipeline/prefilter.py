@@ -4,6 +4,7 @@ import re
 from datetime import date
 
 from pipeline.load import (
+    CAPEX_TYPES,
     ORDER_TYPES,
     as_of,
     classify,
@@ -12,6 +13,7 @@ from pipeline.load import (
     extract_cik,
     filing_date,
     period_end,
+    period_span_days,
 )
 from pipeline.marketcap import criterion_threshold, resolve_market_cap
 from pipeline.names import normalise_name
@@ -29,6 +31,17 @@ IMPLAUSIBLE_RATIO = 0.10
 ACCUMULATION_WINDOW_DAYS = 90
 STALE_PERIOD_DAYS = 120
 SIMILAR_VALUE_BAND = 0.20
+# A year-ago quarter is the same span whose period ends 365±10 days earlier.
+YOY_WINDOW = (355, 375, 365)
+# A prior quarter-end is about 90 days earlier. Fiscal quarters vary.
+QUARTER_WINDOW = (70, 120, 90)
+SPAN_SLACK_DAYS = 15
+# Same dollar bar the stub uses for a large orders figure.
+ORDER_LARGE_VALUE = 100_000_000
+_COMPANYFACTS_BACKLOG = {
+    "RevenueRemainingPerformanceObligation",
+    "BacklogOfOrders",
+}
 _SPAN_RANK = {"quarter": 0, "ttm": 1, "ytd": 2, "annual": 3, "instant": 4}
 _METRIC_LABELS = {"orders", "order", "backlog", "revenue"}
 _COMPANY_TOTALS = _METRIC_LABELS | {
@@ -314,12 +327,16 @@ def _threshold(conn, figure, lead_type, now=None):
     growth, compared = _growth_reason(conn, figure, lead_type)
     figure.prior_comparison = compared
     if lead_type in {"capex", "orders_backlog"} and not compared:
-        label = "capex_growth_yoy" if lead_type == "capex" else "backlog_qoq_growth"
-        reason = f"{label}: no prior comparison in the figures table"
-        return reason, _magnitude(reason)
+        if getattr(figure, "growth_unverified", False):
+            pass
+        else:
+            label = "capex_growth_yoy" if lead_type == "capex" else "backlog_qoq_growth"
+            reason = f"{label}: no prior comparison in the figures table"
+            return reason, _magnitude(reason)
     if growth:
         return growth, _magnitude(growth)
     figure.earlier_similar = _earlier_similar(conn, figure)
+    figure.earlier_type = _earlier_type(conn, figure)
     figure.period_age_days = _period_age_days(figure, now)
     return None, None
 
@@ -503,14 +520,25 @@ def _outside_window(figure):
 
 
 def _growth_reason(conn, figure, lead_type):
+    """Compare a figure with an earlier one of the same span.
+
+    Capex matches a period that ends 365±10 days earlier. The instrument
+    string and the period's exact formatting do not have to match, and a
+    different capex tag still counts. Backlog matches a prior quarter-end
+    or a year-ago end, including companyfacts history stored under another
+    instrument. A large order with none of those stays in the sweep as an
+    open growth question instead of a reject.
+    """
     if lead_type == "capex":
-        window = (300, 430)
+        windows = (YOY_WINDOW,)
         need = CAPEX_GROWTH_PCT
         label = "capex_growth_yoy"
+        require_span = True
     elif lead_type == "orders_backlog":
-        window = (70, 120)
+        windows = (QUARTER_WINDOW, YOY_WINDOW)
         need = BACKLOG_GROWTH_PCT
         label = "backlog_qoq_growth"
+        require_span = False
     else:
         return None, False
     end = period_end(figure.period)
@@ -518,29 +546,78 @@ def _growth_reason(conn, figure, lead_type):
         return None, False
     rows = conn.execute(
         """
-        SELECT figure_id, value, period
+        SELECT figure_id, value, period, figure_type, source_type
         FROM figures
-        WHERE ticker = ? AND figure_type = ? AND instrument = ? AND figure_id != ?
-          AND value IS NOT NULL
+        WHERE ticker = ? AND figure_id != ? AND value IS NOT NULL AND value != 0
         """,
-        (figure.ticker, figure.figure_type, figure.instrument, figure.figure_id),
+        (figure.ticker, figure.figure_id),
     ).fetchall()
-    best = None
-    for row in rows:
-        prior_end = period_end(row["period"])
-        if prior_end is None or row["value"] in (None, 0):
-            continue
-        days = (end - prior_end).days
-        if window[0] <= days <= window[1]:
-            distance = abs(days - ((window[0] + window[1]) / 2))
-            if best is None or distance < best[0]:
-                best = (distance, row["value"])
+    span = period_span_days(figure.period)
+    best = _pick_prior(rows, lead_type, end, span, windows, require_span)
+    if best is None and lead_type == "orders_backlog" and figure.value >= ORDER_LARGE_VALUE:
+        figure.growth_unverified = True
+        return None, False
     if best is None:
         return None, False
-    growth = 100.0 * (figure.value - best[1]) / abs(best[1])
+    growth = 100.0 * (figure.value - best) / abs(best)
     if growth < need:
         return f"below {label} threshold {need:g} percent", True
     return None, True
+
+
+def _pick_prior(rows, lead_type, end, span, windows, require_span):
+    best = None
+    for row in rows:
+        if not _growth_family(row, lead_type):
+            continue
+        prior_end = period_end(row["period"])
+        if prior_end is None:
+            continue
+        prior_span = period_span_days(row["period"])
+        if require_span:
+            if span is None or prior_span is None or abs(span - prior_span) > SPAN_SLACK_DAYS:
+                continue
+        elif span is not None and prior_span is not None and abs(span - prior_span) > SPAN_SLACK_DAYS:
+            continue
+        days = (end - prior_end).days
+        for low, high, target in windows:
+            if not (low <= days <= high):
+                continue
+            # A prior quarter outranks a year-ago row when both exist.
+            rank = (0 if target < 200 else 1, abs(days - target))
+            if best is None or rank < best[0]:
+                best = (rank, row["value"])
+    if best is None:
+        return None
+    return best[1]
+
+
+def _growth_family(row, lead_type):
+    figure_type = row["figure_type"] or ""
+    if lead_type == "capex":
+        return figure_type in CAPEX_TYPES
+    if figure_type in ORDER_TYPES or figure_type in _COMPANYFACTS_BACKLOG:
+        return True
+    return (row["source_type"] or "") == "xbrl_company_facts"
+
+
+def _earlier_type(conn, figure):
+    """True when this ticker already has this figure type in another period.
+
+    A re-stored copy of the same period is not an earlier figure.
+    """
+    rows = conn.execute(
+        """
+        SELECT period FROM figures
+        WHERE ticker = ? AND figure_type = ? AND figure_id != ?
+        """,
+        (figure.ticker, figure.figure_type, figure.figure_id),
+    ).fetchall()
+    period = figure.period or ""
+    for row in rows:
+        if (row["period"] or "") != period:
+            return True
+    return False
 
 
 def _dedupe_batch(candidates):
