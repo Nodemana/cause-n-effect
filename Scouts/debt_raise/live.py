@@ -2,10 +2,14 @@
 nonzero when this run stores none.
 
     python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite
+    python3 -m Scouts.debt_raise.live --tickers AMZN,ORCL,MSFT --since 2025-10-12 --limit 50
 
 SEC is contacted only when SEC_CONTACT_EMAIL is set. When it is missing, this
 script stops before any SEC request and still runs the ASX watchlist.
 `--sec-fixture FILE --no-asx` scores a recorded filings JSON instead of the network.
+
+Tickers are resolved to CIKs and the EDGAR search is filtered with the ciks
+parameter. A 424B hit with no ticker in the index is labeled from that CIK.
 """
 
 import json
@@ -26,12 +30,52 @@ import pipeline  # noqa: E402
 
 UNIVERSE = _HERE / "universe_asx.json"
 DEFAULT_DB = Path("/tmp/cause-n-effect-debt-live.sqlite")
+DEFAULT_LIMIT = 50
 
 
 def sec_block_message():
     if os.environ.get("SEC_CONTACT_EMAIL", "").strip():
         return None
     return "SEC_CONTACT_EMAIL is missing. No SEC request was sent."
+
+
+def _flag(args, name):
+    if name not in args:
+        return None
+    index = args.index(name)
+    if index + 1 >= len(args) or str(args[index + 1]).startswith("--"):
+        raise SystemExit(f"{name} needs a value")
+    return args[index + 1]
+
+
+def _tickers(args):
+    raw = _flag(args, "--tickers")
+    if raw is None:
+        return None
+    return [part.strip().upper() for part in raw.split(",") if part.strip()]
+
+
+def _limit(args):
+    raw = _flag(args, "--limit")
+    if raw is None:
+        return DEFAULT_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        raise SystemExit("--limit must be an integer") from None
+    if value < 1:
+        raise SystemExit("--limit must be at least 1")
+    return value
+
+
+def _window(args):
+    since = _flag(args, "--since")
+    end = date.today().isoformat()
+    if since:
+        date.fromisoformat(since)
+        return since, end
+    start = (date.today() - timedelta(days=3)).isoformat()
+    return start, end
 
 
 def main(argv=None):
@@ -51,10 +95,15 @@ def main(argv=None):
         if blocked:
             print(blocked)
         else:
-            end = date.today().isoformat()
-            start = (date.today() - timedelta(days=3)).isoformat()
-            print(f"SEC window {start} to {end}, at most 5 in-scope filings")
-            filings.extend(fetcher.collect(start, end, limit=5))
+            start, end = _window(args)
+            limit = _limit(args)
+            tickers = _tickers(args)
+            scope = f" for {', '.join(tickers)}" if tickers else ""
+            print(f"SEC window {start} to {end}, at most {limit} in-scope filings{scope}")
+            found, missing = fetcher.collect_window(start, end, tickers=tickers, limit=limit)
+            if missing:
+                print(f"unmapped tickers: {', '.join(missing)}")
+            filings.extend(found)
     if "--no-asx" not in args:
         companies = json.loads(UNIVERSE.read_text(encoding="utf-8"))["companies"]
         filings.extend(fetcher.collect_asx(companies))

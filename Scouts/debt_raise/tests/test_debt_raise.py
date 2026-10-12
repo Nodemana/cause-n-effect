@@ -7,8 +7,10 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import urllib.parse
 import urllib.request
 from contextlib import redirect_stdout
+from datetime import date
 from pathlib import Path
 
 SCOUT = Path(__file__).resolve().parents[1]
@@ -390,6 +392,219 @@ class DebtRaiseTests(unittest.TestCase):
             applied = again.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
             self.assertEqual(applied, 2)
             again.close()
+
+    def test_ticker_search_filters_by_cik_and_fills_missing_424b_tickers(self):
+        tickers = json.loads((FIX / "company_tickers.json").read_text(encoding="utf-8"))
+        page = json.loads((FIX / "efts_by_cik.json").read_text(encoding="utf-8"))
+        calls = []
+
+        class Fake:
+            def json(self, url):
+                calls.append(url)
+                if url.startswith(fetcher.TICKERS_URL):
+                    return tickers
+                if "efts.sec.gov" in url:
+                    if "from=0" not in url:
+                        raise AssertionError(url)
+                    return page
+                raise AssertionError(url)
+
+            def get(self, url, accept=""):
+                raise AssertionError("full document during collect")
+
+        filings, missing = fetcher.collect_window(
+            "2025-10-12",
+            "2026-10-12",
+            tickers=["amzn", "ORCL", "MSFT", "NOPE"],
+            client=Fake(),
+            limit=50,
+        )
+        self.assertEqual(missing, ["NOPE"])
+        self.assertEqual(
+            [row["accession"] for row in filings],
+            [
+                "0001018724-25-900001",
+                "0001341439-25-900002",
+                "0000789019-25-900003",
+                "0001018724-25-900004",
+                "0001341439-25-900005",
+                "0000789019-25-900006",
+            ],
+        )
+        by_acc = {row["accession"]: row for row in filings}
+        self.assertEqual(by_acc["0001018724-25-900001"]["ticker"], "AMZN")
+        self.assertEqual(by_acc["0001018724-25-900001"]["cik"], "0001018724")
+        self.assertNotIn("AMZN", by_acc["0001018724-25-900001"]["summary"])
+        self.assertEqual(by_acc["0001341439-25-900002"]["ticker"], "ORCL")
+        self.assertEqual(by_acc["0000789019-25-900003"]["ticker"], "MSFT")
+        self.assertEqual(by_acc["0000789019-25-900003"]["form"], "424B5")
+        self.assertEqual(by_acc["0001341439-25-900005"]["ticker"], "ORCL")
+        self.assertEqual(by_acc["0000789019-25-900006"]["items"], ["2.03"])
+        prospectus = [
+            hit
+            for hit in page["hits"]["hits"]
+            if str(hit["_source"]["form"]).startswith("424B2")
+        ]
+        self.assertEqual(len(prospectus), 5)
+        missing_display = [
+            hit
+            for hit in prospectus
+            if fetcher.ticker_from_display(hit["_source"]["display_names"]) is None
+        ]
+        self.assertEqual(len(missing_display), 4)
+
+        self.assertTrue(calls[0].startswith(fetcher.TICKERS_URL))
+        efts_urls = [url for url in calls if "efts.sec.gov" in url]
+        self.assertEqual(len(efts_urls), 1)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(efts_urls[0]).query)
+        self.assertNotIn("q", query)
+        self.assertNotIn("*", efts_urls[0])
+        self.assertNotIn("AMZN", efts_urls[0])
+        self.assertEqual(query["startdt"], ["2025-10-12"])
+        self.assertEqual(query["enddt"], ["2026-10-12"])
+        self.assertEqual(
+            query["ciks"],
+            ["0001018724,0001341439,0000789019"],
+        )
+        forms = query["forms"][0].split(",")
+        self.assertIn("8-K", forms)
+        self.assertIn("424B2", forms)
+        self.assertIn("424B5", forms)
+        self.assertNotIn("8-K/A", forms)
+        self.assertNotIn("8-K/A", fetcher.FORMS)
+
+    def test_cik_search_stops_at_limit_without_another_page(self):
+        tickers = json.loads((FIX / "company_tickers.json").read_text(encoding="utf-8"))
+        page = json.loads((FIX / "efts_by_cik.json").read_text(encoding="utf-8"))
+        page["hits"]["total"]["value"] = 500
+        calls = []
+
+        class Fake:
+            def json(self, url):
+                calls.append(url)
+                if url.startswith(fetcher.TICKERS_URL):
+                    return tickers
+                if "efts.sec.gov" in url:
+                    if "from=0" not in url:
+                        raise AssertionError(url)
+                    return page
+                raise AssertionError(url)
+
+            def get(self, url, accept=""):
+                raise AssertionError("full document during collect")
+
+        filings, missing = fetcher.collect_window(
+            "2025-10-12",
+            "2026-10-12",
+            tickers=["AMZN", "ORCL", "MSFT"],
+            client=Fake(),
+            limit=2,
+        )
+        self.assertEqual(missing, [])
+        self.assertEqual(
+            [row["ticker"] for row in filings],
+            ["AMZN", "ORCL"],
+        )
+        self.assertEqual(len([url for url in calls if "efts.sec.gov" in url]), 1)
+
+    def test_unknown_ticker_does_not_search_edgar(self):
+        tickers = json.loads((FIX / "company_tickers.json").read_text(encoding="utf-8"))
+        calls = []
+
+        class Fake:
+            def json(self, url):
+                calls.append(url)
+                if url.startswith(fetcher.TICKERS_URL):
+                    return tickers
+                raise AssertionError(url)
+
+            def get(self, url, accept=""):
+                raise AssertionError(url)
+
+        filings, missing = fetcher.collect_window(
+            "2025-10-12",
+            "2026-10-12",
+            tickers=["NOPE"],
+            client=Fake(),
+        )
+        self.assertEqual(filings, [])
+        self.assertEqual(missing, ["NOPE"])
+        self.assertEqual(calls, [fetcher.TICKERS_URL])
+
+    def test_live_forwards_tickers_since_and_limit_without_a_socket(self):
+        import live
+
+        seen = {}
+
+        def collect_window(start, end, tickers=None, client=None, limit=None):
+            seen.update(start=start, end=end, tickers=tickers, client=client, limit=limit)
+            return [], []
+
+        original_collect = fetcher.collect_window
+        original_block = live.sec_block_message
+        fetcher.collect_window = collect_window
+        live.sec_block_message = lambda: None
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                code = live.main(
+                    [
+                        "--db",
+                        str(Path(tmp) / "history.sqlite"),
+                        "--tickers",
+                        "AMZN,ORCL,MSFT",
+                        "--since",
+                        "2025-10-12",
+                        "--limit",
+                        "40",
+                        "--no-asx",
+                    ]
+                )
+                self.assertEqual(code, 1)
+                self.assertEqual(seen["start"], "2025-10-12")
+                self.assertEqual(seen["end"], date.today().isoformat())
+                self.assertEqual(seen["tickers"], ["AMZN", "ORCL", "MSFT"])
+                self.assertEqual(seen["limit"], 40)
+                self.assertIsNone(seen["client"])
+                seen.clear()
+                live.main(["--db", str(Path(tmp) / "default.sqlite"), "--no-asx"])
+                self.assertEqual(seen["limit"], live.DEFAULT_LIMIT)
+                self.assertEqual(seen["limit"], 50)
+                self.assertIsNone(seen["tickers"])
+                start = date.fromisoformat(seen["start"])
+                end = date.fromisoformat(seen["end"])
+                self.assertEqual((end - start).days, 3)
+        finally:
+            fetcher.collect_window = original_collect
+            live.sec_block_message = original_block
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
+
+    def test_live_tickers_without_contact_sends_nothing(self):
+        import live
+
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = live.main(
+                        [
+                            "--db",
+                            str(Path(tmp) / "history.sqlite"),
+                            "--tickers",
+                            "AMZN,ORCL,MSFT",
+                            "--since",
+                            "2025-10-12",
+                            "--no-asx",
+                        ]
+                    )
+                self.assertEqual(code, 1)
+                self.assertIn("SEC_CONTACT_EMAIL is missing", buffer.getvalue())
+                self.assertIn("No filings to score.", buffer.getvalue())
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
 
     def test_live_fixture_stores_a_figure_and_empty_run_exits_nonzero(self):
         import live
