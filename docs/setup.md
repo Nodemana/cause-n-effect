@@ -12,9 +12,9 @@ cause-n-effect/
 ├── Praetorians/     # attack each thesis
 └── Scouts/
     ├── accumulation/   # 13D/13G and ASX substantial holder notices
-    ├── orders-backlog/ # customer backlog and supplier orders, one table
-    ├── debt-raise/     # use-of-proceeds gate for loans, facilities, and bonds
-    ├── insider-buying/ # Form 4 and ASX Appendix 3Y open-market buys
+    ├── orders_backlog/ # customer backlog and supplier orders, one table
+    ├── debt_raise/     # use-of-proceeds gate for loans, facilities, and bonds
+    ├── insider_buying/ # Form 4 and ASX Appendix 3Y open-market buys
     └── capex/          # big spenders' capex → 2nd/3rd-tier suppliers
 ```
 
@@ -36,9 +36,9 @@ Run from the repository root. These use fixtures and do not open a network conne
 
 ```bash
 python3 -m unittest discover -s Scouts/accumulation/tests -t .
-python3 Scouts/orders-backlog/tests/test_orders_backlog.py
-python3 Scouts/debt-raise/tests/test_debt_raise.py
-python3 Scouts/insider-buying/tests/test_insider_buying.py
+python3 Scouts/orders_backlog/tests/test_orders_backlog.py
+python3 Scouts/debt_raise/tests/test_debt_raise.py
+python3 Scouts/insider_buying/tests/test_insider_buying.py
 python3 Scouts/capex/tests/test_capex.py
 ```
 
@@ -57,13 +57,13 @@ python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite
 Offline SEC checks use a fixture instead of EDGAR and do not open a network connection:
 
 ```bash
-python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/debt-raise/fixtures/sec_check.json --no-asx
-python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/insider-buying/fixtures/sec_form4_ceo.xml --no-asx
+python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/debt_raise/fixtures/sec_check.json --no-asx
+python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/insider_buying/fixtures/sec_form4_ceo.xml --no-asx
 python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/capex/fixtures/companyfacts_amzn.json --no-asx
 ```
 
 Debt-raise can print the threshold histogram for a database that already has a run:
 
 ```bash
-python3 Scouts/debt-raise/report.py --db /tmp/cause-n-effect.sqlite
+python3 Scouts/debt_raise/report.py --db /tmp/cause-n-effect.sqlite
 ```

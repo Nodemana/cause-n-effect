@@ -1,4 +1,4 @@
-# debt-raise
+# debt_raise
 
 ## What it does
 
@@ -26,7 +26,7 @@ The live command writes this run into the shared figures table. It exits nonzero
 
 ```bash
 python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite
-python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/debt-raise/fixtures/sec_check.json --no-asx
+python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/debt_raise/fixtures/sec_check.json --no-asx
 ```
 
 ## Status

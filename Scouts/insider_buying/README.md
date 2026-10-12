@@ -1,4 +1,4 @@
-# insider-buying
+# insider_buying
 
 ## What it does
 
@@ -26,7 +26,7 @@ The live command writes this run into the shared figures table and exits nonzero
 
 ```bash
 python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite
-python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/insider-buying/fixtures/sec_form4_ceo.xml --no-asx
+python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/insider_buying/fixtures/sec_form4_ceo.xml --no-asx
 ```
 
 ## Status

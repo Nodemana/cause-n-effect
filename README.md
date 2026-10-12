@@ -13,7 +13,7 @@ A Portfolio Manager agent (the Legate) orchestrates the scouts. Python scripts d
 ## Scouts
 1. **Capex**: big spenders' capex, traced to tier-2 and tier-3 suppliers.
 2. **Debt raises**: loans, facilities and bonds, run through a two-stage use-of-proceeds filter with threshold analytics.
-3. **Orders-backlog**: customer-reported backlog plus supplier order announcements.
+3. **orders_backlog**: customer-reported backlog plus supplier order announcements.
 4. **Accumulation**: 13D/13G filings and ASX substantial holder notices.
 5. **Insider buying**: Form 4s and ASX 3Ys, with CEO buys and cluster buying flagged.
 
