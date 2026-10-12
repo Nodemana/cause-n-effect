@@ -1,7 +1,9 @@
 """Build the single orders-backlog table from facts and release text."""
 
 import json
+import re
 import sys
+from datetime import date
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
@@ -10,8 +12,11 @@ for _entry in (str(_REPO), str(_ROOT)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from parser import parse_company_facts, parse_release  # noqa: E402
+from parser import DEFAULT_RECENT_QUARTERS, parse_company_facts, parse_release  # noqa: E402
 from shared.store import connect, dedupe_figures, save_run  # noqa: E402
+
+# A latest period older than this, measured from the run date, is called out.
+DEFAULT_STALE_DAYS = 180
 
 _RECORD_KEYS = (
     "source_side",
@@ -32,7 +37,7 @@ _RECORD_KEYS = (
 )
 
 
-def build_table(customer_facts=(), supplier_facts=(), releases=()):
+def build_table(customer_facts=(), supplier_facts=(), releases=(), max_quarters=DEFAULT_RECENT_QUARTERS):
     """Return one table. Both vantage points use the same columns.
 
     `customer_facts` and `supplier_facts` are (company, payload) pairs.
@@ -41,9 +46,9 @@ def build_table(customer_facts=(), supplier_facts=(), releases=()):
     """
     rows = []
     for company, payload in customer_facts:
-        rows.extend(parse_company_facts(payload, company, "customer_backlog"))
+        rows.extend(parse_company_facts(payload, company, "customer_backlog", max_quarters=max_quarters))
     for company, payload in supplier_facts:
-        rows.extend(parse_company_facts(payload, company, "supplier_order"))
+        rows.extend(parse_company_facts(payload, company, "supplier_order", max_quarters=max_quarters))
     for release in releases:
         rows.extend(
             parse_release(
@@ -78,7 +83,7 @@ def store_run(db_path, table, started_at, notes=None):
     beats a year-to-date value, then the latest filing wins. Drops are logged.
     """
     seen_at = started_at[:10]
-    figures = dedupe_figures(figures_from_records(table.get("records") or [], seen_at))
+    figures = dedupe_figures(keep_distinct_amounts(figures_from_records(table.get("records") or [], seen_at)))
     conn = connect(db_path)
     try:
         run_id = save_run(conn, "orders-backlog", started_at, figures, notes=notes)
@@ -117,6 +122,102 @@ def figures_from_records(records, seen_at):
             }
         )
     return rows
+
+
+def keep_distinct_amounts(figures):
+    """A repeated prose metric collapses. A different amount on that key stays.
+
+    Company-facts rows keep the shared key, so two currencies for one concept
+    still collapse. Orders and backlog from one release do not.
+    """
+    seen = {}
+    for row in figures or []:
+        instrument = row.get("instrument") or ""
+        prose = ":" in instrument or instrument.startswith(("orders", "backlog", "revenue"))
+        if not prose:
+            continue
+        key = (
+            row.get("ticker") or "",
+            row.get("figure_type") or "",
+            instrument,
+            row.get("period") or "",
+        )
+        value = round(float(row.get("value") or 0), 2)
+        prior = seen.get(key)
+        if prior is None:
+            seen[key] = value
+            continue
+        if prior != value:
+            row["instrument"] = f"{instrument}|{value:.0f}"
+    return figures
+
+
+def stale_latest_periods(records, as_of, max_age_days=DEFAULT_STALE_DAYS):
+    """Tickers whose newest stored period ends more than `max_age_days` before `as_of`.
+
+    A sentence that names a date but not an amount is not a period. The rows
+    that do have a value stay in the table. The caller prints the stale ones.
+    """
+    as_of = _as_of(as_of)
+    latest = {}
+    for record in records or []:
+        ticker = record.get("ticker")
+        if record.get("value") is None:
+            continue
+        end = _period_end(record.get("equipment_or_period"))
+        if not ticker or end is None:
+            continue
+        current = latest.get(ticker)
+        if current is None or end > current[0]:
+            latest[ticker] = (end, record)
+    stale = []
+    for ticker, (end, record) in sorted(latest.items()):
+        age = (as_of - end).days
+        if age > int(max_age_days):
+            stale.append({"ticker": ticker, "period": end.isoformat(), "age_days": age, "record": record})
+    return stale
+
+
+def flag_stale_latest(records, as_of, max_age_days=DEFAULT_STALE_DAYS):
+    """Mark each stale latest row and return the tickers for the run output."""
+    stale = stale_latest_periods(records, as_of, max_age_days)
+    for item in stale:
+        record = item["record"]
+        flags = record.setdefault("flags", [])
+        if "stale_period" not in flags:
+            flags.append("stale_period")
+        notes = record.setdefault("notes", [])
+        note = f"stale latest period {item['period']}"
+        if note not in notes:
+            notes.append(note)
+    return stale
+
+
+def report_stale_latest(records, as_of, max_age_days=DEFAULT_STALE_DAYS, stream=None):
+    """Print one line per ticker whose latest period is stale. Returns those rows."""
+    stale = flag_stale_latest(records, as_of, max_age_days)
+    out = stream or sys.stdout
+    for item in stale:
+        print(
+            f"stale latest period ticker={item['ticker']} period={item['period']} age_days={item['age_days']}",
+            file=out,
+        )
+    return stale
+
+
+def _as_of(value):
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+def _period_end(value):
+    text = (value or "").strip()
+    if "|" in text:
+        text = text.split("|", 1)[0].strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return date.fromisoformat(text)
+    return None
 
 
 def _plain(value):

@@ -17,7 +17,20 @@ from shared.nethttp import EndpointError, asx_client, sec_client
 
 EFTS_URL = "https://efts.sec.gov/LATEST/search-index"
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+EXCHANGE_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 ASX_ANN_URL = "https://www.asx.com.au/asx/1/company/{ticker}/announcements"
+_WATCHLIST = Path(__file__).resolve().parent / "universe_sec.json"
+_OTC_EXCHANGES = {
+    "OTC",
+    "OTCBB",
+    "PINK",
+    "GREY",
+    "OTC MARKETS",
+    "OTCMKTS",
+    "OTCQB",
+    "OTCQX",
+    "OTC PINK",
+}
 ASX_API = "https://asx.api.markitdigital.com/asx-research/1.0"
 ASX_CAP = 5
 _UNIVERSE = Path(__file__).resolve().parent / "universe_asx.json"
@@ -95,24 +108,174 @@ def fetch_primary_doc(client, cik, accession):
     return url, _decode(body)
 
 
-def fetch_ticker_map(client=None):
-    """Map a 10-digit issuer CIK to a ticker using the SEC company ticker file."""
+def fetch_ticker_map(client=None, watchlist=None):
+    """Map a 10-digit issuer CIK to one common-stock ticker.
+
+    Warrant, unit, and OTC-only lines are skipped unless that ticker is on
+    the watchlist. When a CIK has both a common line and a warrant, the
+    common line wins. The exchange file is optional; the company ticker file
+    is enough when it already names the common stock.
+    """
     client = client or sec_client()
     _require_sec(TICKERS_URL)
-    return tickers_from_payload(client.json(TICKERS_URL))
+    rows = _ticker_rows(client.json(TICKERS_URL))
+    extra = _optional_json(client, EXCHANGE_URL)
+    if extra:
+        rows.extend(_ticker_rows(extra))
+    return choose_by_cik(rows, watchlist if watchlist is not None else load_watchlist())
 
 
-def tickers_from_payload(payload):
-    mapping = {}
-    for row in (payload or {}).values():
+def load_watchlist(path=None):
+    file = Path(path or _WATCHLIST)
+    if not file.exists():
+        return []
+    payload = json.loads(file.read_text(encoding="utf-8"))
+    found = []
+    for ticker in payload.get("tickers") or []:
+        found.append(ticker)
+    for company in payload.get("companies") or []:
+        if isinstance(company, dict):
+            found.append(company.get("ticker") or "")
+        else:
+            found.append(company)
+    return [str(ticker).strip().upper() for ticker in found if str(ticker).strip()]
+
+
+def tickers_from_payload(payload, watchlist=None):
+    return choose_by_cik(_ticker_rows(payload), watchlist or [])
+
+
+def choose_by_cik(rows, watchlist=None):
+    watch = {str(ticker).strip().upper() for ticker in (watchlist or []) if str(ticker).strip()}
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row["cik"], []).append(row)
+    chosen = {}
+    for cik, listings in grouped.items():
+        ticker = choose_listing(listings, watch)
+        if ticker:
+            chosen[cik] = ticker
+    return chosen
+
+
+def choose_listing(rows, watchlist=None):
+    """Prefer a common-stock ticker. Keep a warrant, unit, or OTC line only when listed."""
+    watch = watchlist if isinstance(watchlist, set) else {
+        str(ticker).strip().upper() for ticker in (watchlist or []) if str(ticker).strip()
+    }
+    commons = []
+    fallback = []
+    seen = set()
+    for row in rows:
+        ticker = (row.get("ticker") or "").upper()
+        if not ticker or ticker in seen:
+            continue
+        seen.add(ticker)
+        kind = classify_ticker(ticker, row.get("exchange"))
+        if kind == "common":
+            commons.append(ticker)
+        elif ticker in watch:
+            fallback.append(ticker)
+    if commons:
+        commons.sort(key=lambda ticker: (len(ticker), ticker))
+        return commons[0]
+    return fallback[0] if fallback else None
+
+
+def classify_ticker(ticker, exchange=None):
+    """common, warrant, unit, or otc. NUAIW is a warrant. FMTOF is OTC foreign."""
+    symbol = (ticker or "").upper().strip()
+    venue = (exchange or "").upper().strip()
+    if not symbol:
+        return "unknown"
+    if _is_warrant(symbol):
+        return "warrant"
+    if _is_unit(symbol):
+        return "unit"
+    if venue in _OTC_EXCHANGES or _is_otc_foreign(symbol):
+        return "otc"
+    return "common"
+
+
+def _is_warrant(symbol):
+    if symbol.endswith(("WS", ".WS", "-WS", "WT", ".WT", "-WT", "WW", ".W", "-W")):
+        return True
+    # Nasdaq warrant lines are the common symbol plus W (NUAIW). A 1-4 letter
+    # name that happens to end in W is left as common stock.
+    return len(symbol) >= 5 and symbol.endswith("W") and symbol[:-1].isalnum()
+
+
+def _is_unit(symbol):
+    if symbol.endswith((".U", "-U", ".UN", "-UN")):
+        return True
+    if symbol.endswith("UN") and len(symbol) >= 4:
+        return True
+    return len(symbol) >= 5 and symbol.endswith("U") and symbol[:-1].isalnum()
+
+
+def _is_otc_foreign(symbol):
+    return len(symbol) == 5 and symbol.endswith("F") and symbol.isalpha()
+
+
+def _ticker_rows(payload):
+    if not payload:
+        return []
+    if isinstance(payload, dict) and "fields" in payload and "data" in payload:
+        return _rows_from_exchange(payload)
+    if isinstance(payload, dict):
+        return _rows_from_company_file(payload)
+    return []
+
+
+def _rows_from_company_file(payload):
+    rows = []
+    for row in payload.values():
+        if not isinstance(row, dict):
+            continue
         try:
             cik = str(int(row["cik_str"])).zfill(10)
         except (KeyError, TypeError, ValueError):
             continue
         ticker = (row.get("ticker") or "").upper()
         if ticker:
-            mapping[cik] = ticker
-    return mapping
+            rows.append({"cik": cik, "ticker": ticker, "exchange": row.get("exchange")})
+    return rows
+
+
+def _rows_from_exchange(payload):
+    fields = [str(name).casefold() for name in (payload.get("fields") or [])]
+    try:
+        cik_at = fields.index("cik")
+        ticker_at = fields.index("ticker")
+    except ValueError:
+        return []
+    exchange_at = fields.index("exchange") if "exchange" in fields else None
+    rows = []
+    for item in payload.get("data") or []:
+        if not isinstance(item, (list, tuple)):
+            continue
+        try:
+            cik = str(int(item[cik_at])).zfill(10)
+        except (TypeError, ValueError, IndexError):
+            continue
+        try:
+            ticker = str(item[ticker_at] or "").upper()
+        except IndexError:
+            continue
+        exchange = None
+        if exchange_at is not None and exchange_at < len(item):
+            exchange = item[exchange_at]
+        if ticker:
+            rows.append({"cik": cik, "ticker": ticker, "exchange": exchange})
+    return rows
+
+
+def _optional_json(client, url):
+    try:
+        _require_sec(url)
+        return client.json(url)
+    except Exception:
+        return None
 
 
 def load_asx(path=None):
@@ -220,7 +383,12 @@ def asx_form_from_headline(headline):
     text = (headline or "").casefold()
     if _form_number(text, "605") or "ceas" in text:
         return "605"
-    if _form_number(text, "604") or "change in substantial" in text or "change of interests of substantial" in text:
+    if (
+        _form_number(text, "604")
+        or "change in substantial" in text
+        or "change of interests of substantial" in text
+        or "change in interests of substantial" in text
+    ):
         return "604"
     if _form_number(text, "603") or "becoming a substantial" in text or "initial substantial" in text:
         return "603"

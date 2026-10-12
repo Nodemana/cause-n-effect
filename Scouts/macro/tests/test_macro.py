@@ -458,6 +458,50 @@ class MacroTests(unittest.TestCase):
         self.assertEqual(leads, 0)
         self.assertEqual([row[0] for row in cash], [4.75, 4.75, 4.5])
 
+    def test_pipeline_and_macro_migrations_apply_in_either_order(self):
+        from pipeline.prompts import load_macro
+        from shared.pipeline_store import connect as pipeline_connect
+        from shared.pipeline_store import ensure_pipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            macro_first = Path(tmp) / "macro-first.sqlite"
+            conn = store.open_db(macro_first)
+            try:
+                ensure_pipeline(conn)
+                pipeline.refresh(conn, series_ids=["DGS10"], fixture_dir=FIX, now=NOW, keys={})
+                text = load_macro(conn, path=Path(tmp) / "absent.json")
+                names = [row["name"] for row in conn.execute("SELECT name FROM schema_migrations")]
+            finally:
+                conn.close()
+            again = store.open_db(macro_first)
+            try:
+                ensure_pipeline(again)
+                names_again = [row["name"] for row in again.execute("SELECT name FROM schema_migrations")]
+            finally:
+                again.close()
+
+            pipeline_first = Path(tmp) / "pipeline-first.sqlite"
+            conn = pipeline_connect(str(pipeline_first))
+            try:
+                store.migrate(conn)
+                pipeline.refresh(conn, series_ids=["DGS10"], fixture_dir=FIX, now=NOW, keys={})
+                second = load_macro(conn, path=Path(tmp) / "absent.json")
+                pipeline_names = [row["name"] for row in conn.execute("SELECT name FROM schema_migrations")]
+            finally:
+                conn.close()
+
+        for recorded in (names, names_again, pipeline_names):
+            self.assertEqual(recorded.count("001_macro.sql"), 1)
+            self.assertEqual(recorded.count("001_pipeline.sql"), 1)
+            self.assertEqual(recorded.count("002_lead_pipeline.sql"), 1)
+        for reading in (text, second):
+            self.assertIn("DGS10", reading)
+            self.assertIn("US Treasury constant maturity, 10-year", reading)
+            self.assertIn("5.33 percent", reading)
+            self.assertIn("2024-01-04", reading)
+            self.assertIn("(FRED)", reading)
+            self.assertNotIn("2024-01-02", reading)
+
 
 if __name__ == "__main__":
     unittest.main()

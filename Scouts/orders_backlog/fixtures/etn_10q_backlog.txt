@@ -1,0 +1,69 @@
+There are certain factors that could cause actual results to differ materially from those in the forward-looking statements, including, among others: the impact of acquisitions, joint ventures, and investments and the integration of acquired entities; disruptions by natural disasters, labor strikes, wars, geopolitical instability and/or conflict, political unrest, terrorist activity, economic upheaval, or public health concerns that impact our production facilities; significant inflation or shortages of raw materials, energy, components, and/or labor, or similar challenges for our customers; reliance on suppliers to provide raw materials, components and services; the development and use of artificial intelligence in our business operations, including potential impacts on compliance with law and our reputation; service interruptions, data corruption, loss or impairment, network security and related operational impacts due to cybersecurity attacks; weather disruptions and regulatory, market and social reactions to such disruptions; our ability to identify, attract, develop, engage and retain qualified employees; our ability to complete the anticipated separation of our Mobility business and its merger with Dana or within the anticipated timeframe or at all; stock price and end market impacts due to technology disruptions; volatility of end markets; continued successful research, development and marketing of new or improved products; geopolitical, economic or other risks arising from worldwide or regional economic conditions; the global nature of Eaton’s business and exposure to economic and political instability, including war or armed conflict, changes in governmental laws, regulations and policies; changes in countries’ trade policies, including the imposition of sanctions or tariffs; changes in our tax rates or tax laws and regulations applicable to our business; rules, regulations, audits and investigations and related compliance risks associated with being a governmental contractor; our ability to protect our intellectual property; litigation and environmental regulations impacting our business; and the other risk factors discussed in Part I, Item 1A of the Company's Annual Report on Form 10-K for the fiscal year ended December 31, 2025 and other reports filed by the Company with the SEC.
+
+A significant portion of open orders placed with Eaton are by customers of electrical products and electrical system and services, original equipment manufacturers or distributors. These open orders are not considered firm as they have been historically subject to releases by customers. In measuring backlog of unsatisfied or partially satisfied obligations, only the amount of orders to which customers are firmly committed are included. Using this criterion, total backlog at June 30, 2026 was approximately $24.1 billion. At June 30, 2026, approximately 71% of this backlog is targeted for delivery to customers in the next twelve months and the rest thereafter.
+
+Electrical Americas
+
+| | Three months ended June 30 | | Increase (decrease) | Six months ended June 30 | | Increase (decrease) |
+| --- | --- | --- | --- | --- | --- | --- |
+| ($ in millions) | 2026 | 2025 | | 2026 | 2025 | |
+| Net sales | $3,951 | $3,350 | 18% | $7,551 | $6,360 | 19% |
+| Operating profit | $1,088 | $987 | 10% | $2,010 | $1,891 | 6% |
+| Operating margin | 27.5% | 29.5% | | 26.6% | 29.7% | |
+| Changes in Net sales: | | | | | | |
+| Organic growth | | | 18% | | | 16% |
+| Acquisitions of businesses | | | —% | | | 2% |
+| Foreign currency | | | —% | | | 1% |
+| Total increase in Net sales | | | 18% | | | 19% |
+
+| | | | Change from June 30 | |
+| --- | --- | --- | --- | --- |
+| Performance metrics: | June 30, 2026 | June 30, 2025 | 2026 vs. 2025 | 2025 vs. 2024 |
+| Backlog | $15,175 | $11,377 | 33% | 17% |
+| Organic change in backlog | | | 33% | 6% |
+| Organic change in customer orders | | | 41% | 2% |
+| Book-to-bill | 1.3 | 1.1 | | |
+
+32 Table of Contents Electrical Global
+
+| | Three months ended June 30 | | Increase (decrease) | Six months ended June 30 | | Increase (decrease) |
+| --- | --- | --- | --- | --- | --- | --- |
+| ($ in millions) | 2026 | 2025 | | 2026 | 2025 | |
+| Net sales | $2,517 | $1,753 | 44% | $4,463 | $3,362 | 33% |
+| Operating profit | $499 | $353 | 41% | $873 | $653 | 34% |
+| Operating margin | 19.8% | 20.1% | | 19.6% | 19.4% | |
+| Changes in Net sales: | | | | | | |
+| Organic growth | | | 18% | | | 14% |
+| Acquisition of a business | | | 25% | | | 16% |
+| Foreign currency | | | 1% | | | 3% |
+| Total increase in Net sales | | | 44% | | | 33% |
+
+| | | | Change from June 30 | |
+| --- | --- | --- | --- | --- |
+| Performance metrics: | June 30, 2026 | June 30, 2025 | 2026 vs. 2025 | 2025 vs. 2024 |
+| Backlog | $3,602 | $1,771 | 103% | 1% |
+| Organic change in backlog | | | 54% | (3)% |
+| Organic change in customer orders | | | 33% | (1)% |
+| Book-to-bill | 1.1 | 1.0 | | |
+
+33 Table of Contents Aerospace
+
+| | Three months ended June 30 | | Increase (decrease) | Six months ended June 30 | | Increase (decrease) |
+| --- | --- | --- | --- | --- | --- | --- |
+| ($ in millions) | 2026 | 2025 | | 2026 | 2025 | |
+| Net sales | $1,222 | $1,080 | 13% | $2,362 | $2,059 | 15% |
+| Operating profit | $278 | $240 | 16% | $582 | $466 | 25% |
+| Operating margin | 22.8% | 22.2% | | 24.7% | 22.6% | |
+| Changes in Net sales: | | | | | | |
+| Organic growth | | | 7% | | | 8% |
+| Acquisition of a business | | | 6% | | | 6% |
+| Foreign currency | | | —% | | | 1% |
+| Total increase in Net sales | | | 13% | | | 15% |
+
+| | | | Change from June 30 | |
+| --- | --- | --- | --- | --- |
+| Performance metrics: | June 30, 2026 | June 30, 2025 | 2026 vs. 2025 | 2025 vs. 2024 |
+| Backlog | $5,164 | $4,025 | 28% | 16% |
+| Organic change in backlog | | | 18% | 14% |
+| Organic change in customer orders | | | 17% | 10% |
+| Book-to-bill | 1.2 | 1.1 | | |

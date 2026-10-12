@@ -63,6 +63,7 @@ def load_config(path=CONFIG_PATH):
         "threshold": float(payload["threshold"]),
         "mid_min": float(payload["mid_min"]),
         "mid_max": float(payload["mid_max"]),
+        "min_deal_usd": float(payload.get("min_deal_usd", DEFAULT_MIN_DEAL_USD)),
         "rules": rules,
     }
 
@@ -130,6 +131,9 @@ def redact(text):
 
 # Under US$1,000,000 is a denomination, a par figure, or a fee, not a deal.
 _MIN_DEAL = 1_000_000
+# Structured notes of a few million are real deals above that floor. The
+# pipeline drops them unless the caller lowers this store floor.
+DEFAULT_MIN_DEAL_USD = 50_000_000
 _BEFORE = 120
 _AFTER = 80
 _AGGREGATE = re.compile(r"aggregate principal(?:\s+amount)?", re.I)
@@ -150,6 +154,17 @@ _CONVERSION_OPEN = re.compile(
 )
 _CONVERSION_CLOSE = re.compile(r"(?:\s+[A-Za-z]+){0,4}\s*\)")
 _SENTENCE = re.compile(r"\.\s+")
+_NOISE_BEFORE = re.compile(
+    r"(?:less than|at least|greater than|more than|up to|minimum denomination|"
+    r"offering price(?: of)?|discount of|commission of|fee of)\s*$",
+    re.I,
+)
+_NOISE_AFTER = re.compile(r"^\s*(?:or less|or fewer|or more|per note|per share)\b", re.I)
+_STATED_TOTAL = re.compile(
+    r"total aggregate principal|\bin the aggregate\s*$",
+    re.I,
+)
+_IN_THE_AGGREGATE = re.compile(r"^\s*in the aggregate\b", re.I)
 
 
 def _amount_from(match):
@@ -201,12 +216,16 @@ def _sentence_after(gap):
 
 def _classify(plain, match, prev_end, next_start):
     amount = _amount_from(match)
+    amount["start"] = match.start()
+    amount["end"] = match.end()
     if amount["value"] < _MIN_DEAL:
         return None
     # Labels bind inside the current sentence, so the next sentence's
     # "aggregate principal amount" is not attached to the previous figure.
     before = _sentence_before(plain[prev_end : match.start()])
     after = _sentence_after(plain[match.end() : next_start])
+    if _NOISE_BEFORE.search(before[-40:]) or _NOISE_AFTER.match(after):
+        return None
     reject_at = _nearest(before, after, _REJECT)
     aggregate_at = _nearest(before, after, _AGGREGATE)
     offering_at = _nearest(before, after, _OFFERING_PHRASE)
@@ -226,6 +245,8 @@ def _classify(plain, match, prev_end, next_start):
     else:
         tier = 0
     amount["tier"] = tier
+    amount["prev_end"] = prev_end
+    amount["next_start"] = next_start
     return amount
 
 
@@ -233,13 +254,18 @@ def _one_value(group):
     return len({round(item["value"], 2) for item in group}) == 1
 
 
-def _choose(candidates):
+def _choose(candidates, plain, min_deal):
     if not candidates:
         return None, True
     for tier in (3, 2, 1):
         group = [item for item in candidates if item["tier"] == tier]
         if not group:
             continue
+        if tier == 3:
+            combined = _combine_principal(group, plain, min_deal, extras=candidates)
+            if combined is None:
+                return None, True
+            return combined, False
         if _one_value(group):
             return group[0], False
         return None, True
@@ -248,11 +274,150 @@ def _choose(candidates):
     return None, True
 
 
-def pick_amount(text):
+_COUPON = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_MATURITY = re.compile(
+    r"\bdue\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4}|\d{4}|[A-Z][a-z]+\s+\d{4})",
+    re.I,
+)
+
+
+def _tranche_key(plain, item):
+    """Coupon, maturity, and amount. A repeated cover-page list shares this key.
+
+    The coupon and maturity are taken from the gap before the next amount, then
+    from the gap after the previous amount, so a neighbouring tranche is not used.
+    """
+    prev = item.get("prev_end", max(0, item["start"] - 80))
+    nxt = item.get("next_start", min(len(plain), item["end"] + 80))
+    after = plain[item["end"] : nxt]
+    before = plain[prev : item["start"]]
+    coupon = _COUPON.search(after) or _COUPON.search(before)
+    maturity = _MATURITY.search(after) or _MATURITY.search(before)
+    return (
+        coupon.group(1) if coupon else "",
+        maturity.group(1).casefold() if maturity else "",
+        round(item["value"], 2),
+    )
+
+
+def _dedupe_tranches(plain, candidates):
+    """One copy of each (coupon, maturity, amount). Document order is kept."""
+    seen = set()
+    kept = []
+    for item in candidates:
+        key = _tranche_key(plain, item)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(item)
+    return kept
+
+
+def _has_maturity(plain, item):
+    return bool(_tranche_key(plain, item)[1])
+
+
+def _above_floor(items, floor):
+    if any(item["value"] >= floor for item in items):
+        return [item for item in items if item["value"] >= floor]
+    return list(items)
+
+
+def _summed(candidates):
+    candidates = _one_currency(candidates)
+    if not candidates:
+        return None
+    if _one_value(candidates) or len(candidates) == 1:
+        return candidates[0]
+    largest = max(candidates, key=lambda item: item["value"])
+    rest = [item for item in candidates if item is not largest]
+    if abs(largest["value"] - sum(item["value"] for item in rest)) <= 1:
+        return largest
+    return {
+        "value": sum(item["value"] for item in candidates),
+        "currency": candidates[0]["currency"],
+        "text": " + ".join(item["text"] for item in candidates),
+    }
+
+
+def _leading_total(plain, pool, table):
+    """A cover amount with no maturity sitting in front of the tranche list.
+
+    $25,000,000,000 before the notes is that total. A covenant of $10 million
+    is smaller than the notes, so it is not.
+    """
+    if not table:
+        return None
+    first = min(table, key=lambda item: item["start"])
+    largest = max(item["value"] for item in table)
+    bare = [
+        item
+        for item in pool
+        if item["end"] <= first["start"] and not _has_maturity(plain, item) and item["value"] + 1 >= largest
+    ]
+    if not bare:
+        return None
+    return max(bare, key=lambda item: item["end"])
+
+
+def _combine_principal(group, plain, min_deal, extras=None):
+    """One tranche table, then a stated total when the filing gives one.
+
+    Only amounts tied to a maturity are tranches, so a later summary that
+    repeats the principal amounts without the coupon and maturity is not added
+    again. A repeated cover-page list is counted once. A stated total, including
+    the cover amount in front of that list, wins, and a sum that runs past it
+    is cut back to it. A figure under `min_deal` is left out when a larger
+    principal amount is present, so a covenant floor is not added to the deal.
+    """
+    floor = float(min_deal)
+    table = _above_floor(
+        _dedupe_tranches(plain, [item for item in group if _has_maturity(plain, item)]),
+        floor,
+    )
+    stated = _above_floor([item for item in group if _stated_total(plain, item)], floor)
+    table_sum = sum(item["value"] for item in table)
+    if stated:
+        matching = [item for item in stated if table and abs(item["value"] - table_sum) <= 1]
+        return max(matching or stated, key=lambda item: item["value"])
+    lead = _leading_total(plain, list(extras) if extras is not None else list(group), table)
+    if lead is not None and lead["value"] >= floor and (
+        abs(lead["value"] - table_sum) <= 1 or table_sum > lead["value"] + 1
+    ):
+        return lead
+    if table:
+        return _summed(table)
+    rest = _above_floor(_dedupe_tranches(plain, group), floor)
+    if not rest:
+        return None
+    return _summed(rest)
+
+
+def _one_currency(pool):
+    currencies = {item["currency"] for item in pool}
+    if len(currencies) <= 1:
+        return pool
+    usd = [item for item in pool if item["currency"] == "USD"]
+    if usd:
+        return usd
+    chosen = max(pool, key=lambda item: item["value"])["currency"]
+    return [item for item in pool if item["currency"] == chosen]
+
+
+def _stated_total(plain, item):
+    before = plain[max(0, item["start"] - 110) : item["start"]]
+    after = plain[item["end"] : item["end"] + 24]
+    if _STATED_TOTAL.search(before):
+        return True
+    return _IN_THE_AGGREGATE.search(after) is not None
+
+
+def pick_amount(text, min_deal=DEFAULT_MIN_DEAL_USD):
     """Return (amount or None, needs_review).
 
     Prefer an aggregate principal amount, then "offering of $X" or an aggregate
-    offering, then a cover-page total. Amounts near denominations, integral
+    offering, then a cover-page total. Several aggregate-principal tranches are
+    summed, or a stated total is kept. Amounts near denominations, integral
     multiples, par value, per note, or a fee are ignored, as is anything under
     US$1,000,000. needs_review is true when money was stated but no single
     plausible deal size is clear, so the caller stores nothing.
@@ -271,7 +436,7 @@ def pick_amount(text):
         parsed = _classify(plain, match, prev_end, next_start)
         if parsed is not None:
             candidates.append(parsed)
-    amount, needs_review = _choose(candidates)
+    amount, needs_review = _choose(candidates, plain, min_deal)
     if amount is not None:
         amount = {
             "value": amount["value"],
@@ -289,6 +454,18 @@ def first_amount(text):
     US$1,000,000 are not a deal.
     """
     amount, _needs_review = pick_amount(text)
+    return amount
+
+
+def deal_amount(text, min_deal=DEFAULT_MIN_DEAL_USD):
+    """Deal size from aggregate principal, or None when the text does not state one.
+
+    Tranche principal amounts are summed unless the filing states a total.
+    A figure under `min_deal` is left out of that sum when a larger principal
+    amount is present. A deal that is itself under the floor is still returned
+    so the caller can log it instead of storing it.
+    """
+    amount, _needs_review = pick_amount(text, min_deal=min_deal)
     return amount
 
 

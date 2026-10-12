@@ -334,8 +334,8 @@ def _parse_asx(document):
         notes.append("notice is not Form 603, 604, or 605")
         form = document.form_type or "unknown"
 
-    company = _labeled(text, r"Company(?:/[^\n:]{0,80})?\s+name") or _labeled(text, r"Company name")
-    holder = _line_value(text, r"Name")
+    company = _asx_company(text)
+    holder = _asx_holder(text)
     acn_match = re.search(r"ACN/ARSN(?:/[A-Z]+)?\s*[:\-]?\s*([0-9][0-9 ]{4,})", text, re.I)
     target_id = norm_acn(acn_match.group(1)) if acn_match else None
 
@@ -392,6 +392,108 @@ def _parse_asx(document):
     ]
 
 
+_FIELD_LABEL = re.compile(
+    r"^(?:address|acn(?:/arsn(?:/[a-z]+)?)?(?:\s*\(if applicable\))?|name|"
+    r"notice|company(?:\s+name(?:/scheme)?)?|details of substantial holder.*|"
+    r"the holder\b.*|class of securities.*|previous notice|present notice|"
+    r"person's votes|voting power.*)\s*$",
+    re.I,
+)
+
+
+def _field_label(value):
+    return _FIELD_LABEL.match((value or "").strip()) is not None
+
+
+def _next_value(lines, start):
+    for later in lines[start:]:
+        later = later.strip()
+        if not later or _field_label(later):
+            continue
+        return later
+    return None
+
+
+def _asx_company(text):
+    labeled = _labeled(text, r"Company(?:/[^\n:]{0,80})?\s+name") or _labeled(text, r"Company name")
+    if labeled and not _field_label(labeled):
+        return labeled
+    match = re.search(r"Company Name/Scheme[ \t]+(\S.*)", text, re.I)
+    if match and not _field_label(match.group(1)):
+        return match.group(1).strip()
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if re.search(r"Company Name/Scheme\s*$", line, re.I) or re.fullmatch(r"\s*Company name\s*:?\s*", line, re.I):
+            found = _next_value(lines, index + 1)
+            if found:
+                return found
+    return None
+
+
+_STREET_WORD = re.compile(
+    r"\b(?:street|road|avenue|drive|lane|place|boulevard|highway|suite|floor)\b",
+    re.I,
+)
+_CORPORATE = re.compile(
+    r"\b(?:pty|ltd|limited|inc|llc|plc|lp|corp|corporation|company|partners|capital|group|fund|trust)\b",
+    re.I,
+)
+
+
+def _address_like(value):
+    """A street line is not a holder. 'Harbour Lane Capital' is a name."""
+    text = (value or "").strip()
+    if not text:
+        return False
+    if re.match(r"^\d{1,6}\s+\S", text):
+        return True
+    if re.search(r"\b[A-Z]{2}\s+\d{5}\b", text):
+        return True
+    if _STREET_WORD.search(text) and not _CORPORATE.search(text):
+        return True
+    return False
+
+
+def _entity_name(line):
+    text = (line or "").strip()
+    if not text or _field_label(text) or _address_like(text) or not _CORPORATE.search(text):
+        return None
+    text = re.split(r"\s+and each of\b", text, maxsplit=1, flags=re.I)[0]
+    text = re.sub(r"\s*\(ACN\b[^)]*\)", "", text, flags=re.I).strip(" .,")
+    if not text or _address_like(text):
+        return None
+    return text
+
+
+def _asx_holder(text):
+    """The substantial holder, not the Address label or a street under Name."""
+    match = re.search(
+        r"Details of substantial (?:holder|shareholder)\b"
+        r"(.*?)(?:\n\s*2\.\s|\n\s*There was a change|\n\s*The holder became|\n\s*6\.\s*Addresses\b)",
+        text,
+        re.I | re.S,
+    )
+    block = match.group(1) if match else text
+    lines = block.splitlines()
+    for index, line in enumerate(lines):
+        named = re.fullmatch(r"\s*Name\s*[:\-]?\s*(.*)", line, re.I)
+        if not named:
+            continue
+        value = named.group(1).strip()
+        if value and not _field_label(value) and not _address_like(value):
+            return value
+        if value and _address_like(value):
+            continue
+        found = _next_value(lines, index + 1)
+        if found and not _address_like(found):
+            return found
+    for line in lines:
+        entity = _entity_name(line)
+        if entity:
+            return entity
+    return None
+
+
 def _asx_form_from_hint(hinted):
     key = canonical_form(hinted)
     if key in {"603", "604", "605", "FORM 603", "FORM 604", "FORM 605"}:
@@ -414,22 +516,95 @@ def _asx_form_from_text(text):
 
 
 def _asx_voting(text, form):
+    """Colon-labelled notices and the ASIC table layout from pdftotext -layout.
+
+    On a Form 604 the present column is the current stake. A table row keeps
+    the previous percent and the present percent on one line, with the share
+    counts beside them, so the numbers are not adjacent to the column labels.
+    """
     if form == "604":
-        previous_at = text.casefold().find("previous notice")
-        present_at = text.casefold().find("present notice")
-        previous = present_stake = present_shares = None
-        if previous_at >= 0 and present_at > previous_at:
-            previous = _voting_power(text[previous_at:present_at])
-            present_stake = _voting_power(text[present_at:])
-            present_shares = _share_count(text[present_at:], r"Person's votes")
-        return present_stake, present_shares, previous
+        return _asx_604_voting(text)
     if form == "605":
-        return _voting_power(text), _share_count(text, r"Person's votes"), None
-    return _voting_power(text), _share_count(text, r"Number of securities"), None
+        stake = _voting_power(text)
+        shares = _share_count(text, r"Person's votes")
+        if stake is None or shares is None:
+            row_stake, row_shares, _previous = _from_data_rows(_data_rows(text))
+            stake = stake if stake is not None else row_stake
+            shares = shares if shares is not None else row_shares
+        return stake, shares, None
+    stake = _voting_power(text)
+    shares = _share_count(text, r"Number of securities")
+    if stake is None or shares is None:
+        row_stake, row_shares, _previous = _from_data_rows(_data_rows(text))
+        stake = stake if stake is not None else row_stake
+        shares = shares if shares is not None else row_shares
+    return stake, shares, None
+
+
+def _asx_604_voting(text):
+    folded = text.casefold()
+    previous_at = folded.find("previous notice")
+    present_at = folded.find("present notice")
+    previous = present_stake = present_shares = None
+    if previous_at >= 0 and present_at > previous_at:
+        previous = _voting_power(text[previous_at:present_at])
+        present_stake = _voting_power(text[present_at:])
+        present_shares = _share_count(text[present_at:], r"Person's votes")
+        if previous is None or present_stake is None or present_shares is None:
+            row_stake, row_shares, row_previous = _from_data_rows(_data_rows(text[previous_at:]))
+            if previous is None:
+                previous = row_previous
+            if present_stake is None:
+                present_stake = row_stake
+            if present_shares is None:
+                present_shares = row_shares
+        return present_stake, present_shares, previous
+    stake = _voting_power(text)
+    shares = _share_count(text, r"Person's votes")
+    if stake is None or shares is None:
+        row_stake, row_shares, _previous = _from_data_rows(_data_rows(text))
+        stake = stake if stake is not None else row_stake
+        shares = shares if shares is not None else row_shares
+    return stake, shares, None
+
+
+def _data_rows(text):
+    """Lines that carry both a voting-power percent and a share count."""
+    rows = []
+    for line in text.splitlines():
+        percents = [float(item) for item in re.findall(r"(\d+(?:\.\d+)?)\s*(?:%|per\s*cent\b)", line, re.I)]
+        shares = []
+        for raw in re.findall(r"\d{1,3}(?:,\d{3})+|\d{5,}", line):
+            parsed = _strict_shares(raw)
+            if parsed:
+                shares.append(parsed)
+        if percents and shares:
+            rows.append((percents, shares))
+    return rows
+
+
+def _from_data_rows(rows):
+    """Return (present stake, present shares, previous stake) from table rows."""
+    if not rows:
+        return None, None, None
+    if len(rows) == 1 and len(rows[0][0]) >= 2:
+        percents, shares = rows[0]
+        present_shares = shares[-1] if len(shares) >= 2 else (shares[0] if shares else None)
+        return percents[-1], present_shares, percents[0]
+    if len(rows) == 1:
+        percents, shares = rows[0]
+        return percents[-1], (shares[0] if shares else None), None
+    present_pct, present_shares = rows[-1]
+    previous = rows[0][0][0]
+    return present_pct[-1], (present_shares[-1] if present_shares else None), previous
 
 
 def _voting_power(text):
-    match = re.search(r"voting power(?:\s*\(\d+\))?\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*%", text, re.I)
+    match = re.search(
+        r"voting power(?:\s*\(\d+\))?\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*(?:%|per\s*cent\b)",
+        text,
+        re.I,
+    )
     if not match:
         return None
     return float(match.group(1))

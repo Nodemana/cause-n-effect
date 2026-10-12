@@ -1,0 +1,4 @@
+{
+  "description": "SEC tickers kept even when the only listing is a warrant, a unit, or an OTC foreign line. Leave tickers empty to skip those listings.",
+  "tickers": []
+}

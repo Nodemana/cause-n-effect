@@ -2,13 +2,13 @@
 
 ## What it does
 
-Keeps a cached macro dataset for Centurions. It does not lodge leads, and it does not write `runs` or `figures`.
+Keeps a cached macro dataset for the second-pass Centurion. It does not emit leads, does not write `lead_rejects`, `runs`, or `figures`, and it does not judge magnitude, novelty, attention, or timing.
 
-Centurions read the cache with `get_latest(series_id)` and `get_series(series_id, since)` in `Scouts/macro/cache.py`. Geopolitics, elections, and regulatory risk are a placeholder in `Scouts/macro/geopolitics.py`: `get_notes` returns an empty list with status `placeholder`, so a missing feed is not an all-clear.
+Centurions read the cache with `get_latest(series_id)` and `get_series(series_id, since)` in `Scouts/macro/cache.py`. The pipeline's second pass reads the same tables when they have rows, and does not re-pull. The first pass does not read the cache. Geopolitics, elections, and regulatory risk are a placeholder in `Scouts/macro/geopolitics.py`: `get_notes` returns an empty list with status `placeholder`, so a missing feed is not an all-clear. That placeholder does not fetch news and is not a numeric series.
 
 ## Data sources
 
-Official free sources only. Requests go through `shared/nethttp.py` (`Client`, one second between calls to the same host).
+Official free sources only. Requests go through `shared/nethttp.py` (`Client`, one second between calls to the same host). Company figures stay on SEC filings, ASX announcements, and company releases. Media and aggregators are not a source of a macro series.
 
 | Series | What it is | Source |
 | --- | --- | --- |
@@ -42,7 +42,9 @@ A series is fetched again only when its newest `fetched_at` is missing or at lea
 
 ## What it captures
 
-`macro_series` holds `series_id`, `name`, `source`, `source_url`, `unit`, `frequency`, and `stale_after_hours`. `macro_observations` holds `series_id`, `obs_date`, `value`, and `fetched_at`, unique on `(series_id, obs_date)`. A later fetch updates the value and `fetched_at` for that date. The migration is `migrations/001_macro.sql`, applied through the same `schema_migrations` journal as the other scouts.
+`macro_series` holds `series_id`, `name`, `source`, `source_url`, `unit`, `frequency`, and `stale_after_hours`. `macro_observations` holds `series_id`, `obs_date`, `value`, and `fetched_at`, unique on `(series_id, obs_date)`. A later fetch updates the value and `fetched_at` for that date. The migration is `migrations/001_macro.sql`, recorded in `schema_migrations`. That name does not collide with `shared/migrations/002_lead_pipeline.sql`. Either file can be applied first.
+
+The second pass reads `series_id`, `name`, `source`, `unit`, `obs_date`, and `value`. Those are the columns `pipeline.prompts.load_macro` selects when the tables are present.
 
 ## Constraints and limitations
 

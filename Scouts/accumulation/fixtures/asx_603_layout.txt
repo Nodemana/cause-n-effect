@@ -1,0 +1,21 @@
+Form 603
+Corporations Act 2001
+Section 671B
+
+Notice of initial substantial holder
+
+To Company Name/Scheme                            Northwind Resources Limited
+
+ACN/ARSN                                          123 456 789
+
+1. Details of substantial holder (1)
+
+Name                                              Harbour Lane Capital
+ACN/ARSN (if applicable)
+
+The holder became a substantial holder on         02/09/2026
+
+2. Details of voting power
+
+Class of securities (4)     Number of securities     Person's votes (5)     Voting power (6)
+Ordinary fully paid         12,500,000               12,500,000             8.40%

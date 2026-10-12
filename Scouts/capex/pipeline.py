@@ -10,7 +10,7 @@ for _entry in (str(_REPO), str(_HERE)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from fetcher import FLOW_TAGS  # noqa: E402
+from fetcher import FLOW_TAGS, span_label  # noqa: E402
 from money import first_amount  # noqa: E402
 from shared.store import connect, dedupe_figures, save_run  # noqa: E402
 
@@ -53,7 +53,7 @@ def _fact_figure(bundle, fact, seen_at):
         "ticker": bundle["ticker"],
         "company": bundle.get("company"),
         "figure_type": fact["tag"],
-        "instrument": period_kind(start, end),
+        "instrument": _span_instrument(fact, start, end),
         "period": period,
         "value": row.get("val"),
         "value_text": _plain(row.get("val")),
@@ -70,8 +70,24 @@ def _fact_figure(bundle, fact, seen_at):
     }
 
 
+def _span_instrument(fact, start, end):
+    """quarter, ytd, ttm, annual, or instant.
+
+    A label already chosen from the fiscal-year start is kept. A span with no
+    label is classified the same way against a calendar year. Instant balances
+    stay instant. An unlabelled span that is not a quarter, year, or trailing
+    twelve months stays ytd so a later quarter can still be derived from it.
+    """
+    label = fact.get("period_label")
+    if label:
+        return label
+    if not start or not end:
+        return "instant"
+    return span_label(start, end) or "ytd"
+
+
 def period_kind(start, end):
-    """`quarter` for a single-quarter span, `ytd` for a longer cash-flow span, `instant` otherwise."""
+    """`quarter` when the gap is one quarter, `ytd` for a longer span, `instant` otherwise."""
     if not start or not end:
         return "instant"
     days = (date.fromisoformat(end) - date.fromisoformat(start)).days
@@ -81,7 +97,12 @@ def period_kind(start, end):
 
 
 def _derived_quarters(flows, seen_at):
-    """Single-quarter cash flow is the later year-to-date span minus the prior span with the same start."""
+    """Single-quarter cash flow is the later span minus the prior span with the same start.
+
+    A year-to-date span yields the quarter since the previous year-to-date span.
+    A full fiscal year yields the fourth quarter as annual minus the nine-month
+    year-to-date span. The stored span labels stay quarter, ytd, ttm, or annual.
+    """
     groups = {}
     for bundle, fact, stored in flows:
         start = fact["row"].get("start")
@@ -93,7 +114,7 @@ def _derived_quarters(flows, seen_at):
         for earlier, later in zip(items, items[1:]):
             _bundle, earlier_fact, earlier_row = earlier
             bundle, later_fact, later_row = later
-            if later_row["instrument"] != "ytd":
+            if later_row["instrument"] not in {"ytd", "annual"}:
                 continue
             earlier_end = earlier_fact["row"].get("end")
             later_end = later_fact["row"].get("end")

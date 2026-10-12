@@ -1,5 +1,6 @@
 """Fixture tests for insider and CEO buying. No network. Synthetic names only."""
 
+import io
 import json
 import os
 import sqlite3
@@ -7,6 +8,7 @@ import sys
 import tempfile
 import unittest
 import urllib.request
+from contextlib import redirect_stderr
 from pathlib import Path
 
 SCOUT = Path(__file__).resolve().parents[1]
@@ -358,6 +360,60 @@ Nature of change:
         self.assertIn("key-3y", documents[0]["url"])
         self.assertIn("Copperline Reed", documents[0]["body"])
 
+    def test_code_p_footnote_price_is_an_open_market_purchase(self):
+        body = (FIX / "sec_form4_purchase.xml").read_text(encoding="utf-8")
+        table = pipeline.build_table([
+            {"source": "sec", "body": body, "url": URL, "filing_date": "2026-04-02", "ticker": "NUAIW"},
+        ])
+        self.assertEqual(table["review"], [])
+        self.assertEqual(len(table["records"]), 1)
+        row = table["records"][0]
+        self.assertEqual(row["insider"], "Ada North")
+        self.assertIn("Chief Financial Officer", row["role"])
+        self.assertIn("director", row["role"])
+        self.assertFalse(row["is_ceo"])
+        self.assertEqual(row["ticker"], "NWT")
+        self.assertEqual(row["shares"], 1500)
+        self.assertEqual(row["price"], 22.5)
+        self.assertEqual(row["value"], 33750)
+        self.assertEqual(row["currency"], "USD")
+        self.assertEqual(row["transaction_date"], "2026-04-01")
+        self.assertEqual(row["transaction_code"], "P")
+        self.assertTrue(row["open_market"])
+        self.assertNotIn("conflicting_data", row["flags"])
+        figure = table["figures"][0]
+        self.assertEqual(figure["verified"], 1)
+        self.assertEqual(figure["currency"], "USD")
+        self.assertEqual(figure["value"], 33750)
+        self.assertEqual(figure["source_url"], URL)
+
+    def test_limit_defaults_to_fifty(self):
+        import live
+
+        seen = {}
+
+        def collect_sec(start, end, client=None, ticker_map=None, limit=None):
+            seen["limit"] = limit
+            return []
+
+        original = fetcher.collect_sec
+        original_block = live.sec_block_message
+        fetcher.collect_sec = collect_sec
+        live.sec_block_message = lambda: None
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                base = ["--db", str(Path(tmp) / "history.sqlite"), "--no-asx"]
+                self.assertEqual(live.main(base), 1)
+                self.assertEqual(seen["limit"], 50)
+                self.assertEqual(live.main(base + ["--limit", "12"]), 1)
+                self.assertEqual(seen["limit"], 12)
+        finally:
+            fetcher.collect_sec = original
+            live.sec_block_message = original_block
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
+
     def test_default_sec_client_refuses_before_any_socket(self):
         from shared.nethttp import EndpointError
 
@@ -430,6 +486,56 @@ Nature of change:
             live.utc_now = original
             if previous is not None:
                 os.environ["SEC_CONTACT_EMAIL"] = previous
+
+    def test_old_trade_on_a_late_form4_is_logged_and_not_stored(self):
+        recent = _xml(
+            "P", "A", 1000, 20, owner="Harbour Lane", title="Chief Executive Officer", officer="1", when="2026-03-20"
+        )
+        amended = _xml(
+            "P", "A", 1500, 22, owner="Harbour Lane", title="Chief Executive Officer", officer="1",
+            form="4/A", when="2025-12-01",
+        )
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            table = pipeline.build_table(
+                [
+                    {"source": "sec", "body": recent, "url": URL, "filing_date": "2026-03-22", "ticker": "NWT"},
+                    {"source": "sec", "body": amended, "url": URL, "filing_date": "2026-03-22", "ticker": "NWT"},
+                ]
+            )
+        self.assertEqual(len(table["records"]), 1)
+        self.assertEqual(table["records"][0]["transaction_date"], "2026-03-20")
+        self.assertEqual(table["config"]["max_trade_age_days"], 30)
+        logged = stderr.getvalue()
+        self.assertIn("dropped stale trade", logged)
+        self.assertIn("ticker=NWT", logged)
+        self.assertIn("transaction_date=2025-12-01", logged)
+        self.assertIn("filing_date=2026-03-22", logged)
+        self.assertIn("form=4/A", logged)
+        wider = pipeline.build_table(
+            [{"source": "sec", "body": amended, "url": URL, "filing_date": "2026-03-22", "ticker": "NWT"}],
+            ScreenConfig(max_trade_age_days=365),
+        )
+        self.assertEqual(len(wider["records"]), 1)
+        self.assertEqual(wider["records"][0]["transaction_date"], "2025-12-01")
+
+    def test_help_exits_zero_without_network(self):
+        import subprocess
+        import sys
+
+        env = {key: value for key, value in os.environ.items() if key != "SEC_CONTACT_EMAIL"}
+        root = str(REPO)
+        for flag in ("--help", "-h"):
+            completed = subprocess.run(
+                [sys.executable, "-m", "Scouts.insider_buying.live", flag],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("usage", completed.stdout.lower())
 
 
 if __name__ == "__main__":

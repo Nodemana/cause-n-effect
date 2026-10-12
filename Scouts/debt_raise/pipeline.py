@@ -2,6 +2,7 @@
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -18,12 +19,32 @@ from fetcher import (
     in_scope,
     summary_is_form_label,
 )
-from score import figure_kind, histogram, load_config, needs_full_document, pick_amount, score_text
+from score import (
+    DEFAULT_MIN_DEAL_USD,
+    figure_kind,
+    histogram,
+    load_config,
+    needs_full_document,
+    pick_amount,
+    score_text,
+)
 from shared.nethttp import EndpointError, asx_client, sec_client
 from store import open_db, save_run, utc_now
 
+# An 8-K and the following 424B for the same notes land a few days apart.
+DEAL_REPEAT_DAYS = 7
 
-def run(filings, db_path, threshold=None, client=None, documents=None, config=None, started_at=None):
+
+def run(
+    filings,
+    db_path,
+    threshold=None,
+    client=None,
+    documents=None,
+    config=None,
+    started_at=None,
+    min_deal=None,
+):
     """Score index text, read a full filing only when the cheap filter says to.
 
     `documents` maps an accession to fixture text so tests never open a socket.
@@ -33,6 +54,7 @@ def run(filings, db_path, threshold=None, client=None, documents=None, config=No
     loaded = config or load_config()
     rules = loaded["rules"]
     used = loaded["threshold"] if threshold is None else float(threshold)
+    deal_floor = float(loaded.get("min_deal_usd", DEFAULT_MIN_DEAL_USD) if min_deal is None else min_deal)
     started_at = started_at or utc_now()
     documents = documents or {}
 
@@ -64,7 +86,7 @@ def run(filings, db_path, threshold=None, client=None, documents=None, config=No
             stage = "cheap_filter"
             final = cheap
             scored_text = phrase
-        amount, needs_review = pick_amount(scored_text)
+        amount, needs_review = pick_amount(scored_text, min_deal=deal_floor)
         if needs_review:
             flags.append("review")
         row = {
@@ -78,10 +100,11 @@ def run(filings, db_path, threshold=None, client=None, documents=None, config=No
             "flags": json.dumps(flags),
         }
         scores.append(row)
-        figure = _figure(filing, scored_text, started_at, amount)
+        figure = _figure(filing, scored_text, started_at, amount, deal_floor)
         if figure is not None:
             figures.append(figure)
 
+    figures = _dedupe_issuer_deals(figures)
     scores.sort(key=lambda row: row["accession"])
     buckets = histogram(row["score"] for row in scores)
     cheap_n = sum(1 for row in scores if row["stage_reached"] == "cheap_filter")
@@ -150,9 +173,22 @@ def _full_text(filing, client, documents):
     return fetch_primary_text(client, filing["cik"], accession)
 
 
-def _figure(filing, text, started_at, amount):
+def _figure(filing, text, started_at, amount, min_deal=DEFAULT_MIN_DEAL_USD):
     ticker = filing.get("ticker") or ""
     if amount is None or not ticker:
+        return None
+    if amount["currency"] == "USD" and amount["value"] < float(min_deal):
+        form = filing.get("form") or ""
+        print(
+            "dropped deal below minimum"
+            f" ticker={ticker}"
+            f" form={form}"
+            f" accession={filing.get('accession') or ''}"
+            f" value={amount['value']:.0f}"
+            f" {amount['currency']}"
+            f" minimum={float(min_deal):.0f}",
+            file=sys.stderr,
+        )
         return None
     instrument, figure_type = figure_kind(text)
     return {
@@ -169,7 +205,104 @@ def _figure(filing, text, started_at, amount):
         "source_url": filing.get("document_url") or "",
         "source_type": filing.get("source_type") or "filing",
         "verified": 1,
+        "form": filing.get("form") or "",
+        "accession": filing.get("accession") or "",
     }
+
+
+def _dedupe_issuer_deals(figures, window_days=DEAL_REPEAT_DAYS):
+    """Keep one filing when the same issuer repeats a deal within a few days.
+
+    The later filing is kept. The same amount, an amount within 10%, or an 8-K
+    and a 424B for one offering are one deal. A different amount is kept.
+    """
+    kept = []
+    for figure in figures:
+        match = next((prior for prior in kept if _same_deal(prior, figure, window_days)), None)
+        if match is None:
+            kept.append(figure)
+            continue
+        if _on(figure) >= _on(match):
+            kept.remove(match)
+            kept.append(figure)
+            _log_repeat(match, figure)
+        else:
+            _log_repeat(figure, match)
+    return kept
+
+
+# A doubled tranche list can land about 70% high. An 8-K and a 424B for one
+# offering stay inside a doubling; a different deal the same week does not.
+_OFFERING_RATIO = 2.0
+_AMOUNT_TOLERANCE = 0.10
+
+
+def _same_deal(left, right, window_days):
+    if (left.get("ticker") or "") != (right.get("ticker") or ""):
+        return False
+    if (left.get("currency") or "") != (right.get("currency") or ""):
+        return False
+    if (left.get("figure_type") or "") != (right.get("figure_type") or ""):
+        return False
+    if not _same_size(left, right):
+        return False
+    left_on = _on(left)
+    right_on = _on(right)
+    if left_on is None or right_on is None:
+        return False
+    return abs((left_on - right_on).days) <= int(window_days)
+
+
+def _same_size(left, right):
+    """Exact amount, within 10%, or an 8-K and a 424B for one offering."""
+    left_value = float(left.get("value") or 0)
+    right_value = float(right.get("value") or 0)
+    if round(left_value, 2) == round(right_value, 2):
+        return True
+    larger = max(left_value, right_value)
+    smaller = min(left_value, right_value)
+    if larger <= 0:
+        return False
+    if (larger - smaller) / larger <= _AMOUNT_TOLERANCE:
+        return True
+    return _offering_pair(left, right) and larger / smaller <= _OFFERING_RATIO
+
+
+def _form_family(form):
+    text = (form or "").upper().replace(" ", "")
+    if text.startswith("8-K"):
+        return "8-K"
+    if text.startswith("424B"):
+        return "424B"
+    return ""
+
+
+def _offering_pair(left, right):
+    families = {_form_family(left.get("form")), _form_family(right.get("form"))}
+    return families == {"8-K", "424B"}
+
+
+def _on(figure):
+    raw = (figure.get("announced_on") or "")[:10]
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _log_repeat(dropped, kept):
+    print(
+        "dropped duplicate deal"
+        f" ticker={dropped.get('ticker') or ''}"
+        f" form={dropped.get('form') or ''}"
+        f" accession={dropped.get('accession') or ''}"
+        f" filed={dropped.get('announced_on') or ''}"
+        f" value={float(dropped.get('value') or 0):.0f}"
+        f" kept_form={kept.get('form') or ''}"
+        f" kept_accession={kept.get('accession') or ''}"
+        f" kept_filed={kept.get('announced_on') or ''}",
+        file=sys.stderr,
+    )
 
 
 def _period(filing):

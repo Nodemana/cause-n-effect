@@ -181,6 +181,114 @@ class ParserTests(unittest.TestCase):
         self.assertIsNone(ceased.stake_pct)
         self.assertNotIn("unparseable_stake", ceased.flags)
 
+    def test_asx_table_layout_603_and_604(self):
+        initial = parse_document(Document(
+            source="asx", body=load("asx_603_layout.txt"), url="https://www.asx.com.au/layout603",
+            form_type="603", filing_date="2026-09-04", ticker="NWND",
+        ))[0]
+        self.assertEqual(initial.flags, [])
+        self.assertEqual(initial.filer, "Harbour Lane Capital")
+        self.assertEqual(initial.target_name, "Northwind Resources Limited")
+        self.assertEqual(initial.stake_pct, 8.4)
+        self.assertEqual(initial.share_count, 12500000)
+        self.assertEqual(initial.event_date, "2026-09-02")
+
+        change = parse_document(Document(
+            source="asx", body=load("asx_604_layout.txt"), url="https://www.asx.com.au/layout604",
+            form_type="604", filing_date="2026-09-21", ticker="BRMB",
+        ))[0]
+        self.assertEqual(change.flags, [])
+        self.assertEqual(change.filer, "Northbridge Partners LP")
+        self.assertEqual(change.target_name, "Bramble Medical Limited")
+        self.assertEqual(change.stake_pct, 11.25)
+        self.assertEqual(change.share_count, 9000000)
+        self.assertEqual(change.event_date, "2026-09-20")
+        self.assertTrue(any("5.1" in note for note in change.notes))
+
+        from Scouts.accumulation.pipeline import figure_from_position
+
+        figure = figure_from_position(
+            {
+                "source": "asx",
+                "form_type": "603",
+                "filer": initial.filer,
+                "target": {"name": initial.target_name, "ticker": initial.ticker},
+                "stake_pct": initial.stake_pct,
+                "share_count": initial.share_count,
+                "filing_date": initial.filing_date,
+                "document_url": "https://asx.api.markitdigital.com/asx-research/1.0/file/notice603",
+                "accession": "notice603",
+            },
+            "2026-09-04",
+            [],
+        )
+        self.assertEqual(figure["verified"], 1)
+        self.assertEqual(figure["currency"], "pct")
+        self.assertEqual(figure["ticker"], "NWND.AX")
+        self.assertEqual(figure["value"], 8.4)
+        self.assertIn("12500000", figure["value_text"])
+        self.assertIn("notice603", figure["source_url"])
+        self.assertIn("notice603", figure["period"])
+
+    def test_asx_604_stacked_labels_keep_the_holder_and_a_percent(self):
+        change = parse_document(Document(
+            source="asx", body=load("asx_604_bhp.txt"), url="https://www.asx.com.au/bhp604",
+            form_type="604", filing_date="2026-10-09", ticker="BHP",
+        ))[0]
+        self.assertEqual(change.filer, "BlackRock, Inc.")
+        self.assertNotEqual(change.filer, "Address")
+        self.assertEqual(change.target_name, "BHP Group Limited")
+        self.assertEqual(change.stake_pct, 6.1)
+        self.assertEqual(change.share_count, 110000000)
+        self.assertEqual(change.event_date, "2026-10-08")
+        self.assertEqual(change.flags, [])
+
+        from Scouts.accumulation.pipeline import figure_from_position
+
+        figure = figure_from_position(
+            {
+                "source": "asx",
+                "form_type": "604",
+                "filer": change.filer,
+                "target": {"name": change.target_name, "ticker": "BHP"},
+                "stake_pct": change.stake_pct,
+                "share_count": change.share_count,
+                "filing_date": change.filing_date,
+                "document_url": "https://www.asx.com.au/bhp604",
+                "accession": "bhp604",
+            },
+            "2026-10-09",
+            [],
+        )
+        self.assertEqual(figure["ticker"], "BHP.AX")
+        self.assertEqual(figure["value"], 6.1)
+        self.assertEqual(figure["currency"], "pct")
+        self.assertIn("BlackRock, Inc.", figure["period"])
+
+    def test_asx_604_rejects_a_street_and_keeps_the_holder_name(self):
+        from Scouts.accumulation.parser import _address_like
+
+        self.assertTrue(_address_like("5800 S Corporate Place"))
+        self.assertTrue(_address_like("Sioux Falls, SD 57108"))
+        self.assertFalse(_address_like("Harbour Lane Capital"))
+        self.assertFalse(_address_like("Citigroup Global Markets Australia Pty Limited"))
+
+        change = parse_document(Document(
+            source="asx",
+            body=load("asx_604_bhp_citigroup.txt"),
+            url="https://www.asx.com.au/asx/statistics/announcements/2924-03145697-3A703571",
+            form_type="604",
+            filing_date="2026-03-04",
+            ticker="BHP",
+            accession="2924-03145697-3A703571",
+        ))[0]
+        self.assertEqual(change.filer, "Citigroup Global Markets Australia Pty Limited")
+        self.assertNotEqual(change.filer, "5800 S Corporate Place")
+        self.assertNotIn("5800", change.filer)
+        self.assertNotIn("Corporate Place", change.filer)
+        self.assertEqual(change.target_name, "BHP Group Limited")
+        self.assertEqual(change.ticker, "BHP")
+
     def test_fixtures_contain_no_email(self):
         import re
         for path in FIX.iterdir():

@@ -8,8 +8,10 @@ ASX order and backlog announcements still run. The command exits nonzero
 when this run stores no figure.
 """
 
+import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from datetime import date, timedelta
@@ -36,24 +38,26 @@ def sec_block_message():
     return "SEC_CONTACT_EMAIL is missing. No SEC request was sent."
 
 
-def _option(args, name):
-    if name not in args:
-        return None
-    index = args.index(name)
-    if index + 1 >= len(args):
-        raise SystemExit(f"{name} needs a value")
-    return args[index + 1]
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="python3 -m Scouts.orders_backlog.live",
+        description="Store customer backlog and supplier order figures.",
+    )
+    parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite history path")
+    parser.add_argument("--sec-fixture", help="read this companyfacts JSON instead of contacting EDGAR")
+    parser.add_argument("--no-asx", action="store_true", help="do not request ASX announcements")
+    return parser
 
 
 def main(argv=None):
-    args = list(sys.argv[1:] if argv is None else argv)
-    db_path = Path(_option(args, "--db") or DEFAULT_DB)
+    args = build_parser().parse_args(argv)
+    db_path = Path(args.db)
     customers = fetcher.load_customers()
     suppliers = fetcher.load_suppliers()
     customer_facts = []
     supplier_facts = []
     releases = []
-    fixture = _option(args, "--sec-fixture")
+    fixture = args.sec_fixture
     if fixture:
         fixture = Path(fixture)
         payload = json.loads(fixture.read_text(encoding="utf-8"))
@@ -94,13 +98,16 @@ def main(argv=None):
                     "supplier_order",
                 )
             )
-    if "--no-asx" not in args:
+            print("SEC 10-Q and 10-K narratives for supplier backlog")
+            releases.extend(_releases(fetcher.collect_supplier_reports(suppliers), "supplier_order"))
+    if not args.no_asx:
         print(f"ASX order and backlog announcements, at most {fetcher.ASX_CAP} per company")
         releases.extend(_releases(fetcher.collect_asx(fetcher.load_asx()), "supplier_order"))
     table = pipeline.build_table(customer_facts, supplier_facts, releases)
     started = utc_now()
     seen = started[:10]
-    figures = dedupe_figures(_figures(table["records"], seen))
+    stale = pipeline.report_stale_latest(table["records"], seen)
+    figures = dedupe_figures(pipeline.keep_distinct_amounts(_figures(table["records"], seen)))
     if not figures:
         print("No orders-backlog figures.")
         return 1
@@ -111,7 +118,7 @@ def main(argv=None):
             "orders-backlog",
             started,
             figures,
-            notes=f"records={len(table['records'])}",
+            notes=_run_notes(table["records"], stale),
         )
     finally:
         conn.close()
@@ -152,20 +159,83 @@ def _releases(documents, source_side):
     return rows
 
 
+def _run_notes(records, stale):
+    parts = [f"records={len(records)}"]
+    if stale:
+        listed = ",".join(f"{item['ticker']}:{item['period']}" for item in stale)
+        parts.append(f"stale={listed}")
+    return " ".join(parts)
+
+
+def _is_period(value):
+    text = (value or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return True
+    return re.fullmatch(r"Q[1-4] \d{4}", text, re.I) is not None
+
+
+def _segment(record):
+    raw = (record.get("equipment_or_period") or "").strip()
+    if raw and not _is_period(raw) and "|" not in raw:
+        return raw
+    for note in record.get("notes") or []:
+        if str(note).startswith("segment: "):
+            return str(note).split(": ", 1)[1]
+    return ""
+
+
+def _instrument(record):
+    """Metric first, then a segment. A pipe row and a company-facts tag stay as they were."""
+    disclosure = (record.get("disclosure") or "").strip()
+    segment = _segment(record)
+    notes = record.get("notes") or []
+    concept = ""
+    if notes and " " not in str(notes[0]) and ":" not in str(notes[0]):
+        concept = str(notes[0])
+    if record.get("source_type") == "xbrl_company_facts" and concept:
+        return concept
+    if ":" in disclosure and not disclosure.startswith("segment:"):
+        return disclosure
+    if disclosure == "order_intake" and segment:
+        return segment
+    metric = disclosure if disclosure in {"orders", "backlog", "revenue"} else ""
+    if metric and segment:
+        return f"{metric}:{segment}"
+    if segment:
+        return segment
+    return metric or concept or disclosure
+
+
+def _figure_period(record):
+    """A date or quarter. A segment word is not joined to the filing date.
+
+    Company-facts rows keep end|filed so two filings of one period stay distinct.
+    An 8-K with no period of its own uses the filing date alone, never '|date'.
+    """
+    raw = (record.get("equipment_or_period") or "").strip()
+    filed = (record.get("filing_date") or "")[:10]
+    timing = (record.get("timing") or "").strip()
+    if _is_period(raw):
+        if record.get("source_type") == "xbrl_company_facts" and filed and raw != filed:
+            return f"{raw}|{filed}"
+        return raw
+    if _is_period(timing):
+        return timing
+    return filed
+
+
 def _figures(records, seen):
     rows = []
     for record in records:
         if record.get("value") is None or not record.get("ticker"):
             continue
-        notes = record.get("notes") or []
-        concept = notes[0] if notes and " " not in notes[0] else (record.get("disclosure") or "")
         rows.append(
             {
                 "ticker": record["ticker"],
                 "company": record.get("company"),
                 "figure_type": record.get("source_side") or "backlog",
-                "instrument": concept,
-                "period": f"{record.get('equipment_or_period') or ''}|{record.get('filing_date') or ''}",
+                "instrument": _instrument(record),
+                "period": _figure_period(record),
                 "value": record["value"],
                 "value_text": str(record["value"]),
                 "currency": record.get("currency"),

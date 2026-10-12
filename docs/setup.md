@@ -16,10 +16,10 @@ cause-n-effect/
     ├── debt_raise/     # use-of-proceeds gate for loans, facilities, and bonds
     ├── insider_buying/ # Form 4 and ASX Appendix 3Y open-market buys
     ├── capex/          # big spenders' capex → 2nd/3rd-tier suppliers
-    └── macro/          # cached macro series for Centurions; no leads
+    └── macro/          # cached official macro context; does not emit leads
 ```
 
-`Scouts/capex` pulls SEC companyfacts, EDGAR full-text capex guidance, and ASX announcements into the shared figures table. Each other scout keeps its fetcher, parser, and tests in its own folder.
+`Scouts/capex` pulls SEC companyfacts, EDGAR full-text capex guidance, and ASX announcements into the shared figures table. Each lead scout keeps its fetcher, parser, and tests in its own folder. `Scouts/macro` caches official series in `macro_series` and `macro_observations`. It does not write figures or leads.
 
 ## Environment
 
@@ -41,12 +41,25 @@ Run from the repository root. These use fixtures and do not open a network conne
 
 ```bash
 python3 -m unittest discover -s shared/tests -t .
+python3 -m unittest discover -s pipeline/tests -t .
 python3 -m unittest discover -s Scouts/accumulation/tests -t .
 python3 Scouts/orders_backlog/tests/test_orders_backlog.py
 python3 Scouts/debt_raise/tests/test_debt_raise.py
 python3 Scouts/insider_buying/tests/test_insider_buying.py
 python3 Scouts/capex/tests/test_capex.py
 python3 -m unittest discover -s Scouts/macro/tests -t .
+```
+
+## Lead pipeline
+
+`python -m pipeline run` reads the latest figures each scout stored, then rates, researches, merges, critiques, ranks, and writes pending decisions. Only a merged finding gets a second Centurion pass. That pass classifies any prior price run as new, an acceleration, or priced-in, and notes the call as a concern. Praetorians then agree or disagree, with counter-evidence. `--help` does not open a database or a network connection. With no `LLM_API_KEY`, the offline stub runs every stage. Set `LLM_API_KEY` to use an OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). The key is not written to the database or to a log line. Macro context on the second pass is read from `macro_series` and `macro_observations` when those tables have rows. Otherwise it uses `cache/macro.json` with a `summary` string, or `--macro-cache`. If neither is present, the second pass skips macro context. The first pass does not read it.
+
+```bash
+python3 -m pipeline run --help
+python3 -m pipeline run --db /tmp/cause-n-effect.sqlite --dry-run --token-budget 80000
+python3 -m pipeline run --db /tmp/cause-n-effect.sqlite --limit 50
+python3 -m pipeline rejects --db /tmp/cause-n-effect.sqlite --ticker AMZN
+python3 -m pipeline rejects --db /tmp/cause-n-effect.sqlite --counterparty "Globex Power"
 ```
 
 ## Live pulls
@@ -65,7 +78,7 @@ python3 -m Scouts.orders_backlog.live --db /tmp/cause-n-effect.sqlite
 python3 -m Scouts.accumulation.live --db /tmp/cause-n-effect.sqlite
 ```
 
-`--since` and `--until` bound the debt-raise SEC window. `--tickers` is a comma-separated list and also filters that scout's ASX watchlist. Capex `--quarters` keeps companyfacts whose period end falls in the last N quarters (default 8).
+`--since` and `--until` bound the debt-raise SEC window. `--tickers` is a comma-separated list and also filters that scout's ASX watchlist. Capex `--quarters` keeps companyfacts whose period end falls in the last N quarters (default 8). Insider buying `--limit` caps Form 4 filings (default 50). Every live command accepts `--help` and `-h`, prints usage, and exits before any request.
 
 Macro does not write figures or leads. It refreshes `macro_series` and `macro_observations` when the newest `fetched_at` is older than that series' `stale_after_hours`. `--force` refreshes the selection anyway. `--series` is a comma-separated list of series ids. FRED is skipped until `FRED_API_KEY` is set, and EIA until `EIA_API_KEY` is set. `--help` exits before any request.
 

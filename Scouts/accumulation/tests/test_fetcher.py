@@ -107,6 +107,20 @@ class FetcherTests(unittest.TestCase):
         self.assertEqual(mapping["0000999101"], "NWND")
         self.assertEqual(mapping["0000999102"], "BRMB")
 
+    def test_common_stock_preferred_over_warrant_and_otc_only(self):
+        payload = json.loads((FIX / "company_tickers_exchange.json").read_text(encoding="utf-8"))
+        mapping = fetcher.tickers_from_payload(payload)
+        self.assertEqual(mapping["0000999201"], "NUAI")
+        self.assertNotIn("0000999202", mapping)
+        self.assertNotIn("0000999203", mapping)
+        self.assertNotIn("0000999204", mapping)
+        self.assertEqual(mapping["0000999205"], "DRAW")
+        watched = fetcher.tickers_from_payload(payload, ["FMTOF", "NUAIW", "EXAMU"])
+        self.assertEqual(watched["0000999201"], "NUAI")
+        self.assertEqual(watched["0000999202"], "FMTOF")
+        self.assertEqual(watched["0000999203"], "NUAIW")
+        self.assertEqual(watched["0000999204"], "EXAMU")
+
     def test_asx_headlines_and_download(self):
         self.assertEqual(asx_form_from_headline("Becoming a substantial holder"), "603")
         self.assertEqual(asx_form_from_headline("Change in substantial holding"), "604")
@@ -203,20 +217,53 @@ class FetcherTests(unittest.TestCase):
                 )
                 self.assertEqual(code, 0)
                 conn = sqlite3.connect(db)
+                conn.row_factory = sqlite3.Row
                 row = conn.execute(
-                    "SELECT ticker, figure_type, value, verified, source_type FROM figures"
+                    """
+                    SELECT ticker, figure_type, value, value_text, currency, verified,
+                           source_type, source_url, period
+                    FROM figures
+                    """
                 ).fetchone()
                 conn.close()
-                self.assertEqual(row[0], "NWND")
-                self.assertEqual(row[1], "substantial_holding")
-                self.assertEqual(row[2], 7.5)
-                self.assertEqual(row[3], 0)
-                self.assertEqual(row[4], "filing")
+                self.assertEqual(row["ticker"], "NWND")
+                self.assertEqual(row["figure_type"], "substantial_holding")
+                self.assertEqual(row["value"], 7.5)
+                self.assertIn("1250000", row["value_text"])
+                self.assertEqual(row["currency"], "USD")
+                self.assertEqual(row["verified"], 1)
+                self.assertEqual(row["source_type"], "filing")
+                self.assertIn("000099900126000001", row["source_url"])
+                self.assertIn("0000999001-26-000001", row["period"])
+                self.assertTrue(row["source_url"].startswith("https://www.sec.gov/Archives/"))
                 empty = live.main(["--db", str(pathlib.Path(tmp) / "empty.sqlite"), "--no-asx"])
                 self.assertEqual(empty, 1)
         finally:
             if previous is not None:
                 os.environ["SEC_CONTACT_EMAIL"] = previous
+
+
+    def test_help_exits_zero_without_network(self):
+        _assert_help(self, "Scouts.accumulation.live")
+
+
+def _assert_help(case, module):
+    import subprocess
+    import sys
+
+    env = {key: value for key, value in os.environ.items() if key != "SEC_CONTACT_EMAIL"}
+    root = str(pathlib.Path(__file__).resolve().parents[3])
+    for flag in ("--help", "-h"):
+        completed = subprocess.run(
+            [sys.executable, "-m", module, flag],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        case.assertEqual(completed.returncode, 0, completed.stderr)
+        case.assertIn("usage", completed.stdout.lower())
 
 
 if __name__ == "__main__":

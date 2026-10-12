@@ -16,6 +16,23 @@ A stated money amount, with ticker, value, the literal amount text, currency, an
 
 The scout uses a two-stage use-of-proceeds filter with threshold analytics. Stage 1 scores the index description when that text is more than the form name, and otherwise the first page of the filing. An ASX headline is scored as written. The score is the highest matching weight: general corporate purposes scores 0, working capital or refinance scores 1, capex scores 3, a stated use of proceeds for an acquisition scores 4, and data center construction scores 5. Prospectus boilerplate that only mentions possible acquisitions does not match. The stated amount is an aggregate principal amount, an offering of a stated size, or a cover-page total. Denominations, integral multiples, par value, per-note prices, fees, and amounts under US$1,000,000 are ignored. When no single plausible deal size is found, nothing is stored and the filing is flagged `review`. The full document is read only when that score is above the threshold (default 2) or when no phrase matches. A filing the full text still cannot score is flagged `undecided` for the Legate. Same-day filings stay distinct because the stored period is the filing date plus the accession.
 
+## Significance
+
+The code already pulls and scores filings. That pull is not a lead. The use-of-proceeds threshold and a dedupe run first. A small LLM pass, inside a per-run token budget, then judges the shortlist. The point is that a Centurion never receives hundreds of routine bond issues from different companies.
+
+Each emitted lead stores a short label and a one-line reason on four dimensions. The same four fields are stored on a reject.
+
+- **Magnitude.** Deal size in dollars, absolute and against the company's size. A small refinance is not the same lead as a raise large enough to fund a program.
+- **Novelty.** A first raise for capex, an acquisition, or a data-center build, versus another refinance in a series. General corporate purposes and working-capital rolls are routine.
+- **Market attention.** Whether the offering is already written up. Media and aggregators are for that check only. The amount stays from the filing or the ASX announcement.
+- **Timing.** How early the filing is relative to the next earnings date, or to when the stated proceeds would be spent.
+
+A candidate that fails is not a lead. It is a row in `lead_rejects`: scout `debt_raise`, ticker, CIK when known, filing date, source URL, accession, `rejection_stage` (`deterministic` or `llm`), and the reason. A named vendor the proceeds pay is a child row in `lead_reject_counterparties` with role `supplier`, a normalised name, and a ticker where it resolves. Search by the issuer ticker, or by that counterparty, is the look-back when a name was dropped. Those columns and `lead_rejects` / `lead_reject_counterparties` are applied by `shared/migrations/002_lead_pipeline.sql`.
+
+A lead that is stored goes to one Centurion, which writes one individual thesis. After the Centurions write those theses, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis.
+
+That second pass includes a priced-in check on any prior price run. The Centurion makes the call first, classifying the run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with its reasoning and evidence. It notes that call as a concern where relevant. There is no automatic rejection. The stock price and past performance come from quote data. The Praetorians then review that classification and state whether they agree or disagree, with counter-evidence.
+
 ## Constraints and limitations
 
 Raising the threshold leaves mid-band scores on the cheap filter, so those raises are never read in full. The ASX feed is undocumented, returns only the latest five announcements per company (enough for a weekly run), and is health-checked. This is a spotter for specific uses of proceeds, not a list of every borrowing. Earnings-call transcripts are not a source.
