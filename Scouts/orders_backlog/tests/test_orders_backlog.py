@@ -2,7 +2,9 @@
 
 import json
 import os
+import sqlite3
 import sys
+import tempfile
 import unittest
 import urllib.request
 from pathlib import Path
@@ -195,9 +197,6 @@ class OrdersBacklogTests(unittest.TestCase):
             fetcher.collect_ir([company], client=object())
 
     def test_same_day_runs_keep_their_figures(self):
-        import sqlite3
-        import tempfile
-
         from model import record
 
         def table(value):
@@ -232,6 +231,77 @@ class OrdersBacklogTests(unittest.TestCase):
             self.assertEqual(afternoon, 40_000_000)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 2)
             conn.close()
+
+    def test_asx_markit_keeps_order_headlines(self):
+        from shared.nethttp import EndpointError
+
+        url = "https://asx.api.markitdigital.com/asx-research/1.0/companies/wor/announcements?count=5"
+
+        class Fake:
+            def __init__(self, payload):
+                self.payload = payload
+                self.urls = []
+
+            def json(self, called):
+                self.urls.append(called)
+                return self.payload
+
+            def get(self, called, accept=""):
+                self.urls.append(called)
+                return b"Order for turbines worth $10 million", "text/plain"
+
+        with self.assertRaises(EndpointError):
+            fetcher.collect_asx([{"ticker": "WOR"}], client=Fake({"data": []}))
+        payload = {
+            "data": {
+                "displayName": "Worley Ltd",
+                "items": [
+                    {"headline": "Worley awarded turbine order", "documentKey": "key-1", "date": "2026-10-01"},
+                    {"headline": "Dividend", "documentKey": "key-2", "date": "2026-10-02"},
+                ],
+            }
+        }
+        documents = fetcher.collect_asx([{"ticker": "WOR", "name": "Worley"}], client=Fake(payload))
+        self.assertEqual(len(documents), 1)
+        self.assertIn("key-1", documents[0]["url"])
+        self.assertIn("turbines", documents[0]["body"])
+        self.assertEqual(documents[0]["form"], "ASX")
+        self.assertEqual(documents[0]["filing_date"], "2026-10-01")
+
+    def test_live_fixture_stores_a_figure_and_empty_run_exits_nonzero(self):
+        import live
+
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = str(Path(tmp) / "history.sqlite")
+                code = live.main(
+                    [
+                        "--db",
+                        db,
+                        "--sec-fixture",
+                        str(FIX / "amat_facts.json"),
+                        "--no-asx",
+                    ]
+                )
+                self.assertEqual(code, 0)
+                conn = sqlite3.connect(db)
+                rows = conn.execute(
+                    "SELECT ticker, figure_type, instrument, value, verified FROM figures ORDER BY value"
+                ).fetchall()
+                conn.close()
+                values = {row[3]: row for row in rows}
+                self.assertIn(12400000000, values)
+                clean = values[12400000000]
+                self.assertEqual(clean[0], "AMAT")
+                self.assertEqual(clean[1], "customer_backlog")
+                self.assertEqual(clean[2], "RevenueRemainingPerformanceObligation")
+                self.assertEqual(clean[4], 1)
+                empty = live.main(["--db", str(Path(tmp) / "empty.sqlite"), "--no-asx"])
+                self.assertEqual(empty, 1)
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
 
 
 if __name__ == "__main__":

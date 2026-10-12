@@ -1,6 +1,7 @@
 """Turn capex facts, guidance hits, and ASX headlines into shared figures rows."""
 
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -9,6 +10,7 @@ for _entry in (str(_REPO), str(_HERE)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
+from fetcher import FLOW_TAGS  # noqa: E402
 from money import first_amount  # noqa: E402
 from shared.store import connect, save_run  # noqa: E402
 
@@ -29,32 +31,93 @@ def run(db_path, facts, guidance, announcements, started_at, seen_at, notes=None
 
 def figures_from_facts(bundles, seen_at):
     rows = []
+    flows = []
     for bundle in bundles:
-        cik = bundle["cik"]
         for fact in bundle["facts"]:
-            row = fact["row"]
-            start = row.get("start")
-            end = row["end"]
-            period = f"{start}/{end}" if start else end
-            accn = row.get("accn") or ""
-            rows.append(
+            stored = _fact_figure(bundle, fact, seen_at)
+            rows.append(stored)
+            if fact["tag"] in FLOW_TAGS and fact["row"].get("start"):
+                flows.append((bundle, fact, stored))
+    rows.extend(_derived_quarters(flows, seen_at))
+    return rows
+
+
+def _fact_figure(bundle, fact, seen_at):
+    row = fact["row"]
+    start = row.get("start")
+    end = row["end"]
+    period = f"{start}/{end}" if start else end
+    accn = row.get("accn") or ""
+    return {
+        "ticker": bundle["ticker"],
+        "company": bundle.get("company"),
+        "figure_type": fact["tag"],
+        "instrument": period_kind(start, end),
+        "period": period,
+        "value": row.get("val"),
+        "value_text": _plain(row.get("val")),
+        "currency": (fact.get("unit") or "").upper(),
+        "seen_at": seen_at,
+        "announced_on": (row.get("filed") or "")[:10] or None,
+        "source_url": _archive(bundle["cik"], accn) if accn else None,
+        "source_type": "filing",
+        "verified": 1,
+    }
+
+
+def period_kind(start, end):
+    """`quarter` for a single-quarter span, `ytd` for a longer cash-flow span, `instant` otherwise."""
+    if not start or not end:
+        return "instant"
+    days = (date.fromisoformat(end) - date.fromisoformat(start)).days
+    if 80 <= days <= 100:
+        return "quarter"
+    return "ytd"
+
+
+def _derived_quarters(flows, seen_at):
+    """Single-quarter cash flow is the later year-to-date span minus the prior span with the same start."""
+    groups = {}
+    for bundle, fact, stored in flows:
+        start = fact["row"].get("start")
+        key = (bundle["ticker"], fact["tag"], (fact.get("unit") or "").upper(), start)
+        groups.setdefault(key, []).append((bundle, fact, stored))
+    derived = []
+    for items in groups.values():
+        items.sort(key=lambda item: item[1]["row"].get("end") or "")
+        for earlier, later in zip(items, items[1:]):
+            _bundle, earlier_fact, earlier_row = earlier
+            bundle, later_fact, later_row = later
+            if later_row["instrument"] != "ytd":
+                continue
+            earlier_end = earlier_fact["row"].get("end")
+            later_end = later_fact["row"].get("end")
+            earlier_val = earlier_fact["row"].get("val")
+            later_val = later_fact["row"].get("val")
+            if not earlier_end or not later_end or earlier_val is None or later_val is None:
+                continue
+            quarter_start = (date.fromisoformat(earlier_end) + timedelta(days=1)).isoformat()
+            if period_kind(quarter_start, later_end) != "quarter":
+                continue
+            value = later_val - earlier_val
+            derived.append(
                 {
                     "ticker": bundle["ticker"],
                     "company": bundle.get("company"),
-                    "figure_type": fact["tag"],
-                    "instrument": "",
-                    "period": period,
-                    "value": row.get("val"),
-                    "value_text": _plain(row.get("val")),
-                    "currency": (fact.get("unit") or "").upper(),
+                    "figure_type": later_fact["tag"],
+                    "instrument": "quarter",
+                    "period": f"{quarter_start}/{later_end}",
+                    "value": value,
+                    "value_text": _plain(value),
+                    "currency": later_row["currency"],
                     "seen_at": seen_at,
-                    "announced_on": (row.get("filed") or "")[:10] or None,
-                    "source_url": _archive(cik, accn) if accn else None,
+                    "announced_on": later_row["announced_on"],
+                    "source_url": later_row["source_url"],
                     "source_type": "filing",
                     "verified": 1,
                 }
             )
-    return rows
+    return derived
 
 
 def figures_from_guidance(hits, seen_at):

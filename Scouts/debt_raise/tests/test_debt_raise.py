@@ -62,6 +62,10 @@ class DebtRaiseTests(unittest.TestCase):
         center = score_text("Financing for data center construction in Ohio.", self.rules)
         capex = score_text("<p>capital expenditures at the plant</p>", self.rules)
         acquire = score_text("The notes finance the acquisition of a transformer business.", self.rules)
+        boilerplate = score_text(
+            "We may use the net proceeds for general corporate purposes, which may include acquisitions of complementary businesses.",
+            self.rules,
+        )
         blank = score_text("   ", self.rules)
         unknown = score_text("Item 1.01 Entry into a Material Definitive Agreement.", self.rules)
         both = score_text(
@@ -74,6 +78,8 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertEqual(center.score, 5)
         self.assertEqual(capex.score, 3)
         self.assertEqual(acquire.score, 4)
+        self.assertEqual(boilerplate.score, 0)
+        self.assertNotIn("acquisition", boilerplate.matched)
         self.assertEqual(both.score, 5)
         self.assertIn("generic", both.matched)
         self.assertFalse(blank.decided)
@@ -308,6 +314,9 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertTrue(filings[0]["document_url"].startswith("https://www.sec.gov/"))
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(url.startswith("https://efts.sec.gov/") for url in calls))
+        self.assertNotIn("q=", calls[0])
+        self.assertNotIn("8-K%2FA", calls[0])
+        self.assertNotIn("8-K/A", calls[0])
 
     def test_full_document_fetch_stays_on_sec(self):
         index = json.loads((FIX / "sec_index.json").read_text(encoding="utf-8"))
@@ -327,6 +336,18 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertIn("capital expenditures", text)
         self.assertTrue(calls[0].endswith("/index.json"))
         self.assertTrue(calls[1].endswith("/d424b5.htm"))
+        names = [
+            "0000999001-26-000011-index.html",
+            "0000999001-26-000011.txt",
+            "R1.htm",
+            "R12.html",
+            "ex99.htm",
+            "d424b5.htm",
+        ]
+        self.assertEqual(fetcher.choose_primary_name(names), "d424b5.htm")
+        self.assertTrue(fetcher.summary_is_form_label("424B5", "424B5"))
+        self.assertTrue(fetcher.summary_is_form_label("FORM 8-K", "8-K"))
+        self.assertFalse(fetcher.summary_is_form_label("Prospectus supplement", "424B5"))
         self.assertTrue(all("sec.gov" in url for url in calls))
         with self.assertRaises(fetcher.EndpointError):
             fetcher._require_sec("https://example.com/file")
@@ -348,6 +369,18 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertEqual(amount["value"], 750_000_000)
         self.assertEqual(amount["currency"], "USD")
         self.assertEqual(amount["text"], "US$750 million")
+        prospectus = (
+            "The notes will be issued in minimum denominations of $2,000 and integral multiples of $1,000. "
+            "The common stock has a par value of $0.01 per share and the preferred stock has a par value of $0.0001. "
+            "The registration fee is $153,500. "
+            "We are offering $500,000,000 aggregate principal amount of the notes. "
+            "The offering is 12 million shares."
+        )
+        offering = first_amount(prospectus)
+        self.assertEqual(offering["value"], 500_000_000)
+        self.assertEqual(offering["text"], "$500,000,000")
+        self.assertIsNone(first_amount("minimum denominations of $2,000 and integral multiples of $1,000"))
+        self.assertIsNone(first_amount("par value of $0.01 and a registration fee of $153,500"))
         scored = score_text(text, self.rules)
         self.assertEqual(scored.score, 1)
         self.assertIn("generic", scored.matched)
@@ -420,6 +453,68 @@ class DebtRaiseTests(unittest.TestCase):
             applied = again.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
             self.assertEqual(applied, 2)
             again.close()
+
+    def test_same_day_filings_keep_distinct_periods_and_form_name_uses_first_page(self):
+        same_day = "2026-03-01"
+        first = _filing(ACC_GENERIC, "8-K", "8-K", ["1.01"])
+        second = _filing(ACC_CENTER, "8-K", "8-K", ["2.03"])
+        first["filed"] = same_day
+        second["filed"] = same_day
+        documents = {
+            ACC_GENERIC: "Proceeds will be used for general corporate purposes. The facility is $40 million.",
+            ACC_CENTER: "The facility funds data center construction of US$180 million.",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            summary = pipeline.run(
+                [first, second],
+                db,
+                documents=documents,
+                started_at="2026-03-04T12:00:00Z",
+            )
+            conn = sqlite3.connect(db)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT accession, period, stage_reached, score FROM debt_scout_filing_scores s "
+                "JOIN figures f ON f.run_id = s.run_id AND f.ticker = s.ticker "
+                "WHERE s.run_id = ?",
+                (summary["run_id"],),
+            ).fetchall()
+            periods = {
+                row["period"]
+                for row in conn.execute("SELECT period FROM figures")
+            }
+            conn.close()
+            self.assertEqual(periods, {f"{same_day} {ACC_GENERIC}", f"{same_day} {ACC_CENTER}"})
+            self.assertEqual(len(periods), 2)
+            by_acc = {row["accession"]: row for row in rows}
+            self.assertEqual(by_acc[ACC_GENERIC]["stage_reached"], "cheap_filter")
+            self.assertEqual(by_acc[ACC_GENERIC]["score"], 0)
+
+    def test_index_description_settles_without_a_primary_download(self):
+        calls = []
+
+        class Fake:
+            def json(self, url):
+                calls.append(("json", url))
+                return {
+                    "directory": {
+                        "item": [
+                            {"name": "d8k.htm", "description": "Proceeds for general corporate purposes"},
+                            {"name": "0000999001-26-000010-index.html", "description": "8-K"},
+                        ]
+                    }
+                }
+
+            def get(self, url, accept=""):
+                calls.append(("get", url))
+                raise AssertionError(url)
+
+        filing = _filing(ACC_GENERIC, "8-K", "8-K", ["1.01"])
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline.run([filing], str(Path(tmp) / "history.sqlite"), client=Fake(), started_at="2026-03-04T00:00:00Z")
+        self.assertTrue(calls)
+        self.assertTrue(all(kind == "json" for kind, _url in calls))
 
     def test_live_fixture_stores_a_figure_and_empty_run_exits_nonzero(self):
         import live

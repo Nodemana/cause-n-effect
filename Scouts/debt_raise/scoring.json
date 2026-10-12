@@ -8,7 +8,7 @@
     {"id": "working_capital", "pattern": "working capital", "weight": 1},
     {"id": "refinance", "pattern": "\\brefinanc\\w*|\\brepay(?:ment|ing)?\\b", "weight": 1},
     {"id": "capex", "pattern": "capital expenditures?|\\bcapex\\b", "weight": 3},
-    {"id": "acquisition", "pattern": "\\bacqui(?:red?|res|sition|sitions)\\b", "weight": 4},
+    {"id": "acquisition", "pattern": "(?:\\b(?:financ\\w+|funds?|funding|proceeds)\\b.{0,80}\\bacquisition of\\b)|(?:\\bacquisition of (?:a |the )(?!complementary\\b))", "weight": 4},
     {"id": "data_center", "pattern": "data cent(?:er|re) construction", "weight": 5}
   ]
 }
