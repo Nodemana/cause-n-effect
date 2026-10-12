@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from pipeline.counterparties import (
     BACKLOG_QUERY,
     CAPEX_QUERY,
+    FTS_COMPANY_CAP,
     FTS_DOCUMENT_CAP,
     FTS_MIN_INTERVAL,
     TICKERS_URL,
@@ -86,7 +87,7 @@ class CounterpartyTests(unittest.TestCase):
         )
         self.assertEqual(
             parties_from_text(
-                "The Company entered into an agreement with Globex Power Inc. The Board approved it.",
+                "The Company entered into a supply agreement with Globex Power Inc. The Board approved it.",
                 "supplier",
                 registrants,
             ),
@@ -126,13 +127,13 @@ class CounterpartyTests(unittest.TestCase):
             ]
             + [
                 "Our largest customer, Northwind Capital, continued.",
-                "The Company entered into an agreement with Globex Power Inc.",
+                "The Company entered into a supply agreement with Globex Power Inc.",
             ]
         )
         self.assertEqual(parties_from_text(blob, "supplier", registrants), ["Globex Power"])
         self.assertEqual(
             parties_from_text(blob, "customer", registrants),
-            ["Globex Power", "Northwind Capital"],
+            ["Northwind Capital"],
         )
         for junk in JUNK:
             self.assertNotIn(junk, parties_from_text(blob, "supplier", registrants))
@@ -181,8 +182,8 @@ class CounterpartyTests(unittest.TestCase):
         registrants = registrant_index({"0": {"cik_str": 26780, "ticker": "DAN", "title": "DANA INC"}})
         samples = [
             "The Company entered into a supply agreement with Dana Incorporated.",
-            "agreement between the Company and Dana Incorporated.",
-            "This agreement is by and among the Company and Dana Incorporated.",
+            "supply agreement between the Company and Dana Incorporated.",
+            "This supply agreement is by and among the Company and Dana Incorporated.",
             'Dana Incorporated (the "Supplier") accounted for approximately 18% of net sales.',
             "Dana Incorporated represented more than 11% of revenue.",
             "Sales to Dana Incorporated were material.",
@@ -700,8 +701,8 @@ class CounterpartyTests(unittest.TestCase):
                 ]
             }
         }
-        client.bodies[first] = "<p>The Company entered into an agreement with Dana Incorporated.</p>"
-        client.bodies[second] = "<p>The Company entered into an agreement with Globex Power Inc.</p>"
+        client.bodies[first] = "<p>The Company entered into a supply agreement with Dana Incorporated.</p>"
+        client.bodies[second] = "<p>The Company entered into a supply agreement with Globex Power Inc.</p>"
         lead = _lead("capex", "https://www.sec.gov/Archives/edgar/data/999001/orcl.htm")
         lead.company = "Oracle"
         previous = counterparties.FTS_DOCUMENT_CAP
@@ -737,7 +738,8 @@ class CounterpartyTests(unittest.TestCase):
 
     def test_fts_fetches_stay_at_ten_per_second(self):
         self.assertEqual(FTS_MIN_INTERVAL, 0.1)
-        self.assertGreaterEqual(FTS_DOCUMENT_CAP, 1)
+        self.assertEqual(FTS_COMPANY_CAP, 5)
+        self.assertEqual(FTS_DOCUMENT_CAP, 40)
         now = {"t": 50.0}
         slept = []
 
@@ -756,6 +758,326 @@ class CounterpartyTests(unittest.TestCase):
         self.assertEqual(slept, [0.1, 0.1])
         self.assertFalse(budget.take())
         self.assertEqual(slept, [0.1, 0.1])
+        company = _RequestBudget(cap=4, company_cap=2, sleep=sleep, clock=clock)
+        self.assertTrue(company.take("aaa"))
+        self.assertTrue(company.take("aaa"))
+        before = list(slept)
+        self.assertFalse(company.take("aaa"))
+        self.assertEqual(slept, before)
+        self.assertTrue(company.take("bbb"))
+        self.assertTrue(company.take("bbb"))
+        self.assertFalse(company.take("ccc"))
+        self.assertEqual(len(slept), 5)
+
+    def test_sentence_role_keeps_amzn_customers_and_deal_parties(self):
+        registrants = registrant_index(
+            {
+                "0": {"cik_str": 1018724, "ticker": "AMZN", "title": "Amazon.com, Inc."},
+                "1": {"cik_str": 1326801, "ticker": "META", "title": "Meta Platforms, Inc."},
+                "2": {"cik_str": 1543151, "ticker": "UBER", "title": "Uber Technologies, Inc."},
+                "3": {"cik_str": 2088000, "ticker": "GEV", "title": "Globex Power"},
+                "4": {"cik_str": 26780, "ticker": "DAN", "title": "DANA INC"},
+                "5": {"cik_str": 999200, "ticker": "NWT", "title": "Northwind Capital"},
+            }
+        )
+        customers = (
+            "Meta Platforms, Inc. and Uber Technologies, Inc. are customers. "
+            "The Company has an agreement to deploy Meta Platforms, Inc. technology. "
+            "Sales to Uber Technologies, Inc. grew. "
+            "Revenue from Meta Platforms, Inc. grew. "
+            "Uber Technologies, Inc. uses our storefront."
+        )
+        self.assertEqual(
+            parties_from_text(customers, "customer", registrants),
+            ["Meta Platforms, Inc.", "Uber Technologies, Inc."],
+        )
+        self.assertEqual(parties_from_text(customers, "supplier", registrants), [])
+        self.assertEqual(parties_from_text(customers, "deal_party", registrants), [])
+        supplier = "The Company will purchase from DANA INC under a supply agreement and procure from Globex Power."
+        self.assertEqual(parties_from_text(supplier, "supplier", registrants), ["DANA INC", "Globex Power"])
+        self.assertEqual(parties_from_text(supplier, "customer", registrants), [])
+        vendor = "Globex Power is the vendor."
+        self.assertEqual(parties_from_text(vendor, "supplier", registrants), ["Globex Power"])
+        deal = (
+            "The Company agreed to acquire Northwind Capital. "
+            "The merger with Globex Power remains subject to closing. "
+            "The separation from DANA INC was announced."
+        )
+        self.assertEqual(
+            parties_from_text(deal, "deal_party", registrants),
+            ["Northwind Capital", "Globex Power", "DANA INC"],
+        )
+        self.assertEqual(parties_from_text(deal, "supplier", registrants), [])
+        self.assertEqual(parties_from_text(deal, "customer", registrants), [])
+
+    def test_affiliates_exhibit_index_and_unity_are_not_counterparties(self):
+        unity = registrant_index({"0": {"cik_str": 1810806, "ticker": "U", "title": "Unity Software Inc."}})
+        self.assertIsNone(accept_party("community", unity))
+        self.assertIsNone(accept_party("Community", unity))
+        self.assertIsNone(accept_party("COMMUNITY", unity))
+        plain = accept_party("Unity Software Inc.", unity)
+        self.assertEqual(plain["ticker"], "U")
+        community = "Customers in the community use our products. COMMUNITY remained a heading."
+        self.assertEqual(parties_from_text(community, "customer", unity), [])
+        self.assertEqual(parties_from_text(community, "supplier", unity), [])
+        named = parties_from_text(
+            "The Company entered into a supply agreement with Unity Software Inc.",
+            "supplier",
+            unity,
+        )
+        self.assertEqual(named, ["Unity Software Inc."])
+        bank = accept_party("Community Bank Inc.", unity)
+        self.assertEqual(bank["name"], "Community Bank Inc.")
+        self.assertIsNone(bank["ticker"])
+        registrants = registrant_index(
+            {
+                "0": {"cik_str": 2088000, "ticker": "GEV", "title": "GE Vernova"},
+                "1": {"cik_str": 40545, "ticker": "GE", "title": "GENERAL ELECTRIC CO"},
+                "2": {"cik_str": 18230, "ticker": "CAT", "title": "Caterpillar Inc."},
+                "3": {"cik_str": 26780, "ticker": "DAN", "title": "DANA INC"},
+                "4": {"cik_str": 999401, "ticker": "GEIT", "title": "GE Infrastructure Technology LLC"},
+            }
+        )
+        exhibit = "Exhibit 10.1 Supply Agreement with Dana Incorporated"
+        self.assertEqual(parties_from_text(exhibit, "supplier", registrants), [])
+        self.assertEqual(parties_from_text("Index of Exhibits. Supply agreement with Dana Incorporated.", "supplier", registrants), [])
+        self.assertEqual(
+            parties_from_text("The spin-off of GENERAL ELECTRIC, its former parent, was completed.", "supplier", registrants),
+            [],
+        )
+        self.assertEqual(
+            parties_from_text("The spin-off of GENERAL ELECTRIC, its former parent, was completed.", "deal_party", registrants),
+            [],
+        )
+        self.assertIn(
+            "GE Infrastructure Technology LLC",
+            parties_from_text(
+                "The Company entered into a supply agreement with GE Infrastructure Technology LLC.",
+                "supplier",
+                registrants,
+            ),
+        )
+
+        start, end = search_window(SWEEP_AT)
+        gev = "2088000"
+        cat = "999400"
+        client = _Client()
+        client.pages[TICKERS_URL] = {
+            "0": {"cik_str": 2088000, "ticker": "GEV", "title": "GE Vernova"},
+            "1": {"cik_str": 40545, "ticker": "GE", "title": "GENERAL ELECTRIC CO"},
+            "2": {"cik_str": 18230, "ticker": "CAT", "title": "Caterpillar Inc."},
+            "3": {"cik_str": 26780, "ticker": "DAN", "title": "DANA INC"},
+            "4": {"cik_str": 999401, "ticker": "GEIT", "title": "GE Infrastructure Technology LLC"},
+        }
+        gev_body = """
+        <html><body>
+        <p>Exhibit Index</p>
+        <p>Exhibit 10.1 Supply Agreement with Dana Incorporated</p>
+        <p>The Company entered into a supply agreement with GE Infrastructure Technology LLC.</p>
+        <p>GENERAL ELECTRIC, the former parent, completed the spin-off.</p>
+        <p>The separation from GENERAL ELECTRIC was a spin-off.</p>
+        <p>The Company entered into a supply agreement with Dana Incorporated.</p>
+        </body></html>
+        """
+        cat_body = """
+        <html><body>
+        <p>The Company entered into a supply agreement with Caterpillar Insurance Company.</p>
+        <p>Caterpillar Insurance Company is a wholly owned subsidiary.</p>
+        <p>The Company entered into a supply agreement with Dana Incorporated.</p>
+        </body></html>
+        """
+        for cik, accession, filename, body in (
+            (gev, "0002088000-26-000008", "gev-8k.htm", gev_body),
+            (cat, "0000999400-26-000008", "cat-8k.htm", cat_body),
+        ):
+            client.pages[submissions_url(cik)] = {
+                "filings": {
+                    "recent": {
+                        "form": ["8-K"],
+                        "accessionNumber": [accession],
+                        "filingDate": ["2026-08-15"],
+                        "primaryDocument": [filename],
+                        "items": ["8.01"],
+                    }
+                }
+            }
+            client.bodies[archive_document_url(cik, accession, filename)] = body
+            client.pages[efts_url(cik, CAPEX_QUERY, start, end)] = {"hits": {"hits": []}}
+        gev_lead = _lead("capex", "https://www.sec.gov/Archives/edgar/data/2088000/gev.htm", ticker="GEV")
+        gev_lead.company = "GE Vernova"
+        cat_lead = _lead("capex", "https://www.sec.gov/Archives/edgar/data/999400/cat.htm", ticker="CAT")
+        cat_lead.company = "Caterpillar"
+        enrich_leads([gev_lead], client=client, names={}, as_of=SWEEP_AT)
+        enrich_leads([cat_lead], client=client, names={}, as_of=SWEEP_AT)
+        gev_names = [(party["role"], party["name"]) for party in gev_lead.counterparties]
+        cat_names = [(party["role"], party["name"]) for party in cat_lead.counterparties]
+        self.assertEqual(gev_names, [("supplier", "DANA INC")])
+        self.assertEqual(cat_names, [("supplier", "DANA INC")])
+        for party in gev_lead.counterparties + cat_lead.counterparties:
+            self.assertNotIn("GE Infrastructure", party["name"])
+            self.assertNotIn("GENERAL ELECTRIC", party["name"])
+            self.assertNotIn("Caterpillar Insurance", party["name"])
+
+    def test_download_cap_is_five_per_company_and_forty_total(self):
+        start, end = search_window(SWEEP_AT)
+        previous_total = counterparties.FTS_DOCUMENT_CAP
+        previous_company = counterparties.FTS_COMPANY_CAP
+        counterparties.FTS_DOCUMENT_CAP = 3
+        counterparties.FTS_COMPANY_CAP = 2
+        try:
+            first_cik = ORCL_CIK
+            second_cik = "999101"
+            client = _Client()
+            client.pages[TICKERS_URL] = {
+                "0": {"cik_str": 999001, "ticker": "ORCL", "title": "Oracle Corporation"},
+                "1": {"cik_str": 999101, "ticker": "AMZN", "title": "Amazon.com, Inc."},
+                "2": {"cik_str": 26780, "ticker": "DAN", "title": "DANA INC"},
+            }
+            hits = []
+            for cik, count in ((first_cik, 3), (second_cik, 2)):
+                accession = f"0000{cik}-26-000090"
+                rows = []
+                for index in range(count):
+                    filename = f"doc-{index}.htm"
+                    url = archive_document_url(cik, accession, filename)
+                    client.bodies[url] = (
+                        "<p>The Company entered into a supply agreement with Dana Incorporated.</p>"
+                    )
+                    rows.append(
+                        {"_id": f"{accession}:{filename}", "_source": {"adsh": accession, "form": "8-K"}}
+                    )
+                    hits.append(url)
+                client.pages[submissions_url(cik)] = {
+                    "filings": {
+                        "recent": {
+                            "form": [],
+                            "accessionNumber": [],
+                            "filingDate": [],
+                            "primaryDocument": [],
+                            "items": [],
+                        }
+                    }
+                }
+                client.pages[efts_url(cik, CAPEX_QUERY, start, end)] = {"hits": {"hits": rows}}
+            first = _lead("capex", "https://www.sec.gov/Archives/edgar/data/999001/orcl.htm")
+            first.company = "Oracle"
+            second = _lead(
+                "capex",
+                "https://www.sec.gov/Archives/edgar/data/999101/amzn.htm",
+                ticker="AMZN",
+            )
+            second.company = "Amazon.com, Inc."
+            enrich_leads([first, second], client=client, names={}, as_of=SWEEP_AT)
+        finally:
+            counterparties.FTS_DOCUMENT_CAP = previous_total
+            counterparties.FTS_COMPANY_CAP = previous_company
+        first_docs = [url for url in hits[:3] if url in client.urls]
+        second_docs = [url for url in hits[3:] if url in client.urls]
+        self.assertEqual(first_docs, hits[:2])
+        self.assertEqual(second_docs, hits[3:4])
+        self.assertNotIn(hits[2], client.urls)
+        self.assertNotIn(hits[4], client.urls)
+        self.assertEqual([party["name"] for party in first.counterparties], ["DANA INC"])
+        self.assertEqual(first.counterparties[0]["role"], "supplier")
+
+    def test_amzn_customers_do_not_merge_as_suppliers(self):
+        os.environ["SEC_CONTACT_EMAIL"] = CONTACT
+        start, end = search_window(SWEEP_AT)
+        amzn = "999101"
+        meta = "999102"
+        amzn_8k = "0000999101-26-000008"
+        client = _Client(email=CONTACT)
+        tickers = _tickers()
+        tickers["10"] = {"cik_str": 999101, "ticker": "AMZN", "title": "Amazon.com, Inc."}
+        tickers["11"] = {"cik_str": 999102, "ticker": "META", "title": "Meta Platforms, Inc."}
+        tickers["12"] = {"cik_str": 999103, "ticker": "UBER", "title": "Uber Technologies, Inc."}
+        client.pages[TICKERS_URL] = tickers
+        client.pages[submissions_url(amzn)] = {
+            "filings": {
+                "recent": {
+                    "form": ["8-K"],
+                    "accessionNumber": [amzn_8k],
+                    "filingDate": ["2026-08-15"],
+                    "primaryDocument": ["amzn-8k.htm"],
+                    "items": ["8.01"],
+                }
+            }
+        }
+        client.bodies[archive_document_url(amzn, amzn_8k, "amzn-8k.htm")] = (
+            "<html><body>"
+            "<p>Meta Platforms, Inc. and Uber Technologies, Inc. are customers.</p>"
+            "<p>The Company has an agreement to deploy Meta Platforms, Inc. technology.</p>"
+            "<p>Sales to Uber Technologies, Inc. grew, and revenue from Meta Platforms, Inc. grew.</p>"
+            "<p>Uber Technologies, Inc. uses our storefront.</p>"
+            "<p>The Company agreed to acquire Northwind Capital.</p>"
+            "</body></html>"
+        )
+        client.pages[efts_url(amzn, CAPEX_QUERY, start, end)] = {"hits": {"hits": []}}
+        client.pages[efts_url(amzn, '"Meta Platforms, Inc."', start, end)] = {"hits": {"hits": []}}
+        client.pages[submissions_url(meta)] = {
+            "filings": {
+                "recent": {
+                    "form": [],
+                    "accessionNumber": [],
+                    "filingDate": [],
+                    "primaryDocument": [],
+                    "items": [],
+                }
+            }
+        }
+        client.pages[efts_url(meta, BACKLOG_QUERY, start, end)] = {"hits": {"hits": []}}
+        client.pages[efts_url(meta, '"Amazon.com, Inc."', start, end)] = {"hits": {"hits": []}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                current = _figure("AMZN", "Amazon.com, Inc.", "quarter", "2026-07-01/2026-09-30", 5_000_000_000)
+                prior = _figure("AMZN", "Amazon.com, Inc.", "quarter", "2025-07-01/2025-09-30", 1_000_000_000)
+                for row in (current, prior):
+                    row["source_url"] = "https://www.sec.gov/Archives/edgar/data/999101/amzn.htm"
+                backlog = _orders("META", "filing", "2026-06-30", 2_000_000_000, figure_type="backlog")
+                backlog["company"] = "Meta Platforms, Inc."
+                backlog["source_url"] = "https://www.sec.gov/Archives/edgar/data/999102/meta.htm"
+                save_run(conn, "capex", "2026-10-12T14:30:52Z", [current, prior, *_caps("AMZN", "META")])
+                save_run(conn, "orders-backlog", "2026-10-12T14:31:00Z", [backlog])
+            finally:
+                conn.close()
+            run_pipeline(
+                path,
+                provider=StubProvider(),
+                token_budget=80000,
+                now=SWEEP_AT,
+                parties_client=client,
+            )
+            conn = connect(path)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT l.source_scout, l.ticker, l.summary, t.thesis_text,
+                           c.role, c.name, c.ticker AS party_ticker
+                    FROM leads AS l
+                    JOIN theses AS t ON t.lead_id = l.lead_id
+                    LEFT JOIN lead_counterparties AS c ON c.lead_id = l.lead_id
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+        self.assertFalse(any(row["source_scout"] == "legate" for row in rows))
+        self.assertFalse(any("cross-company" in (row["summary"] or "") for row in rows))
+        amzn_rows = [row for row in rows if row["ticker"] == "AMZN"]
+        self.assertTrue(amzn_rows)
+        parties = {(row["role"], row["name"], row["party_ticker"]) for row in amzn_rows if row["name"]}
+        self.assertIn(("customer", "Meta Platforms, Inc.", "META"), parties)
+        self.assertIn(("customer", "Uber Technologies, Inc.", "UBER"), parties)
+        self.assertIn(("deal_party", "Northwind Capital", "NWT"), parties)
+        self.assertFalse(any(role == "supplier" for role, _name, _ticker in parties))
+        thesis = "\n".join(row["thesis_text"] or "" for row in amzn_rows)
+        self.assertIn("Customers named: Meta Platforms, Inc.", thesis)
+        self.assertIn("Uber Technologies, Inc.", thesis)
+        self.assertIn("Suppliers named: none found", thesis)
+        self.assertNotIn("Suppliers named: Meta", thesis)
+        self.assertNotIn("Suppliers named: Uber", thesis)
+        self.assertNotIn("Northwind", thesis)
 
 
 class _Client:

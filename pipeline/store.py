@@ -169,7 +169,7 @@ def insert_lead(conn, run_id, planned, created_at):
             name = (party.get("name") or "").strip()
             role = (party.get("role") or "").strip()
             source_url = (party.get("source_url") or "").strip()
-            if role not in {"supplier", "customer", "buyer"} or not name or not source_url:
+            if role not in {"supplier", "customer", "buyer", "deal_party"} or not name or not source_url:
                 continue
             ticker = (party.get("ticker") or "").strip() or None
             conn.execute(
