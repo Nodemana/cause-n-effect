@@ -83,7 +83,7 @@ def store_run(db_path, table, started_at, notes=None):
     beats a year-to-date value, then the latest filing wins. Drops are logged.
     """
     seen_at = started_at[:10]
-    figures = dedupe_figures(figures_from_records(table.get("records") or [], seen_at))
+    figures = dedupe_figures(keep_distinct_amounts(figures_from_records(table.get("records") or [], seen_at)))
     conn = connect(db_path)
     try:
         run_id = save_run(conn, "orders-backlog", started_at, figures, notes=notes)
@@ -124,15 +124,46 @@ def figures_from_records(records, seen_at):
     return rows
 
 
-def stale_latest_periods(records, as_of, max_age_days=DEFAULT_STALE_DAYS):
-    """Tickers whose newest dated period ends more than `max_age_days` before `as_of`.
+def keep_distinct_amounts(figures):
+    """A repeated prose metric collapses. A different amount on that key stays.
 
-    The rows stay in the table. The caller prints them and marks the latest row.
+    Company-facts rows keep the shared key, so two currencies for one concept
+    still collapse. Orders and backlog from one release do not.
+    """
+    seen = {}
+    for row in figures or []:
+        instrument = row.get("instrument") or ""
+        prose = ":" in instrument or instrument.startswith(("orders", "backlog", "revenue"))
+        if not prose:
+            continue
+        key = (
+            row.get("ticker") or "",
+            row.get("figure_type") or "",
+            instrument,
+            row.get("period") or "",
+        )
+        value = round(float(row.get("value") or 0), 2)
+        prior = seen.get(key)
+        if prior is None:
+            seen[key] = value
+            continue
+        if prior != value:
+            row["instrument"] = f"{instrument}|{value:.0f}"
+    return figures
+
+
+def stale_latest_periods(records, as_of, max_age_days=DEFAULT_STALE_DAYS):
+    """Tickers whose newest stored period ends more than `max_age_days` before `as_of`.
+
+    A sentence that names a date but not an amount is not a period. The rows
+    that do have a value stay in the table. The caller prints the stale ones.
     """
     as_of = _as_of(as_of)
     latest = {}
     for record in records or []:
         ticker = record.get("ticker")
+        if record.get("value") is None:
+            continue
         end = _period_end(record.get("equipment_or_period"))
         if not ticker or end is None:
             continue

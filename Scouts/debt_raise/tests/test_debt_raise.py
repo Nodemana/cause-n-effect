@@ -550,6 +550,110 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertIn("0001193125-26-037840", notes["period"])
         self.assertEqual(notes["announced_on"], "2026-02-06")
 
+    def test_orcl_prospectus_keeps_the_cover_total_not_the_second_listing(self):
+        prospectus = (FIX / "orcl_424b2_035603.txt").read_text(encoding="utf-8")
+        certificate = (FIX / "orcl_8k_037840.txt").read_text(encoding="utf-8")
+        self.assertIn("Issuance of Additional Notes", prospectus)
+        self.assertIn("$2,250,000,000 for the 2046 Fixed Rate Notes", prospectus)
+        cover = deal_amount(prospectus)
+        self.assertEqual(cover["value"], 25_000_000_000)
+        self.assertEqual(cover["text"], "$25,000,000,000")
+        self.assertNotEqual(cover["value"], 42_500_000_000)
+        self.assertNotIn("+", cover["text"])
+        officers = deal_amount(certificate)
+        self.assertEqual(officers["value"], 25_000_000_000)
+        self.assertEqual(officers["currency"], "USD")
+
+    def test_orcl_8k_and_424b_within_a_week_store_one_deal(self):
+        prospectus = (FIX / "orcl_424b2_035603.txt").read_text(encoding="utf-8")
+        certificate = (FIX / "orcl_8k_037840.txt").read_text(encoding="utf-8")
+        facility = "The facility funds data center construction of US$90 million."
+        first = _filing("0001193125-26-035603", "424B2", prospectus, ticker="ORCL")
+        second = _filing("0001193125-26-037840", "8-K", certificate, ["2.03"], ticker="ORCL")
+        separate = _filing("0001193125-26-040000", "8-K", facility, ["1.01"], ticker="ORCL")
+        first["filed"] = "2026-02-03"
+        second["filed"] = "2026-02-04"
+        separate["filed"] = "2026-02-05"
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                pipeline.run(
+                    [first, second, separate],
+                    db,
+                    documents={
+                        first["accession"]: prospectus,
+                        second["accession"]: certificate,
+                        separate["accession"]: facility,
+                    },
+                    started_at="2026-02-05T00:00:00Z",
+                )
+            logged = stderr.getvalue()
+            conn = sqlite3.connect(db)
+            conn.row_factory = sqlite3.Row
+            figures = conn.execute(
+                "SELECT value, period, announced_on FROM figures ORDER BY value"
+            ).fetchall()
+            conn.close()
+        self.assertIn("dropped duplicate deal", logged)
+        self.assertIn("0001193125-26-035603", logged)
+        self.assertIn("kept_accession=0001193125-26-037840", logged)
+        self.assertEqual(sorted(row["value"] for row in figures), [90_000_000, 25_000_000_000])
+        notes = next(row for row in figures if row["value"] == 25_000_000_000)
+        self.assertIn("0001193125-26-037840", notes["period"])
+        self.assertEqual(notes["announced_on"], "2026-02-04")
+
+    def test_near_amounts_or_an_8k_and_424b_are_one_deal(self):
+        def figure(value, form, filed, accession, figure_type="bond_amount"):
+            return {
+                "ticker": "ORCL",
+                "currency": "USD",
+                "figure_type": figure_type,
+                "value": value,
+                "form": form,
+                "accession": accession,
+                "announced_on": filed,
+            }
+
+        doubled = [
+            figure(42_500_000_000, "424B2", "2026-02-03", "0001193125-26-035603"),
+            figure(25_000_000_000, "8-K", "2026-02-04", "0001193125-26-037840"),
+        ]
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            kept = pipeline._dedupe_issuer_deals(doubled)
+        self.assertEqual([row["accession"] for row in kept], ["0001193125-26-037840"])
+        self.assertIn("0001193125-26-035603", stderr.getvalue())
+
+        close = [
+            figure(25_000_000_000, "8-K", "2026-02-03", "0001193125-26-000001"),
+            figure(27_000_000_000, "8-K", "2026-02-06", "0001193125-26-000002"),
+        ]
+        with redirect_stderr(io.StringIO()):
+            kept = pipeline._dedupe_issuer_deals(close)
+        self.assertEqual([row["value"] for row in kept], [27_000_000_000])
+
+        apart = [
+            figure(25_000_000_000, "8-K", "2026-02-03", "0001193125-26-000003"),
+            figure(40_000_000_000, "8-K", "2026-02-06", "0001193125-26-000004"),
+        ]
+        kept = pipeline._dedupe_issuer_deals(apart)
+        self.assertEqual(sorted(row["value"] for row in kept), [25_000_000_000, 40_000_000_000])
+
+        late = [
+            figure(25_000_000_000, "424B2", "2026-02-03", "0001193125-26-035603"),
+            figure(25_000_000_000, "8-K", "2026-02-11", "0001193125-26-037840"),
+        ]
+        kept = pipeline._dedupe_issuer_deals(late)
+        self.assertEqual(len(kept), 2)
+
+        mixed = [
+            figure(25_000_000_000, "8-K", "2026-02-04", "0001193125-26-037840"),
+            figure(90_000_000, "8-K", "2026-02-05", "0001193125-26-040000", figure_type="facility_amount"),
+        ]
+        kept = pipeline._dedupe_issuer_deals(mixed)
+        self.assertEqual(sorted(row["figure_type"] for row in kept), ["bond_amount", "facility_amount"])
+
     def test_amount_fixtures_pick_the_deal_and_send_the_rest_to_review(self):
         cases = [
             ("amount_denomination.txt", "DEN", None),

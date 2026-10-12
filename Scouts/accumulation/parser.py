@@ -430,10 +430,46 @@ def _asx_company(text):
     return None
 
 
+_STREET_WORD = re.compile(
+    r"\b(?:street|road|avenue|drive|lane|place|boulevard|highway|suite|floor)\b",
+    re.I,
+)
+_CORPORATE = re.compile(
+    r"\b(?:pty|ltd|limited|inc|llc|plc|lp|corp|corporation|company|partners|capital|group|fund|trust)\b",
+    re.I,
+)
+
+
+def _address_like(value):
+    """A street line is not a holder. 'Harbour Lane Capital' is a name."""
+    text = (value or "").strip()
+    if not text:
+        return False
+    if re.match(r"^\d{1,6}\s+\S", text):
+        return True
+    if re.search(r"\b[A-Z]{2}\s+\d{5}\b", text):
+        return True
+    if _STREET_WORD.search(text) and not _CORPORATE.search(text):
+        return True
+    return False
+
+
+def _entity_name(line):
+    text = (line or "").strip()
+    if not text or _field_label(text) or _address_like(text) or not _CORPORATE.search(text):
+        return None
+    text = re.split(r"\s+and each of\b", text, maxsplit=1, flags=re.I)[0]
+    text = re.sub(r"\s*\(ACN\b[^)]*\)", "", text, flags=re.I).strip(" .,")
+    if not text or _address_like(text):
+        return None
+    return text
+
+
 def _asx_holder(text):
-    """The substantial holder, not the Address label that follows Name on the form."""
+    """The substantial holder, not the Address label or a street under Name."""
     match = re.search(
-        r"Details of substantial holder\b(.*?)(?:\n\s*2\.\s|\n\s*There was a change|\n\s*The holder became)",
+        r"Details of substantial (?:holder|shareholder)\b"
+        r"(.*?)(?:\n\s*2\.\s|\n\s*There was a change|\n\s*The holder became|\n\s*6\.\s*Addresses\b)",
         text,
         re.I | re.S,
     )
@@ -444,11 +480,17 @@ def _asx_holder(text):
         if not named:
             continue
         value = named.group(1).strip()
-        if value and not _field_label(value):
+        if value and not _field_label(value) and not _address_like(value):
             return value
+        if value and _address_like(value):
+            continue
         found = _next_value(lines, index + 1)
-        if found:
+        if found and not _address_like(found):
             return found
+    for line in lines:
+        entity = _entity_name(line)
+        if entity:
+            return entity
     return None
 
 

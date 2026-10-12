@@ -20,6 +20,7 @@ import fetcher  # noqa: E402
 import live  # noqa: E402
 import parser  # noqa: E402
 import pipeline  # noqa: E402
+from shared.store import dedupe_figures  # noqa: E402
 from tags import CUSTOMER_SECTORS, PROXY_TAGS, SUPPLIER_EQUIPMENT  # noqa: E402
 
 FIX = SCOUT / "fixtures"
@@ -234,6 +235,185 @@ class OrdersBacklogTests(unittest.TestCase):
         finally:
             if previous is not None:
                 os.environ["SEC_CONTACT_EMAIL"] = previous
+
+    def test_gev_release_keeps_orders_backlog_and_segment_amounts(self):
+        text = (FIX / "exhibit99_gev_2q26.txt").read_text(encoding="utf-8")
+        gev = {
+            "ticker": "GEV",
+            "name": "GE Vernova Inc",
+            "cik": "0001996810",
+            "equipment": ["turbines", "transformers", "switchgear"],
+        }
+        rows = parser.parse_release(
+            text, gev, "supplier_order", "8-K", "https://www.sec.gov/gev-2q26", "2026-07-22"
+        )
+        figures = dedupe_figures(pipeline.keep_distinct_amounts(live._figures(rows, "2026-07-22")))
+        by_instrument = {row["instrument"]: row for row in figures}
+        expected = {
+            "orders": 24_200_000_000,
+            "orders:Electrification": 6_300_000_000,
+            "revenue:Wind": 2_000_000_000,
+            "orders:Wind": 1_200_000_000,
+            "orders:data center": 5_000_000_000,
+        }
+        for instrument, value in expected.items():
+            self.assertIn(instrument, by_instrument)
+            self.assertEqual(by_instrument[instrument]["value"], value)
+            self.assertEqual(by_instrument[instrument]["period"], "2026-06-30")
+            self.assertNotIn("|", instrument)
+        self.assertGreater(len(figures), 1)
+        self.assertNotIn("order", by_instrument)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            table = pipeline.build_table(releases=[{
+                "company": gev,
+                "body": text,
+                "url": "https://www.sec.gov/gev-2q26",
+                "filing_date": "2026-07-22",
+                "source_side": "supplier_order",
+                "source_type": "8-K",
+            }])
+            pipeline.store_run(db, table, "2026-07-22T00:00:00Z")
+            conn = sqlite3.connect(db)
+            stored = {
+                row[0]: row[1]
+                for row in conn.execute("SELECT instrument, value FROM figures")
+            }
+            conn.close()
+        for instrument, value in expected.items():
+            self.assertEqual(stored[instrument], value)
+
+    def test_etn_10q_stores_total_and_segment_backlog(self):
+        text = (FIX / "etn_10q_backlog.txt").read_text(encoding="utf-8")
+        etn = {
+            "ticker": "ETN",
+            "name": "Eaton Corp plc",
+            "cik": "0001551182",
+            "equipment": ["transformers", "switchgear"],
+        }
+        self.assertIn("governmental contractor", text)
+        self.assertIn("December 31, 2025", text)
+        rows = parser.parse_release(
+            text, etn, "supplier_order", "10-Q", "https://www.sec.gov/etn-10q", "2026-08-05"
+        )
+        valued = [row for row in rows if row.get("value") is not None]
+        disclosures = {row["disclosure"]: row for row in valued}
+        self.assertEqual(disclosures["backlog"]["value"], 24_100_000_000)
+        self.assertEqual(disclosures["backlog"]["equipment_or_period"], "2026-06-30")
+        self.assertEqual(disclosures["backlog:Electrical Americas"]["value"], 15_175_000_000)
+        self.assertEqual(disclosures["backlog:Electrical Global"]["value"], 3_602_000_000)
+        self.assertEqual(disclosures["backlog:Aerospace"]["value"], 5_164_000_000)
+        for row in valued:
+            self.assertNotEqual(row["equipment_or_period"], "2025-12-31")
+        self.assertEqual(pipeline.report_stale_latest(rows, "2026-10-12", stream=io.StringIO()), [])
+        risk = (
+            "There are certain factors that could cause actual results to differ materially, "
+            "including rules associated with being a governmental contractor, as discussed in the "
+            "Annual Report on Form 10-K for the fiscal year ended December 31, 2025."
+        )
+        risk_rows = parser.parse_release(
+            risk, etn, "supplier_order", "10-Q", "https://www.sec.gov/etn-risk", "2026-08-05"
+        )
+        self.assertTrue(all(row.get("value") is None for row in risk_rows))
+        self.assertEqual(pipeline.report_stale_latest(risk_rows, "2026-10-12", stream=io.StringIO()), [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            table = pipeline.build_table(releases=[{
+                "company": etn,
+                "body": text,
+                "url": "https://www.sec.gov/etn-10q",
+                "filing_date": "2026-08-05",
+                "source_side": "supplier_order",
+                "source_type": "10-Q",
+            }])
+            pipeline.store_run(db, table, "2026-08-05T00:00:00Z")
+            conn = sqlite3.connect(db)
+            stored = {
+                row[0]: row[1]
+                for row in conn.execute("SELECT instrument, value FROM figures")
+            }
+            conn.close()
+        self.assertEqual(stored["backlog"], 24_100_000_000)
+        self.assertEqual(stored["backlog:Electrical Americas"], 15_175_000_000)
+        self.assertEqual(stored["backlog:Electrical Global"], 3_602_000_000)
+        self.assertEqual(stored["backlog:Aerospace"], 5_164_000_000)
+
+    def test_supplier_10q_is_collected_without_a_socket(self):
+        text = (FIX / "etn_10q_backlog.txt").read_text(encoding="utf-8")
+        etn = {
+            "ticker": "ETN",
+            "name": "Eaton Corp plc",
+            "cik": "0001551182",
+            "equipment": ["transformers", "switchgear"],
+        }
+        tie = {
+            "filings": {
+                "recent": {
+                    "form": ["10-K", "10-Q"],
+                    "accessionNumber": ["0001551182-26-000010", "0001551182-26-000011"],
+                    "filingDate": ["2026-02-24", "2026-02-24"],
+                }
+            }
+        }
+        self.assertEqual(fetcher.latest_periodic(tie)["form"], "10-Q")
+        primary = fetcher._primary_html({
+            "directory": {
+                "item": [
+                    {"name": "ex991.htm"},
+                    {"name": "eat-20260630.htm"},
+                ]
+            }
+        })
+        self.assertEqual(primary, "eat-20260630.htm")
+
+        class Fake:
+            def __init__(self):
+                self.urls = []
+
+            def json(self, url):
+                self.urls.append(url)
+                if url.endswith("index.json"):
+                    return {
+                        "directory": {
+                            "item": [
+                                {"name": "ex991.htm"},
+                                {"name": "eat-20260630.htm"},
+                            ]
+                        }
+                    }
+                return {
+                    "filings": {
+                        "recent": {
+                            "form": ["10-K", "10-Q", "8-K"],
+                            "accessionNumber": [
+                                "0001551182-26-000010",
+                                "0001551182-26-000020",
+                                "0001551182-26-000030",
+                            ],
+                            "filingDate": ["2026-02-24", "2026-08-05", "2026-08-05"],
+                        }
+                    }
+                }
+
+            def get(self, url, accept=None):
+                self.urls.append(url)
+                return (text.encode("utf-8"), "text/html")
+
+        client = Fake()
+        found = fetcher.collect_supplier_reports([etn], client=client)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["form"], "10-Q")
+        self.assertEqual(found[0]["filing_date"], "2026-08-05")
+        self.assertTrue(found[0]["url"].endswith("/eat-20260630.htm"))
+        self.assertTrue(all("sec.gov" in url for url in client.urls))
+        self.assertNotIn("ex991.htm", found[0]["url"])
+        rows = parser.parse_release(
+            found[0]["body"], etn, "supplier_order", "10-Q", found[0]["url"], found[0]["filing_date"]
+        )
+        total = next(row for row in rows if row["disclosure"] == "backlog" and row["value"] == 24_100_000_000)
+        self.assertEqual(total["equipment_or_period"], "2026-06-30")
 
     def test_one_table_shape(self):
         payload = json.loads((FIX / "amat_facts.json").read_text(encoding="utf-8"))

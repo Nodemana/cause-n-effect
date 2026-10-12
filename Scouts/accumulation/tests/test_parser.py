@@ -265,6 +265,30 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(figure["currency"], "pct")
         self.assertIn("BlackRock, Inc.", figure["period"])
 
+    def test_asx_604_rejects_a_street_and_keeps_the_holder_name(self):
+        from Scouts.accumulation.parser import _address_like
+
+        self.assertTrue(_address_like("5800 S Corporate Place"))
+        self.assertTrue(_address_like("Sioux Falls, SD 57108"))
+        self.assertFalse(_address_like("Harbour Lane Capital"))
+        self.assertFalse(_address_like("Citigroup Global Markets Australia Pty Limited"))
+
+        change = parse_document(Document(
+            source="asx",
+            body=load("asx_604_bhp_citigroup.txt"),
+            url="https://www.asx.com.au/asx/statistics/announcements/2924-03145697-3A703571",
+            form_type="604",
+            filing_date="2026-03-04",
+            ticker="BHP",
+            accession="2924-03145697-3A703571",
+        ))[0]
+        self.assertEqual(change.filer, "Citigroup Global Markets Australia Pty Limited")
+        self.assertNotEqual(change.filer, "5800 S Corporate Place")
+        self.assertNotIn("5800", change.filer)
+        self.assertNotIn("Corporate Place", change.filer)
+        self.assertEqual(change.target_name, "BHP Group Limited")
+        self.assertEqual(change.ticker, "BHP")
+
     def test_fixtures_contain_no_email(self):
         import re
         for path in FIX.iterdir():
