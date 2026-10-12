@@ -40,11 +40,11 @@ Merging happens only at the Legate, after the individual theses exist, and only 
 
 Only a merged finding comes back, as one new lead, for a second, fresh full thesis pass: grade, thesis, potential ROI, risks, timeframe, and stated assumptions. The rules files for the constituent lead types are the grading criteria for that one lead. The output is still one thesis. A lead the Legate does not merge gets no second pass and goes straight to the Praetorians for critique. The merged finding goes to the Praetorians after this second-pass thesis.
 
-That second pass includes a priced-in check. The Centurion looks at the actual stock price and past performance and asks whether the move already looks priced in. If the capex or backlog is just the tail end of an already massive run of spending or orders that has already come through, and the stock has already re-rated, the thesis is probably old and is marked stale or downgraded. The stock price and past performance come from quote data. Spending and order figures stay on SEC filings, ASX announcements, and company releases.
+That second pass includes a priced-in check. The Centurion looks at the actual stock price and past performance and asks whether the move already looks priced in. A big prior stock-price run does not by itself mean the thesis is old. It may be a new driver or an acceleration of an existing one. The Centurion does not reject, mark stale, or downgrade on price action alone. It records the prior run and the possible tail-end-of-cycle concern as a noted concern in the thesis, in the risks or assumptions, for the Praetorians and the Legate to weigh. That concern is that the capex or backlog may be just the tail end of an already massive run of spending or orders that has already come through. The stock price and past performance come from quote data. Spending and order figures stay on SEC filings, ASX announcements, and company releases.
 
 ## Job
 
-1. Grade this lead against the criteria in its rules file. On a second pass, grade each constituent type's criteria once, and grade the priced-in check.
+1. Grade this lead against the criteria in its rules file. On a second pass, grade each constituent type's criteria once, and record the priced-in check as a noted concern in the risks or assumptions.
 2. Research and write the investment thesis, including the potential ROI.
 3. Estimate the timeframe.
 4. Set out the risks.
@@ -106,15 +106,13 @@ Figures only from SEC filings, ASX announcements, and company releases.
 
 If this lead is the single new lead from a Legate merge, this is the second, fresh full pass: still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged does not reach this pass.
 
-That second pass includes a priced-in check. The Centurion looks at the actual stock price and past performance and asks whether the move already looks priced in. If the capex or backlog is just the tail end of an already massive run of spending or orders that has already come through, and the stock has already re-rated, the thesis is probably old and is marked stale or downgraded. The stock price and past performance come from quote data.
+That second pass includes a priced-in check. The Centurion looks at the actual stock price and past performance and asks whether the move already looks priced in. A big prior stock-price run does not by itself mean the thesis is old. It may be a new driver or an acceleration of an existing one. The Centurion does not reject, mark stale, or downgrade on price action alone. It records the prior run and the possible tail-end-of-cycle concern as a noted concern in the thesis, in the risks or assumptions, for the Praetorians and the Legate to weigh. That concern is that the capex or backlog may be just the tail end of an already massive run of spending or orders that has already come through. The stock price and past performance come from quote data.
 ```
 
 ## Expected output
 
 ```markdown
 ## Grade
-
-Priced-in (second pass only):
 
 ## Thesis
 
@@ -123,9 +121,10 @@ Priced-in (second pass only):
 Where to put the money:
 Expected return:
 Risks:
+Priced-in (second pass only, a noted concern):
 Timeframe:
 
 ## Assumptions
 
-- ...
+- Priced-in (second pass only, a noted concern): ...
 ```
