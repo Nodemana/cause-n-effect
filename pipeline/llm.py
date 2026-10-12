@@ -14,6 +14,8 @@ import re
 import urllib.error
 import urllib.request
 
+from pipeline.counterparties import is_common_heading
+
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -352,10 +354,8 @@ def _centurion(prompt):
     growth_text = _field(prompt, "GROWTH_TEXT")
     if growth_text:
         thesis = f"{thesis} {growth_text}"
-    if suppliers:
-        thesis += " Suppliers named: " + ", ".join(item["name"] for item in suppliers) + "."
-    if customers:
-        thesis += " Customers named: " + ", ".join(item["name"] for item in customers) + "."
+    thesis += _named_line("Suppliers named", suppliers, lead_type == "capex")
+    thesis += _named_line("Customers named", customers, lead_type == "orders_backlog")
     if buyers:
         thesis += " Buyers named: " + ", ".join(item["name"] for item in buyers) + "."
     return {
@@ -559,12 +559,20 @@ def _labeled(text, role):
     return found
 
 
+def _named_line(label, items, required):
+    if items:
+        return " " + label + ": " + ", ".join(item["name"] for item in items) + "."
+    if required:
+        return " " + label + ": none found."
+    return ""
+
+
 def _unique_parties(items):
     seen = set()
     kept = []
     for item in items:
         name = (item.get("name") or "").strip()
-        if not name:
+        if not name or is_common_heading(name):
             continue
         key = name.casefold()
         if key in seen:
