@@ -5,6 +5,8 @@ Finds investment leads early: spending signals (capex, debt raises, orders, stak
 ## Architecture
 A Portfolio Manager agent (the Legate) orchestrates the scouts. Python scripts do the deterministic work: fetching, parsing, storing and diffing. Agents only handle judgment, which keeps token spend low.
 
+The sweep from scouts to the weekly shortlist is designed in [docs/pipeline-architecture.md](docs/pipeline-architecture.md).
+
 ## Data
 - SQLite history DB: time-stamped figures with source links and a verified flag, diffed run to run.
 - Official sources only: SEC EDGAR, ASX announcements, company releases. Blogs and media are banned. Prices come from quote data.
