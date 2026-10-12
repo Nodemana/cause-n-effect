@@ -6,9 +6,13 @@ Centurions are thesis researchers. The rules file is the structure. Inside it, a
 
 **Individual.** One scout produced the lead. The Centurion is given two things: the rules file for that lead's type, and the lead.
 
-**Merged.** The Legate has already combined two or more leads that support each other. A capex lead plus an orders_backlog lead on the same company is the usual case. The merge is stored in `legate_merges` (`survivor_lead_id` is the merged lead; the constituent lead ids are in `legate_merge_leads`). The Centurion is given the rules file for each constituent lead type, plus the merged lead.
+**Merged.** The merge to prioritise is cross-company capex-to-backlog. A capex lead on the buyer (the company spending the money) and an orders_backlog lead on a different company (the supplier receiving those orders) are the same money in two scouts. When that pairing is detected, the Legate merges the two into one combined lead for a single Centurion.
 
-A merged lead is still one lead. Grading, the thesis, the ROI, the risks, the timeframe, the recommendation, and the assumptions are each produced once.
+Any merge, and that pairing especially, needs traceable evidence that links the two leads. Enough evidence is the buyer's capex filing naming the supplier, the supplier's filing naming the customer or contract, or another official-source link between the two companies' filings. A bare sector match is not enough. The linking evidence is stored on the `legate_merges` row (`rationale`). `survivor_lead_id` is the combined lead; the constituent lead ids are in `legate_merge_leads`.
+
+Same-company merges of supportive leads stay allowed, on that same evidence rule. They are not the merge to prioritise.
+
+The Centurion is given the rules file for each constituent lead type, plus the merged lead. A merged lead is still one lead. Grading, the thesis, the ROI, the risks, the timeframe, the recommendation, and the assumptions are each produced once.
 
 Lead types, one rules file each:
 
