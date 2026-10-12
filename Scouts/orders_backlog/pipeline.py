@@ -5,10 +5,13 @@ import sys
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_REPO = _ROOT.parents[1]
+for _entry in (str(_REPO), str(_ROOT)):
+    if _entry not in sys.path:
+        sys.path.insert(0, _entry)
 
 from parser import parse_company_facts, parse_release
+from shared.store import connect, dedupe_figures, save_run
 
 _RECORD_KEYS = (
     "source_side",
@@ -66,6 +69,70 @@ def build_table(customer_facts=(), supplier_facts=(), releases=()):
 
 def to_json(table):
     return json.dumps(table, indent=2) + "\n"
+
+
+def figures_from_records(records, seen_at):
+    """History rows for one orders-backlog table. Flagged rows stay, unverified."""
+    figures = []
+    for row in records:
+        ticker = row.get("ticker")
+        if not ticker:
+            continue
+        filed = str(row.get("filing_date") or "")[:10]
+        figures.append(
+            {
+                "ticker": ticker,
+                "company": row.get("company"),
+                "figure_type": _figure_type(row),
+                "instrument": row.get("counterparty") or "",
+                "period": row.get("equipment_or_period") or "",
+                "value": row.get("value"),
+                "value_text": _plain(row.get("value")),
+                "currency": row.get("currency"),
+                "seen_at": seen_at,
+                "announced_on": filed or None,
+                "source_url": row.get("source_url"),
+                "source_type": row.get("source_type"),
+                "verified": 0 if row.get("flags") else 1,
+                "start": row.get("start"),
+                "end": row.get("end"),
+                "frame": row.get("frame"),
+                "fp": row.get("fp"),
+            }
+        )
+    return figures
+
+
+def store_run(db_path, records, started_at, seen_at, notes=None):
+    """Dedupe, then write one orders-backlog run. Duplicate keys are logged."""
+    figures = dedupe_figures(figures_from_records(records, seen_at))
+    run_id = f"{started_at[:10]}-orders-backlog"
+    conn = connect(db_path)
+    try:
+        save_run(conn, run_id, "orders-backlog", started_at, figures, notes=notes)
+    finally:
+        conn.close()
+    return {"run_id": run_id, "figures": len(figures)}
+
+
+def _figure_type(row):
+    for note in reversed(row.get("notes") or []):
+        if (
+            isinstance(note, str)
+            and note.isidentifier()
+            and note[:1].isupper()
+            and not note.isupper()
+        ):
+            return note
+    return row.get("disclosure") or "backlog"
+
+
+def _plain(value):
+    if value is None:
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def assert_shape(row):

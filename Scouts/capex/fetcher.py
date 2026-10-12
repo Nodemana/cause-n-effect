@@ -17,6 +17,7 @@ for _entry in (str(_REPO), str(_HERE)):
         sys.path.insert(0, _entry)
 
 from shared.nethttp import EndpointError, asx_client, sec_client  # noqa: E402
+from shared.store import log_duplicate, prefer_fact  # noqa: E402
 
 COMPANYFACTS = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 EFTS_URL = "https://efts.sec.gov/LATEST/search-index"
@@ -59,7 +60,7 @@ def collect_companyfacts(companies, client=None, n=4):
                 "ticker": company["ticker"],
                 "cik": cik,
                 "company": payload.get("entityName") or company.get("name") or company["ticker"],
-                "facts": select_facts(payload, n),
+                "facts": select_facts(payload, n, ticker=company["ticker"]),
             }
         )
     return found
@@ -69,11 +70,12 @@ def companyfacts_url(cik):
     return COMPANYFACTS.format(cik=_cik(cik))
 
 
-def select_facts(payload, n=4):
-    """One row per tag, unit, and period. The latest filing wins. Non-statements are dropped.
+def select_facts(payload, n=4, ticker=""):
+    """One row per tag, unit, and period. Non-statements are dropped.
 
-    Cash-flow tags are stored as the year-to-date span SEC reported. A quarter is
-    not derived here.
+    A single-quarter value beats a year-to-date value for that same key. When
+    those are equal, the latest filing wins. Cash-flow tags keep the year-to-date
+    span SEC reported. A quarter is not derived here.
     """
     gaap = (payload.get("facts") or {}).get("us-gaap") or {}
     chosen = []
@@ -91,8 +93,18 @@ def select_facts(payload, n=4):
                     continue
                 key = (row.get("start"), end)
                 previous = best.get(key)
-                if previous is None or (row.get("filed") or "") > (previous.get("filed") or ""):
+                if previous is None or prefer_fact(row, previous):
+                    if previous is not None:
+                        log_duplicate(
+                            _fact_view(tag, previous, ticker, unit),
+                            _fact_view(tag, row, ticker, unit),
+                        )
                     best[key] = row
+                else:
+                    log_duplicate(
+                        _fact_view(tag, row, ticker, unit),
+                        _fact_view(tag, previous, ticker, unit),
+                    )
             ordered = sorted(
                 best.values(),
                 key=lambda row: (row.get("end") or "", row.get("start") or ""),
@@ -179,6 +191,24 @@ def check_feed(payload, code):
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, dict) or "items" not in data:
         raise EndpointError(f"ASX announcements feed for {code} failed the health check")
+
+
+def _fact_view(tag, row, ticker, unit):
+    start = row.get("start")
+    end = row.get("end") or ""
+    return {
+        "ticker": ticker,
+        "figure_type": tag,
+        "instrument": "",
+        "period": f"{start}/{end}" if start else end,
+        "value": row.get("val"),
+        "currency": unit,
+        "filed": row.get("filed"),
+        "frame": row.get("frame"),
+        "fp": row.get("fp"),
+        "start": start,
+        "end": row.get("end"),
+    }
 
 
 def _cik(value):

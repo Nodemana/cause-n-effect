@@ -2,7 +2,7 @@
 
 Design for the path from a scout finding to the few theses the Imperator reads each week. Scouts already fetch, parse, and store figures. The Legate sweep, Centurions, and Praetorians are design only: `Centurions/` and `Praetorians/` hold a one-line role note, and nothing in the repo runs those agents yet.
 
-`orders_backlog` and `accumulation` have structure and fixture tests, and no live command yet. `capex`, `debt_raise`, and `insider_buying` each have a live command documented in [setup.md](setup.md).
+`accumulation` has structure and fixture tests, and no live command yet. `capex`, `debt_raise`, `orders_backlog`, and `insider_buying` each have a live command documented in [setup.md](setup.md).
 
 Agents are ephemeral. A Centurion, a Praetorian, and the Legate start each run with an empty context. The SQLite database is the sole persistent memory. This repository holds schema and code only. Databases, account identifiers, and anyone's positions or results stay off the tree (local `*.sqlite` files are gitignored).
 

@@ -10,7 +10,7 @@ for _entry in (str(_REPO), str(_HERE)):
         sys.path.insert(0, _entry)
 
 from money import first_amount  # noqa: E402
-from shared.store import connect, save_run  # noqa: E402
+from shared.store import connect, dedupe_figures, save_run  # noqa: E402
 
 
 def run(db_path, facts, guidance, announcements, started_at, seen_at, notes=None):
@@ -19,6 +19,7 @@ def run(db_path, facts, guidance, announcements, started_at, seen_at, notes=None
     figures.extend(figures_from_facts(facts, seen_at))
     figures.extend(figures_from_guidance(guidance, seen_at))
     figures.extend(figures_from_asx(announcements, seen_at))
+    figures = dedupe_figures(figures)
     run_id = f"{started_at[:10]}-capex"
     conn = connect(db_path)
     try:
@@ -53,6 +54,10 @@ def figures_from_facts(bundles, seen_at):
                     "source_url": _archive(cik, accn) if accn else None,
                     "source_type": "filing",
                     "verified": 1,
+                    "start": start,
+                    "end": end,
+                    "frame": row.get("frame"),
+                    "fp": row.get("fp"),
                 }
             )
     return rows

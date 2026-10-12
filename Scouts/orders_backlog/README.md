@@ -22,4 +22,9 @@ SEC XBRL tagged numbers cover reported actuals only. They miss untagged figures 
 
 ## Status
 
-Structure and tests only, no live runs.
+Fixture tests, plus a company-facts live pull. SEC live runs where `SEC_CONTACT_EMAIL` is set. The command does not call ASX.
+
+```bash
+python3 Scouts/orders_backlog/tests/test_orders_backlog.py
+python3 -m Scouts.orders_backlog.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/orders_backlog/fixtures/amat_facts.json --no-asx
+```

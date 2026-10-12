@@ -44,7 +44,7 @@ python3 Scouts/capex/tests/test_capex.py
 
 ## Live pulls
 
-These write the shared `figures` table. Each command exits nonzero when that run stores no figure. Use one `--db` path when the runs should share a file. The file stays out of git. SEC requests run only when `SEC_CONTACT_EMAIL` is set; otherwise the command says so and does not send one. ASX still runs.
+These write the shared `figures` table. Each command exits nonzero when that run stores no figure. Use one `--db` path when the runs should share a file. The file stays out of git. SEC requests run only when `SEC_CONTACT_EMAIL` is set; otherwise the command says so and does not send one. ASX still runs for debt-raise, insider-buying, and capex. orders_backlog stores SEC company facts and does not call ASX.
 
 On the machine that has the contact email:
 
@@ -52,6 +52,7 @@ On the machine that has the contact email:
 python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite
 python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite
 python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite
+python3 -m Scouts.orders_backlog.live --db /tmp/cause-n-effect.sqlite
 ```
 
 Offline SEC checks use a fixture instead of EDGAR and do not open a network connection:
@@ -60,6 +61,7 @@ Offline SEC checks use a fixture instead of EDGAR and do not open a network conn
 python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/debt_raise/fixtures/sec_check.json --no-asx
 python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/insider_buying/fixtures/sec_form4_ceo.xml --no-asx
 python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/capex/fixtures/companyfacts_amzn.json --no-asx
+python3 -m Scouts.orders_backlog.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/orders_backlog/fixtures/amat_facts.json --no-asx
 ```
 
 Debt-raise can print the threshold histogram for a database that already has a run:
