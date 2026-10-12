@@ -5,10 +5,13 @@ import sys
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_REPO = _ROOT.parents[1]
+for _entry in (str(_REPO), str(_ROOT)):
+    if _entry not in sys.path:
+        sys.path.insert(0, _entry)
 
-from parser import parse_company_facts, parse_release
+from parser import parse_company_facts, parse_release  # noqa: E402
+from shared.store import connect, save_run  # noqa: E402
 
 _RECORD_KEYS = (
     "source_side",
@@ -66,6 +69,54 @@ def build_table(customer_facts=(), supplier_facts=(), releases=()):
 
 def to_json(table):
     return json.dumps(table, indent=2) + "\n"
+
+
+def store_run(db_path, table, started_at, notes=None):
+    """Insert one orders-backlog run. Earlier runs and their figures stay put."""
+    seen_at = started_at[:10]
+    figures = figures_from_records(table.get("records") or [], seen_at)
+    conn = connect(db_path)
+    try:
+        run_id = save_run(conn, "orders-backlog", started_at, figures, notes=notes)
+    finally:
+        conn.close()
+    return {"run_id": run_id, "figures": len(figures)}
+
+
+def figures_from_records(records, seen_at):
+    rows = []
+    for record in records:
+        ticker = record.get("ticker")
+        if not ticker:
+            continue
+        value = record.get("value")
+        filed = record.get("filing_date") or ""
+        rows.append(
+            {
+                "ticker": ticker,
+                "company": record.get("company"),
+                "figure_type": record["source_side"],
+                "instrument": record.get("counterparty") or record.get("disclosure") or "",
+                "period": record.get("equipment_or_period") or filed,
+                "value": value,
+                "value_text": _plain(value),
+                "currency": record.get("currency"),
+                "seen_at": seen_at,
+                "announced_on": filed[:10] or None,
+                "source_url": record.get("source_url"),
+                "source_type": record.get("source_type"),
+                "verified": 0 if record.get("flags") else 1,
+            }
+        )
+    return rows
+
+
+def _plain(value):
+    if value is None:
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def assert_shape(row):

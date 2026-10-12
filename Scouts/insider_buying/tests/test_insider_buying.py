@@ -397,6 +397,40 @@ Nature of change:
             if previous is not None:
                 os.environ["SEC_CONTACT_EMAIL"] = previous
 
+    def test_same_day_runs_keep_their_figures(self):
+        import live
+
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        stamps = ["2026-10-12T08:00:00Z", "2026-10-12T16:45:01Z"]
+        original = live.utc_now
+        live.utc_now = lambda: stamps.pop(0)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = str(Path(tmp) / "history.sqlite")
+                args = ["--db", db, "--sec-fixture", str(FIX / "sec_form4_ceo.xml"), "--no-asx"]
+                self.assertEqual(live.main(args), 0)
+                conn = sqlite3.connect(db)
+                conn.execute(
+                    "UPDATE figures SET value = 1 WHERE run_id = ?",
+                    ("2026-10-12-080000-insider-buying",),
+                )
+                conn.commit()
+                conn.close()
+                self.assertEqual(live.main(args), 0)
+                conn = sqlite3.connect(db)
+                values = {
+                    row[0]: row[1]
+                    for row in conn.execute("SELECT run_id, value FROM figures")
+                }
+                conn.close()
+                self.assertEqual(values["2026-10-12-080000-insider-buying"], 1)
+                self.assertEqual(values["2026-10-12-164501-insider-buying"], 80000)
+                self.assertNotIn("2026-10-12-insider-buying", values)
+        finally:
+            live.utc_now = original
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
+
 
 if __name__ == "__main__":
     unittest.main()

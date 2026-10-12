@@ -196,6 +196,42 @@ class OrdersBacklogTests(unittest.TestCase):
         with self.assertRaises(EndpointError):
             fetcher.collect_ir([company], client=object())
 
+    def test_same_day_runs_keep_their_figures(self):
+        from model import record
+
+        def table(value):
+            return {
+                "records": [
+                    record(
+                        source_side="supplier_order",
+                        company="Northwind Turbines",
+                        ticker="NWT",
+                        source_url="https://www.sec.gov/order",
+                        filing_date="2026-06-02",
+                        source_type="8-K",
+                        disclosure="order",
+                        counterparty="Harbour Utilities",
+                        equipment_or_period="turbines",
+                        value=value,
+                        currency="USD",
+                    )
+                ]
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            first = pipeline.store_run(db, table(180_000_000), "2026-10-12T08:15:00Z")
+            second = pipeline.store_run(db, table(40_000_000), "2026-10-12T18:45:09Z")
+            self.assertEqual(first["run_id"], "2026-10-12-081500-orders-backlog")
+            self.assertEqual(second["run_id"], "2026-10-12-184509-orders-backlog")
+            conn = sqlite3.connect(db)
+            morning = conn.execute("SELECT value FROM figures WHERE run_id = ?", (first["run_id"],)).fetchone()[0]
+            afternoon = conn.execute("SELECT value FROM figures WHERE run_id = ?", (second["run_id"],)).fetchone()[0]
+            self.assertEqual(morning, 180_000_000)
+            self.assertEqual(afternoon, 40_000_000)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 2)
+            conn.close()
+
     def test_asx_markit_keeps_order_headlines(self):
         from shared.nethttp import EndpointError
 

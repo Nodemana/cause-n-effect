@@ -164,7 +164,7 @@ class CapexTests(unittest.TestCase):
                 seen_at="2026-10-12",
                 notes="fixture",
             )
-            self.assertEqual(summary["run_id"], "2026-10-12-capex")
+            self.assertEqual(summary["run_id"], "2026-10-12-000000-capex")
             conn = sqlite3.connect(db)
             conn.row_factory = sqlite3.Row
             run = conn.execute("SELECT scout, notes FROM runs").fetchone()
@@ -193,6 +193,47 @@ class CapexTests(unittest.TestCase):
             self.assertEqual(asx["currency"], "AUD")
             self.assertEqual(asx["source_type"], "asx_announcement")
             self.assertTrue(asx["source_url"].startswith("https://asx.api.markitdigital.com/"))
+            conn.close()
+
+    def test_same_day_runs_keep_their_figures(self):
+        def bundle(value):
+            return [
+                {
+                    "ticker": "AMZN",
+                    "cik": "0001018724",
+                    "company": "Amazon.com Inc",
+                    "facts": [
+                        {
+                            "tag": "PaymentsToAcquireProductiveAssets",
+                            "unit": "usd",
+                            "row": {
+                                "start": "2025-01-01",
+                                "end": "2025-03-31",
+                                "val": value,
+                                "accn": "0001018724-25-000001",
+                                "filed": "2025-05-01",
+                            },
+                        }
+                    ],
+                }
+            ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            first = pipeline.run(
+                db, bundle(25_000_000_000), [], [], started_at="2026-10-12T08:15:00Z", seen_at="2026-10-12"
+            )
+            second = pipeline.run(
+                db, bundle(11_000_000_000), [], [], started_at="2026-10-12T18:45:09Z", seen_at="2026-10-12"
+            )
+            self.assertEqual(first["run_id"], "2026-10-12-081500-capex")
+            self.assertEqual(second["run_id"], "2026-10-12-184509-capex")
+            conn = sqlite3.connect(db)
+            morning = conn.execute("SELECT value FROM figures WHERE run_id = ?", (first["run_id"],)).fetchone()[0]
+            afternoon = conn.execute("SELECT value FROM figures WHERE run_id = ?", (second["run_id"],)).fetchone()[0]
+            self.assertEqual(morning, 25_000_000_000)
+            self.assertEqual(afternoon, 11_000_000_000)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 2)
             conn.close()
 
     def test_amounts_and_sec_email_gate(self):

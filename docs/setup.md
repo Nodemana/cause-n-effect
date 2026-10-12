@@ -35,6 +35,7 @@ Every SEC and ASX request goes through `shared/nethttp.py`. The client spaces re
 Run from the repository root. These use fixtures and do not open a network connection.
 
 ```bash
+python3 -m unittest discover -s shared/tests -t .
 python3 -m unittest discover -s Scouts/accumulation/tests -t .
 python3 Scouts/orders_backlog/tests/test_orders_backlog.py
 python3 Scouts/debt_raise/tests/test_debt_raise.py
@@ -44,7 +45,7 @@ python3 Scouts/capex/tests/test_capex.py
 
 ## Live pulls
 
-These write the shared `figures` table. Each command exits nonzero when that run stores no figure. Use one `--db` path when the runs should share a file. The file stays out of git. SEC requests run only when `SEC_CONTACT_EMAIL` is set; otherwise the command says so and does not send one. ASX still runs.
+These write the shared `figures` table. Each run id is the UTC date, the UTC time as HHMMSS, and the scout name (`2026-10-12-143052-capex`). A second run the same day inserts its own id and leaves the first run's figures in place. Each command exits nonzero when that run stores no figure. Use one `--db` path when the runs should share a file. The file stays out of git. SEC requests run only when `SEC_CONTACT_EMAIL` is set; otherwise the command says so and does not send one. ASX still runs.
 
 On the machine that has the contact email:
 

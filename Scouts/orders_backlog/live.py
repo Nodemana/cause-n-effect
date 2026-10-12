@@ -104,10 +104,15 @@ def main(argv=None):
     if not figures:
         print("No orders-backlog figures.")
         return 1
-    run_id = f"{seen}-orders-backlog"
     conn = connect(db_path)
     try:
-        save_run(conn, run_id, "orders-backlog", started, figures, notes=f"records={len(table['records'])}")
+        run_id = save_run(
+            conn,
+            "orders-backlog",
+            started,
+            figures,
+            notes=f"records={len(table['records'])}",
+        )
     finally:
         conn.close()
     print(f"run {run_id} figures {len(figures)}")

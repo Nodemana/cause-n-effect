@@ -85,11 +85,10 @@ def main(argv=None):
     if not figures:
         print("No accumulation figures.")
         return 1
-    run_id = f"{seen}-accumulation"
     notes = f"candidates={len(report['candidates'])} review={len(report['review'])}"
     conn = connect(db_path)
     try:
-        save_run(conn, run_id, "accumulation", started, figures, notes=notes)
+        run_id = save_run(conn, "accumulation", started, figures, notes=notes)
     finally:
         conn.close()
     print(f"run {run_id} figures {len(figures)} review {len(report['review'])}")
