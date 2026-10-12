@@ -19,7 +19,7 @@ sys.path.insert(0, str(SCOUT))
 import fetcher  # noqa: E402
 import pipeline  # noqa: E402
 import report  # noqa: E402
-from score import first_amount, histogram, load_config, needs_full_document, score_text  # noqa: E402
+from score import first_amount, histogram, load_config, needs_full_document, pick_amount, score_text  # noqa: E402
 
 FIX = SCOUT / "fixtures"
 ACC_GENERIC = "0000999001-26-000010"
@@ -355,6 +355,88 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertEqual(scored.score, 1)
         self.assertIn("generic", scored.matched)
         self.assertIn("refinance", scored.matched)
+
+    def test_amount_fixtures_pick_the_deal_and_send_the_rest_to_review(self):
+        cases = [
+            ("amount_denomination.txt", "DEN", None),
+            ("amount_par.txt", "PAR", None),
+            ("amount_fee.txt", "FEE", None),
+            ("amount_aggregate.txt", "AGG", 750_000_000),
+            ("amount_offering.txt", "OFF", 500_000_000),
+            ("amount_cover.txt", "COV", 1_250_000_000),
+        ]
+        filings = []
+        documents = {}
+        for index, (name, ticker, expected) in enumerate(cases, start=1):
+            text = (FIX / name).read_text(encoding="utf-8")
+            amount, needs_review = pick_amount(text)
+            if expected is None:
+                self.assertIsNone(amount, name)
+                self.assertIsNone(first_amount(text), name)
+                self.assertTrue(needs_review, name)
+            else:
+                self.assertEqual(amount["value"], expected, name)
+                self.assertEqual(amount["currency"], "USD", name)
+                self.assertNotEqual(amount["text"], "$1,000", name)
+                self.assertFalse(needs_review, name)
+            accession = f"0000999001-26-0001{index:02d}"
+            filings.append(_filing(accession, "424B5", "424B5", ticker=ticker))
+            documents[accession] = text
+
+        tiny, tiny_review = pick_amount("The aggregate principal amount is $750,000.")
+        self.assertIsNone(tiny)
+        self.assertTrue(tiny_review)
+        mixed, mixed_review = pick_amount("A $200 million term loan and a $50 million revolver.")
+        self.assertIsNone(mixed)
+        self.assertTrue(mixed_review)
+
+        class Fake:
+            def json(self, url):
+                raise AssertionError(url)
+
+            def get(self, url, accept=""):
+                raise AssertionError(url)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            pipeline.run(
+                filings,
+                db,
+                client=Fake(),
+                documents=documents,
+                started_at="2026-06-01T00:00:00Z",
+            )
+            conn = sqlite3.connect(db)
+            conn.row_factory = sqlite3.Row
+            figures = {
+                row["ticker"]: row
+                for row in conn.execute(
+                    "SELECT ticker, figure_type, value, value_text, currency, verified FROM figures"
+                )
+            }
+            flags = {
+                row["ticker"]: json.loads(row["flags"])
+                for row in conn.execute("SELECT ticker, flags FROM debt_scout_filing_scores")
+            }
+            conn.close()
+
+        for ticker in ("DEN", "PAR", "FEE"):
+            self.assertNotIn(ticker, figures)
+            self.assertIn("review", flags[ticker])
+        self.assertEqual(figures["AGG"]["figure_type"], "bond_amount")
+        self.assertEqual(figures["AGG"]["value"], 750_000_000)
+        self.assertEqual(figures["AGG"]["value_text"], "$750,000,000")
+        self.assertEqual(figures["AGG"]["currency"], "USD")
+        self.assertEqual(figures["AGG"]["verified"], 1)
+        self.assertNotIn("review", flags["AGG"])
+        self.assertEqual(figures["OFF"]["value"], 500_000_000)
+        self.assertEqual(figures["OFF"]["value_text"], "$500 million")
+        self.assertEqual(figures["OFF"]["figure_type"], "bond_amount")
+        self.assertNotIn("review", flags["OFF"])
+        self.assertEqual(figures["COV"]["value"], 1_250_000_000)
+        self.assertEqual(figures["COV"]["value_text"], "$1,250,000,000")
+        self.assertEqual(figures["COV"]["figure_type"], "bond_amount")
+        self.assertNotIn("review", flags["COV"])
 
     def test_asx_headlines_stay_on_the_list_until_the_full_read(self):
         payload = {

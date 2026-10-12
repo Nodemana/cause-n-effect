@@ -18,7 +18,7 @@ from fetcher import (
     in_scope,
     summary_is_form_label,
 )
-from score import figure_kind, first_amount, histogram, load_config, needs_full_document, score_text
+from score import figure_kind, histogram, load_config, needs_full_document, pick_amount, score_text
 from shared.nethttp import EndpointError, asx_client, sec_client
 from store import open_db, save_run, utc_now
 
@@ -64,6 +64,9 @@ def run(filings, db_path, threshold=None, client=None, documents=None, config=No
             stage = "cheap_filter"
             final = cheap
             scored_text = phrase
+        amount, needs_review = pick_amount(scored_text)
+        if needs_review:
+            flags.append("review")
         row = {
             "accession": filing["accession"],
             "ticker": filing.get("ticker"),
@@ -75,7 +78,7 @@ def run(filings, db_path, threshold=None, client=None, documents=None, config=No
             "flags": json.dumps(flags),
         }
         scores.append(row)
-        figure = _figure(filing, scored_text, started_at)
+        figure = _figure(filing, scored_text, started_at, amount)
         if figure is not None:
             figures.append(figure)
 
@@ -147,8 +150,7 @@ def _full_text(filing, client, documents):
     return fetch_primary_text(client, filing["cik"], accession)
 
 
-def _figure(filing, text, started_at):
-    amount = first_amount(text)
+def _figure(filing, text, started_at, amount):
     ticker = filing.get("ticker") or ""
     if amount is None or not ticker:
         return None
