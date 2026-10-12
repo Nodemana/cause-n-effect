@@ -63,6 +63,7 @@ def load_config(path=CONFIG_PATH):
         "threshold": float(payload["threshold"]),
         "mid_min": float(payload["mid_min"]),
         "mid_max": float(payload["mid_max"]),
+        "min_deal_usd": float(payload.get("min_deal_usd", DEFAULT_MIN_DEAL_USD)),
         "rules": rules,
     }
 
@@ -130,6 +131,9 @@ def redact(text):
 
 # Under US$1,000,000 is a denomination, a par figure, or a fee, not a deal.
 _MIN_DEAL = 1_000_000
+# Structured notes of a few million are real deals above that floor. The
+# pipeline drops them unless the caller lowers this store floor.
+DEFAULT_MIN_DEAL_USD = 50_000_000
 _BEFORE = 120
 _AFTER = 80
 _AGGREGATE = re.compile(r"aggregate principal(?:\s+amount)?", re.I)
@@ -150,6 +154,17 @@ _CONVERSION_OPEN = re.compile(
 )
 _CONVERSION_CLOSE = re.compile(r"(?:\s+[A-Za-z]+){0,4}\s*\)")
 _SENTENCE = re.compile(r"\.\s+")
+_NOISE_BEFORE = re.compile(
+    r"(?:less than|at least|greater than|more than|up to|minimum denomination|"
+    r"offering price(?: of)?|discount of|commission of|fee of)\s*$",
+    re.I,
+)
+_NOISE_AFTER = re.compile(r"^\s*(?:or less|or fewer|or more|per note|per share)\b", re.I)
+_STATED_TOTAL = re.compile(
+    r"total aggregate principal|\bin the aggregate\s*$",
+    re.I,
+)
+_IN_THE_AGGREGATE = re.compile(r"^\s*in the aggregate\b", re.I)
 
 
 def _amount_from(match):
@@ -201,12 +216,16 @@ def _sentence_after(gap):
 
 def _classify(plain, match, prev_end, next_start):
     amount = _amount_from(match)
+    amount["start"] = match.start()
+    amount["end"] = match.end()
     if amount["value"] < _MIN_DEAL:
         return None
     # Labels bind inside the current sentence, so the next sentence's
     # "aggregate principal amount" is not attached to the previous figure.
     before = _sentence_before(plain[prev_end : match.start()])
     after = _sentence_after(plain[match.end() : next_start])
+    if _NOISE_BEFORE.search(before[-40:]) or _NOISE_AFTER.match(after):
+        return None
     reject_at = _nearest(before, after, _REJECT)
     aggregate_at = _nearest(before, after, _AGGREGATE)
     offering_at = _nearest(before, after, _OFFERING_PHRASE)
@@ -233,13 +252,18 @@ def _one_value(group):
     return len({round(item["value"], 2) for item in group}) == 1
 
 
-def _choose(candidates):
+def _choose(candidates, plain, min_deal):
     if not candidates:
         return None, True
     for tier in (3, 2, 1):
         group = [item for item in candidates if item["tier"] == tier]
         if not group:
             continue
+        if tier == 3:
+            combined = _combine_principal(group, plain, min_deal)
+            if combined is None:
+                return None, True
+            return combined, False
         if _one_value(group):
             return group[0], False
         return None, True
@@ -248,11 +272,61 @@ def _choose(candidates):
     return None, True
 
 
-def pick_amount(text):
+def _combine_principal(group, plain, min_deal):
+    """Stated total, else the sum of the tranches, else the largest principal.
+
+    A figure under `min_deal` is left out of the sum when a larger principal
+    amount is present, so a covenant floor is not added to the deal.
+    """
+    floor = float(min_deal)
+    totals = [item for item in group if _stated_total(plain, item)]
+    candidates = totals or list(group)
+    if any(item["value"] >= floor for item in candidates):
+        candidates = [item for item in candidates if item["value"] >= floor]
+    if not candidates:
+        return None
+    candidates = _one_currency(candidates)
+    if totals:
+        return max(candidates, key=lambda item: item["value"])
+    if _one_value(candidates) or len(candidates) == 1:
+        return candidates[0]
+    largest = max(candidates, key=lambda item: item["value"])
+    rest = [item for item in candidates if item is not largest]
+    rest_sum = sum(item["value"] for item in rest)
+    if abs(largest["value"] - rest_sum) <= 1:
+        return largest
+    return {
+        "value": sum(item["value"] for item in candidates),
+        "currency": candidates[0]["currency"],
+        "text": " + ".join(item["text"] for item in candidates),
+    }
+
+
+def _one_currency(pool):
+    currencies = {item["currency"] for item in pool}
+    if len(currencies) <= 1:
+        return pool
+    usd = [item for item in pool if item["currency"] == "USD"]
+    if usd:
+        return usd
+    chosen = max(pool, key=lambda item: item["value"])["currency"]
+    return [item for item in pool if item["currency"] == chosen]
+
+
+def _stated_total(plain, item):
+    before = plain[max(0, item["start"] - 110) : item["start"]]
+    after = plain[item["end"] : item["end"] + 24]
+    if _STATED_TOTAL.search(before):
+        return True
+    return _IN_THE_AGGREGATE.search(after) is not None
+
+
+def pick_amount(text, min_deal=DEFAULT_MIN_DEAL_USD):
     """Return (amount or None, needs_review).
 
     Prefer an aggregate principal amount, then "offering of $X" or an aggregate
-    offering, then a cover-page total. Amounts near denominations, integral
+    offering, then a cover-page total. Several aggregate-principal tranches are
+    summed, or a stated total is kept. Amounts near denominations, integral
     multiples, par value, per note, or a fee are ignored, as is anything under
     US$1,000,000. needs_review is true when money was stated but no single
     plausible deal size is clear, so the caller stores nothing.
@@ -271,7 +345,7 @@ def pick_amount(text):
         parsed = _classify(plain, match, prev_end, next_start)
         if parsed is not None:
             candidates.append(parsed)
-    amount, needs_review = _choose(candidates)
+    amount, needs_review = _choose(candidates, plain, min_deal)
     if amount is not None:
         amount = {
             "value": amount["value"],
@@ -289,6 +363,18 @@ def first_amount(text):
     US$1,000,000 are not a deal.
     """
     amount, _needs_review = pick_amount(text)
+    return amount
+
+
+def deal_amount(text, min_deal=DEFAULT_MIN_DEAL_USD):
+    """Deal size from aggregate principal, or None when the text does not state one.
+
+    Tranche principal amounts are summed unless the filing states a total.
+    A figure under `min_deal` is left out of that sum when a larger principal
+    amount is present. A deal that is itself under the floor is still returned
+    so the caller can log it instead of storing it.
+    """
+    amount, _needs_review = pick_amount(text, min_deal=min_deal)
     return amount
 
 

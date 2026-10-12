@@ -18,12 +18,29 @@ from fetcher import (
     in_scope,
     summary_is_form_label,
 )
-from score import figure_kind, histogram, load_config, needs_full_document, pick_amount, score_text
+from score import (
+    DEFAULT_MIN_DEAL_USD,
+    figure_kind,
+    histogram,
+    load_config,
+    needs_full_document,
+    pick_amount,
+    score_text,
+)
 from shared.nethttp import EndpointError, asx_client, sec_client
 from store import open_db, save_run, utc_now
 
 
-def run(filings, db_path, threshold=None, client=None, documents=None, config=None, started_at=None):
+def run(
+    filings,
+    db_path,
+    threshold=None,
+    client=None,
+    documents=None,
+    config=None,
+    started_at=None,
+    min_deal=None,
+):
     """Score index text, read a full filing only when the cheap filter says to.
 
     `documents` maps an accession to fixture text so tests never open a socket.
@@ -33,6 +50,7 @@ def run(filings, db_path, threshold=None, client=None, documents=None, config=No
     loaded = config or load_config()
     rules = loaded["rules"]
     used = loaded["threshold"] if threshold is None else float(threshold)
+    deal_floor = float(loaded.get("min_deal_usd", DEFAULT_MIN_DEAL_USD) if min_deal is None else min_deal)
     started_at = started_at or utc_now()
     documents = documents or {}
 
@@ -64,7 +82,7 @@ def run(filings, db_path, threshold=None, client=None, documents=None, config=No
             stage = "cheap_filter"
             final = cheap
             scored_text = phrase
-        amount, needs_review = pick_amount(scored_text)
+        amount, needs_review = pick_amount(scored_text, min_deal=deal_floor)
         if needs_review:
             flags.append("review")
         row = {
@@ -78,7 +96,7 @@ def run(filings, db_path, threshold=None, client=None, documents=None, config=No
             "flags": json.dumps(flags),
         }
         scores.append(row)
-        figure = _figure(filing, scored_text, started_at, amount)
+        figure = _figure(filing, scored_text, started_at, amount, deal_floor)
         if figure is not None:
             figures.append(figure)
 
@@ -150,9 +168,22 @@ def _full_text(filing, client, documents):
     return fetch_primary_text(client, filing["cik"], accession)
 
 
-def _figure(filing, text, started_at, amount):
+def _figure(filing, text, started_at, amount, min_deal=DEFAULT_MIN_DEAL_USD):
     ticker = filing.get("ticker") or ""
     if amount is None or not ticker:
+        return None
+    if amount["currency"] == "USD" and amount["value"] < float(min_deal):
+        form = filing.get("form") or ""
+        print(
+            "dropped deal below minimum"
+            f" ticker={ticker}"
+            f" form={form}"
+            f" accession={filing.get('accession') or ''}"
+            f" value={amount['value']:.0f}"
+            f" {amount['currency']}"
+            f" minimum={float(min_deal):.0f}",
+            file=sys.stderr,
+        )
         return None
     instrument, figure_type = figure_kind(text)
     return {

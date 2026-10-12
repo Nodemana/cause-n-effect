@@ -10,7 +10,7 @@ for _entry in (str(_REPO), str(_ROOT)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from parser import parse_company_facts, parse_release  # noqa: E402
+from parser import DEFAULT_RECENT_QUARTERS, parse_company_facts, parse_release  # noqa: E402
 from shared.store import connect, dedupe_figures, save_run  # noqa: E402
 
 _RECORD_KEYS = (
@@ -32,7 +32,7 @@ _RECORD_KEYS = (
 )
 
 
-def build_table(customer_facts=(), supplier_facts=(), releases=()):
+def build_table(customer_facts=(), supplier_facts=(), releases=(), max_quarters=DEFAULT_RECENT_QUARTERS):
     """Return one table. Both vantage points use the same columns.
 
     `customer_facts` and `supplier_facts` are (company, payload) pairs.
@@ -41,9 +41,9 @@ def build_table(customer_facts=(), supplier_facts=(), releases=()):
     """
     rows = []
     for company, payload in customer_facts:
-        rows.extend(parse_company_facts(payload, company, "customer_backlog"))
+        rows.extend(parse_company_facts(payload, company, "customer_backlog", max_quarters=max_quarters))
     for company, payload in supplier_facts:
-        rows.extend(parse_company_facts(payload, company, "supplier_order"))
+        rows.extend(parse_company_facts(payload, company, "supplier_order", max_quarters=max_quarters))
     for release in releases:
         rows.extend(
             parse_release(

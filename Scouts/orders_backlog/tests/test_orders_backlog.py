@@ -81,6 +81,9 @@ class OrdersBacklogTests(unittest.TestCase):
         self.assertTrue(all(row["value"] != 3100000000 for row in rows))
         self.assertEqual(review[0]["flags"], ["stale_tag", "tag_switch"])
         self.assertEqual(review[0]["value"], 9000000000)
+        periods = {row["equipment_or_period"] for row in rows}
+        self.assertNotIn("2018-04-29", periods)
+        self.assertNotIn(2100000000, {row["value"] for row in rows})
 
     def test_release_backlog_and_not_deferred_revenue(self):
         text = (FIX / "exhibit99_backlog.txt").read_text(encoding="utf-8")
@@ -140,6 +143,36 @@ class OrdersBacklogTests(unittest.TestCase):
         self.assertEqual(rows[0]["equipment_or_period"], "2026-06-30")
         self.assertEqual(rows[0]["flags"], [])
         self.assertIsNone(rows[0]["counterparty"])
+
+    def test_recent_quarters_are_configurable(self):
+        payload = json.loads((FIX / "amat_facts.json").read_text(encoding="utf-8"))
+        kept = parser.parse_company_facts(payload, AMAT, "customer_backlog", max_quarters=1)
+        ends = {row["equipment_or_period"] for row in kept}
+        self.assertEqual(ends, {"2026-04-26"})
+        wider = parser.parse_company_facts(payload, AMAT, "customer_backlog", max_quarters=8)
+        self.assertIn("2025-10-26", {row["equipment_or_period"] for row in wider})
+        self.assertNotIn("2018-04-29", {row["equipment_or_period"] for row in wider})
+        everything = parser.parse_company_facts(payload, AMAT, "customer_backlog", max_quarters=0)
+        self.assertIn("2018-04-29", {row["equipment_or_period"] for row in everything})
+
+    def test_gev_segment_row_keeps_a_period(self):
+        text = (FIX / "exhibit99_gev.txt").read_text(encoding="utf-8")
+        gev = dict(SUPPLIER, ticker="GEV", name="GE Vernova Inc")
+        rows = parser.parse_release(
+            text, gev, "supplier_order", "8-K", "https://www.sec.gov/gev", "2026-07-23"
+        )
+        self.assertEqual(len(rows), 2)
+        intake = next(row for row in rows if row["disclosure"] == "order_intake" and row["value"] == 4_200_000_000)
+        self.assertEqual(intake["equipment_or_period"], "2026-06-30")
+        self.assertNotIn("|", intake["equipment_or_period"])
+        self.assertNotIn("turbines|", intake["equipment_or_period"])
+        self.assertIn("segment: turbines", intake["notes"])
+        self.assertEqual(intake["currency"], "USD")
+        quarter = next(row for row in rows if row["value"] == 18_000_000_000)
+        self.assertEqual(quarter["equipment_or_period"], "Q2 2026")
+        self.assertNotIn("|", quarter["equipment_or_period"])
+        self.assertIn("segment: turbines", quarter["notes"])
+        self.assertTrue(all("|" not in (row["equipment_or_period"] or "") for row in rows))
 
     def test_one_table_shape(self):
         payload = json.loads((FIX / "amat_facts.json").read_text(encoding="utf-8"))

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 import urllib.parse
 import urllib.request
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from pathlib import Path
 
@@ -21,7 +21,15 @@ sys.path.insert(0, str(SCOUT))
 import fetcher  # noqa: E402
 import pipeline  # noqa: E402
 import report  # noqa: E402
-from score import first_amount, histogram, load_config, needs_full_document, pick_amount, score_text  # noqa: E402
+from score import (  # noqa: E402
+    deal_amount,
+    first_amount,
+    histogram,
+    load_config,
+    needs_full_document,
+    pick_amount,
+    score_text,
+)
 
 FIX = SCOUT / "fixtures"
 ACC_GENERIC = "0000999001-26-000010"
@@ -256,9 +264,9 @@ class DebtRaiseTests(unittest.TestCase):
                 started_at="2026-03-04T08:00:00Z",
             )
             afternoon = pipeline.run(
-                [_filing(ACC_CAPEX, "424B2", "Proceeds fund capital expenditures of US$40 million at the plant.")],
+                [_filing(ACC_CAPEX, "424B2", "Proceeds fund capital expenditures of US$80 million at the plant.")],
                 db,
-                documents={ACC_CAPEX: "Proceeds fund capital expenditures of US$40 million at the plant."},
+                documents={ACC_CAPEX: "Proceeds fund capital expenditures of US$80 million at the plant."},
                 started_at="2026-03-04T15:30:45Z",
             )
             self.assertEqual(morning["run_id"], "2026-03-04-080000-debt-raise")
@@ -271,7 +279,7 @@ class DebtRaiseTests(unittest.TestCase):
                 "SELECT value FROM figures WHERE run_id = ?", (afternoon["run_id"],)
             ).fetchone()[0]
             self.assertEqual(first_value, 180_000_000)
-            self.assertEqual(second_value, 40_000_000)
+            self.assertEqual(second_value, 80_000_000)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 2)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM debt_scout_runs").fetchone()[0], 2)
             conn.close()
@@ -371,6 +379,7 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertEqual(amount["value"], 750_000_000)
         self.assertEqual(amount["currency"], "USD")
         self.assertEqual(amount["text"], "US$750 million")
+        self.assertEqual(deal_amount(text)["value"], 750_000_000)
         prospectus = (
             "The notes will be issued in minimum denominations of $2,000 and integral multiples of $1,000. "
             "The common stock has a par value of $0.01 per share and the preferred stock has a par value of $0.0001. "
@@ -387,6 +396,103 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertEqual(scored.score, 1)
         self.assertIn("generic", scored.matched)
         self.assertIn("refinance", scored.matched)
+
+    def test_deal_amount_prefers_principal_and_sums_tranches(self):
+        amzn = (
+            "A covenant refers to an aggregate principal amount of $10 million. "
+            "The Company is offering $5,000,000,000 aggregate principal amount of "
+            "4.650% Notes due 2032."
+        )
+        oracle = (
+            "The covenant schedule lists $25 million. "
+            "The offering of senior notes has an aggregate principal amount of $8,000,000,000."
+        )
+        tranches = (
+            "The Company is offering $1,000,000,000 aggregate principal amount of "
+            "4.100% Notes due 2030 and $750,000,000 aggregate principal amount of "
+            "4.400% Notes due 2035."
+        )
+        stated = (
+            tranches
+            + " The total aggregate principal amount of the notes offered is $1,750,000,000."
+        )
+        converted = (
+            "The aggregate principal amount is US$750 million (A$1,079 million) of senior notes."
+        )
+        self.assertEqual(deal_amount(amzn)["value"], 5_000_000_000)
+        self.assertEqual(deal_amount(oracle)["value"], 8_000_000_000)
+        summed = deal_amount(tranches)
+        self.assertEqual(summed["value"], 1_750_000_000)
+        self.assertEqual(summed["currency"], "USD")
+        self.assertIn("+", summed["text"])
+        self.assertEqual(deal_amount(stated)["value"], 1_750_000_000)
+        self.assertEqual(deal_amount(stated)["text"], "$1,750,000,000")
+        self.assertEqual(deal_amount(converted)["value"], 750_000_000)
+        self.assertEqual(deal_amount(converted)["currency"], "USD")
+        self.assertEqual(self.config["min_deal_usd"], 50_000_000)
+        for raw, expected in (("$1 million", 1_000_000), ("$2,000,000", 2_000_000), ("$3.5 million", 3_500_000)):
+            note = f"Structured note. The aggregate principal amount of the notes is {raw}."
+            self.assertEqual(deal_amount(note)["value"], expected)
+            self.assertLess(deal_amount(note)["value"], 50_000_000)
+
+    def test_small_structured_notes_are_logged_not_stored(self):
+        small = _filing(
+            "0000999001-26-000424",
+            "424B2",
+            "Structured note. The aggregate principal amount of the notes is $2,500,000.",
+            ticker="AMZN",
+        )
+        large = _filing(
+            ACC_CENTER,
+            "8-K",
+            "The facility funds data center construction of US$180 million.",
+            ["1.01"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                pipeline.run(
+                    [small, large],
+                    db,
+                    documents={
+                        small["accession"]: small["summary"],
+                        large["accession"]: large["summary"],
+                    },
+                    started_at="2026-06-01T00:00:00Z",
+                )
+            logged = stderr.getvalue()
+            self.assertIn("dropped deal below minimum", logged)
+            self.assertIn("ticker=AMZN", logged)
+            self.assertIn("form=424B2", logged)
+            self.assertIn("2500000", logged)
+            conn = sqlite3.connect(db)
+            values = [row[0] for row in conn.execute("SELECT value FROM figures")]
+            forms = [
+                row[0]
+                for row in conn.execute("SELECT form FROM debt_scout_filing_scores ORDER BY form")
+            ]
+            conn.close()
+            self.assertEqual(values, [180_000_000])
+            self.assertIn("424B2", forms)
+            self.assertIn("8-K", forms)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                pipeline.run(
+                    [small],
+                    db,
+                    documents={small["accession"]: small["summary"]},
+                    min_deal=1_000_000,
+                    started_at="2026-06-02T00:00:00Z",
+                )
+            conn = sqlite3.connect(db)
+            stored = conn.execute("SELECT value FROM figures").fetchone()[0]
+            conn.close()
+            self.assertEqual(stored, 2_500_000)
+            self.assertNotIn("dropped deal below minimum", stderr.getvalue())
 
     def test_amount_fixtures_pick_the_deal_and_send_the_rest_to_review(self):
         cases = [
@@ -545,7 +651,7 @@ class DebtRaiseTests(unittest.TestCase):
         first["filed"] = same_day
         second["filed"] = same_day
         documents = {
-            ACC_GENERIC: "Proceeds will be used for general corporate purposes. The facility is $40 million.",
+            ACC_GENERIC: "Proceeds will be used for general corporate purposes. The facility is $80 million.",
             ACC_CENTER: "The facility funds data center construction of US$180 million.",
         }
         with tempfile.TemporaryDirectory() as tmp:
