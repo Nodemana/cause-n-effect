@@ -662,6 +662,283 @@ class OrdersBacklogTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_etn_live_primary_document_stores_segments(self):
+        text = (FIX / "etn_10q_live.html").read_text(encoding="utf-8")
+        self.assertIn('name="us-gaap:RevenueRemainingPerformanceObligation" scale="9"', text)
+        self.assertIn("June&#160;30, 2026", text)
+        self.assertIn("Electrical Americas</span><table", text)
+        self.assertIn('style="display:none"', text)
+        self.assertIn("15,175&#160;", text)
+        self.assertIn("($ in millions)", text)
+        self.assertNotIn("$15,175", text)
+        etn = {
+            "ticker": "ETN",
+            "name": "Eaton Corp plc",
+            "cik": "0001551182",
+            "equipment": ["transformers", "switchgear"],
+        }
+        index = {
+            "directory": {
+                "item": [
+                    {"name": "0001551182-26-000030-index.html"},
+                    {"name": "etn-20260630.htm"},
+                    {"name": "etn06302026ex311.htm"},
+                    {"name": "R1.htm"},
+                    {"name": "R9.htm"},
+                ]
+            }
+        }
+        self.assertEqual(fetcher._primary_html(index, "etn-20260630.htm"), "etn-20260630.htm")
+        self.assertEqual(fetcher._primary_html(index), "etn-20260630.htm")
+
+        class Fake:
+            def __init__(self):
+                self.urls = []
+
+            def json(self, url):
+                self.urls.append(url)
+                if url.endswith("index.json"):
+                    return index
+                return {
+                    "filings": {
+                        "recent": {
+                            "form": ["10-K", "10-Q"],
+                            "accessionNumber": [
+                                "0001551182-26-000010",
+                                "0001551182-26-000030",
+                            ],
+                            "filingDate": ["2026-02-24", "2026-07-31"],
+                            "primaryDocument": ["etn-20251231.htm", "etn-20260630.htm"],
+                        }
+                    }
+                }
+
+            def get(self, url, accept=None):
+                self.urls.append(url)
+                self.got = url
+                return (text.encode("utf-8"), "text/html")
+
+        client = Fake()
+        found = fetcher.collect_supplier_reports([etn], client=client)
+        self.assertEqual(len(found), 1)
+        self.assertTrue(found[0]["url"].endswith("/etn-20260630.htm"))
+        self.assertNotIn("R9.htm", found[0]["url"])
+        self.assertEqual(found[0]["accession"], "0001551182-26-000030")
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rows = parser.parse_release(
+                found[0]["body"],
+                etn,
+                "supplier_order",
+                "10-Q",
+                found[0]["url"],
+                found[0]["filing_date"],
+                accession=found[0]["accession"],
+            )
+        logged = stdout.getvalue()
+        figures = dedupe_figures(pipeline.keep_distinct_amounts(live._figures(rows, "2026-07-31")))
+        stored = {row["instrument"]: row for row in figures}
+        self.assertEqual(stored["backlog"]["value"], 24_100_000_000)
+        self.assertEqual(stored["backlog"]["period"], "2026-06-30")
+        self.assertEqual(stored["backlog:Electrical Americas"]["value"], 15_175_000_000)
+        self.assertEqual(stored["backlog:Electrical Global"]["value"], 3_602_000_000)
+        self.assertEqual(stored["backlog:Aerospace"]["value"], 5_164_000_000)
+        for segment, value in (
+            ("Electrical Americas", 15_175_000_000),
+            ("Electrical Global", 3_602_000_000),
+            ("Aerospace", 5_164_000_000),
+        ):
+            self.assertIn(
+                f"segment backlog ticker=ETN instrument=backlog:{segment} period=2026-06-30 value={value}",
+                logged,
+            )
+        noise = parser.parse_release(
+            "Currency exchange contracts $6 Interest expense.",
+            etn,
+            "supplier_order",
+            "10-Q",
+            "https://www.sec.gov/etn-noise",
+            "2026-07-31",
+        )
+        self.assertFalse([row for row in noise if row.get("value")])
+
+    def test_hubb_intangible_backlog_is_not_stored(self):
+        text = (FIX / "hubb_10q_intangible.html").read_text(encoding="utf-8")
+        self.assertIn("FinitelivedIntangibleAssetsAcquired1", text)
+        self.assertIn(">11.0<", text)
+        self.assertIn("in millions, except useful life", text)
+        self.assertIn("Net sales of $1,711.8 million", text)
+        hubb = {
+            "ticker": "HUBB",
+            "name": "Hubbell Inc",
+            "cik": "0000048898",
+            "equipment": ["switchgear"],
+        }
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rows = parser.parse_release(
+                text,
+                hubb,
+                "supplier_order",
+                "10-Q",
+                "https://www.sec.gov/Archives/edgar/data/48898/000162828026050405/hubb-20260630.htm",
+                "2026-07-29",
+                accession="0001628280-26-050405",
+            )
+        valued = [row for row in rows if row.get("value") is not None and row.get("disclosure") == "backlog"]
+        self.assertEqual(valued, [])
+        self.assertIn("skipped intangible backlog ticker=HUBB value=11000000", stdout.getvalue())
+        floor = (
+            "<p>For the quarterly period ended June 30, 2026</p>"
+            "<p>Net sales of $1,711.8 million in the second quarter of 2026.</p>"
+            "<table><tr><td>($ in millions)</td></tr>"
+            "<tr><td>Backlog</td><td>$</td><td>11.0</td></tr></table>"
+        )
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rows = parser.parse_release(
+                floor, hubb, "supplier_order", "10-Q", "https://www.sec.gov/hubb-floor", "2026-07-29"
+            )
+        self.assertFalse([row for row in rows if row.get("disclosure") == "backlog" and row.get("value")])
+        self.assertIn(
+            "skipped implausible backlog ticker=HUBB value=11000000 prior=1711800000 period=2026-06-30",
+            stdout.getvalue(),
+        )
+        figures = [
+            {
+                "ticker": "HUBB",
+                "figure_type": "supplier_order",
+                "instrument": "backlog",
+                "period": "2026-06-30",
+                "value": 11_000_000,
+            },
+            {
+                "ticker": "HUBB",
+                "figure_type": "supplier_order",
+                "instrument": "revenue",
+                "period": "2026-06-30",
+                "value": 1_711_800_000,
+            },
+        ]
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            kept = pipeline.drop_implausible_totals(figures)
+        self.assertEqual([row["instrument"] for row in kept], ["revenue"])
+        self.assertIn("prior=1711800000", stdout.getvalue())
+
+    def test_same_quarter_press_release_does_not_duplicate_companyfacts(self):
+        rtx_text = (FIX / "exhibit99_rtx_2q26.txt").read_text(encoding="utf-8")
+        lmt_text = (FIX / "exhibit99_lmt_2q26.txt").read_text(encoding="utf-8")
+        self.assertIn("Record backlog of $230 billion", lmt_text)
+        self.assertIn("quarter ended June 28, 2026", lmt_text)
+        rtx = {"ticker": "RTX", "name": "RTX Corp", "cik": "0000101829", "sector": "defense",
+               "backlog_tags": ["RevenueRemainingPerformanceObligation"]}
+        lmt = {"ticker": "LMT", "name": "Lockheed Martin Corp", "cik": "0000936468", "sector": "defense",
+               "backlog_tags": ["RevenueRemainingPerformanceObligation"]}
+        rtx_ends = [
+            "2024-09-30",
+            "2024-12-31",
+            "2025-03-31",
+            "2025-06-30",
+            "2025-09-30",
+            "2025-12-31",
+            "2026-03-31",
+            "2026-06-30",
+        ]
+        lmt_ends = [
+            "2024-09-29",
+            "2024-12-31",
+            "2025-03-30",
+            "2025-06-29",
+            "2025-09-28",
+            "2025-12-31",
+            "2026-03-29",
+            "2026-06-28",
+        ]
+
+        def facts(ends, latest, accn):
+            return {
+                "facts": {
+                    "us-gaap": {
+                        "RevenueRemainingPerformanceObligation": {
+                            "units": {
+                                "USD": [
+                                    {
+                                        "end": end,
+                                        "val": latest if end == ends[-1] else 200_000_000_000,
+                                        "filed": "2026-07-23",
+                                        "fp": "Q2",
+                                        "fy": int(end[:4]),
+                                        "form": "10-Q",
+                                        "accn": accn,
+                                    }
+                                    for end in ends
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+
+        near = "Company backlog was $289 billion. For the quarter ended June 26, 2026."
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            table = pipeline.build_table(
+                customer_facts=[
+                    (rtx, facts(rtx_ends, 289_000_000_000, "0000101829-26-000099")),
+                    (lmt, facts(lmt_ends, 230_400_000_000, "0001628280-26-049411")),
+                ],
+                releases=[
+                    {
+                        "company": rtx,
+                        "body": rtx_text,
+                        "url": "https://www.sec.gov/rtx",
+                        "filing_date": "2026-07-23",
+                        "source_side": "customer_backlog",
+                        "source_type": "8-K",
+                        "accession": "0000101829-26-000025",
+                    },
+                    {
+                        "company": rtx,
+                        "body": near,
+                        "url": "https://www.sec.gov/rtx-near",
+                        "filing_date": "2026-07-23",
+                        "source_side": "customer_backlog",
+                        "source_type": "8-K",
+                    },
+                    {
+                        "company": lmt,
+                        "body": lmt_text,
+                        "url": "https://www.sec.gov/lmt",
+                        "filing_date": "2026-07-23",
+                        "source_side": "customer_backlog",
+                        "source_type": "8-K",
+                        "accession": "0001628280-26-049277",
+                    },
+                ],
+            )
+        logged = stdout.getvalue()
+        self.assertIn("skipped duplicate backlog ticker=RTX", logged)
+        self.assertIn("skipped duplicate backlog ticker=LMT", logged)
+        for ticker, ends, kept_value, dropped_value in (
+            ("RTX", rtx_ends, 289_000_000_000, None),
+            ("LMT", lmt_ends, 230_400_000_000, 230_000_000_000),
+        ):
+            rows = [
+                row for row in table["records"]
+                if row.get("ticker") == ticker and row.get("value") is not None
+            ]
+            periods = {row["equipment_or_period"] for row in rows}
+            self.assertLessEqual(len(periods), 8)
+            self.assertEqual(periods, set(ends))
+            latest = [row for row in rows if row["equipment_or_period"] == ends[-1]]
+            self.assertEqual(len(latest), 1)
+            self.assertEqual(latest[0]["value"], kept_value)
+            self.assertEqual(latest[0]["source_type"], "xbrl_company_facts")
+            if dropped_value is not None:
+                self.assertNotIn(dropped_value, {row["value"] for row in rows})
+        self.assertNotIn("2026-06-26", {row["equipment_or_period"] for row in table["records"] if row.get("value")})
+
     def test_supplier_10q_is_collected_without_a_socket(self):
         text = (FIX / "etn_10q_backlog.txt").read_text(encoding="utf-8")
         etn = {
