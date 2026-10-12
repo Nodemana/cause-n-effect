@@ -168,6 +168,33 @@ class CapexTests(unittest.TestCase):
         self.assertNotIn("example.invalid", text)
         self.assertIn("sec_client", (SCOUT / "fetcher.py").read_text(encoding="utf-8"))
 
+    def test_live_fixture_stores_a_figure_and_empty_run_exits_nonzero(self):
+        import live
+
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = str(Path(tmp) / "history.sqlite")
+                code = live.main(
+                    [
+                        "--db",
+                        db,
+                        "--sec-fixture",
+                        str(FIX / "companyfacts_amzn.json"),
+                        "--no-asx",
+                    ]
+                )
+                self.assertEqual(code, 0)
+                conn = sqlite3.connect(db)
+                count = conn.execute("SELECT COUNT(*) FROM figures").fetchone()[0]
+                conn.close()
+                self.assertGreater(count, 0)
+                empty = live.main(["--db", str(Path(tmp) / "empty.sqlite"), "--no-asx"])
+                self.assertEqual(empty, 1)
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
+
 
 if __name__ == "__main__":
     unittest.main()

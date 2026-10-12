@@ -7,8 +7,8 @@ script stops before any SEC request. ASX still runs when universe_asx.json
 lists companies. The ASX client waits 2 seconds between requests and asks for
 at most five announcements per company.
 
-    python3 Scouts/capex/live.py
-    python3 Scouts/capex/live.py --db /tmp/cause-n-effect-capex.sqlite
+    python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite
+    python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/capex/fixtures/companyfacts_amzn.json --no-asx
 
 The default database is /tmp/cause-n-effect-capex.sqlite. SEC names are
 AMZN, ORCL, and MSFT in universe_sec.json. Guidance search covers the last
@@ -50,22 +50,38 @@ def main(argv=None):
     if "--db" in args:
         db_path = Path(args[args.index("--db") + 1])
     sec_companies = json.loads(SEC_UNIVERSE.read_text(encoding="utf-8"))["companies"]
-    asx_companies = json.loads(ASX_UNIVERSE.read_text(encoding="utf-8"))["companies"]
+    asx_companies = [] if "--no-asx" in args else json.loads(ASX_UNIVERSE.read_text(encoding="utf-8"))["companies"]
     facts = []
     guidance = []
-    blocked = sec_block_message()
-    if blocked:
-        print(blocked)
+    if "--sec-fixture" in args:
+        fixture = Path(args[args.index("--sec-fixture") + 1])
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        company = sec_companies[0]
+        facts = [
+            {
+                "ticker": company["ticker"],
+                "cik": str(int(company["cik"])).zfill(10),
+                "company": payload.get("entityName") or company.get("name"),
+                "facts": fetcher.select_facts(payload),
+            }
+        ]
+        print(f"SEC fixture {fixture}")
     else:
-        end = date.today().isoformat()
-        start = (date.today() - timedelta(days=GUIDANCE_DAYS)).isoformat()
-        names = ", ".join(company["ticker"] for company in sec_companies)
-        print(f"SEC companyfacts for {names}")
-        print(f"EDGAR full-text capex guidance {start} to {end}")
-        facts = fetcher.collect_companyfacts(sec_companies)
-        guidance = fetcher.collect_guidance(sec_companies, start=start, end=end)
+        blocked = sec_block_message()
+        if blocked:
+            print(blocked)
+        else:
+            end = date.today().isoformat()
+            start = (date.today() - timedelta(days=GUIDANCE_DAYS)).isoformat()
+            names = ", ".join(company["ticker"] for company in sec_companies)
+            print(f"SEC companyfacts for {names}")
+            print(f"EDGAR full-text capex guidance {start} to {end}")
+            facts = fetcher.collect_companyfacts(sec_companies)
+            guidance = fetcher.collect_guidance(sec_companies, start=start, end=end)
     announcements = []
-    if asx_companies:
+    if "--no-asx" in args:
+        pass
+    elif asx_companies:
         print(f"ASX announcements, at most {fetcher.ASX_CAP} per company")
         announcements = fetcher.collect_asx(asx_companies)
     else:
@@ -80,8 +96,6 @@ def main(argv=None):
         f"ASX list capped at {fetcher.ASX_CAP}. "
         "Cash-flow tags are the reported year-to-date span."
     )
-    if db_path.exists():
-        db_path.unlink()
     summary = pipeline.run(
         db_path,
         facts,
@@ -99,8 +113,10 @@ def main(argv=None):
         SELECT ticker, figure_type, instrument, period, value, value_text, currency,
                announced_on, source_url, source_type, verified
         FROM figures
+        WHERE run_id = ?
         ORDER BY ticker, figure_type, period
-        """
+        """,
+        (summary["run_id"],),
     ).fetchall()
     if not rows:
         print("figures: (none)")

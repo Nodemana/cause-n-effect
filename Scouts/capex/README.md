@@ -26,9 +26,10 @@ Fixture tests do not open a network connection. The live pull is for the owner t
 
 ```bash
 python3 Scouts/capex/tests/test_capex.py
-python3 Scouts/capex/live.py
+python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite
+python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/capex/fixtures/companyfacts_amzn.json --no-asx
 ```
 
 ## Status
 
-Structure and tests only, no live runs.
+Fixture tests, plus an ASX live pull from the command above. SEC live runs where `SEC_CONTACT_EMAIL` is set.

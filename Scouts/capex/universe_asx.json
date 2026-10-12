@@ -1,4 +1,8 @@
 {
-  "description": "ASX codes whose latest five announcements are scanned for capex language. Leave companies empty to skip ASX. The feed is undocumented, ignores counts above five, and is health-checked on each response.",
-  "companies": []
+  "description": "ASX codes whose latest five announcements are scanned for capex language. The feed is undocumented, ignores counts above five, and is health-checked on each response.",
+  "companies": [
+    {"ticker": "BHP", "name": "BHP Group"},
+    {"ticker": "FMG", "name": "Fortescue"},
+    {"ticker": "MIN", "name": "Mineral Resources"}
+  ]
 }
