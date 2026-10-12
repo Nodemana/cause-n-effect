@@ -429,6 +429,16 @@ class DebtRaiseTests(unittest.TestCase):
         self.assertEqual(deal_amount(stated)["text"], "$1,750,000,000")
         self.assertEqual(deal_amount(converted)["value"], 750_000_000)
         self.assertEqual(deal_amount(converted)["currency"], "USD")
+        once = (
+            "The Company is offering $10,250,000,000 aggregate principal amount of "
+            "4.800% Notes due 2031 and $15,000,000,000 aggregate principal amount of "
+            "5.150% Notes due 2036."
+        )
+        repeated = f"{once} Cover page. {once}"
+        self.assertEqual(deal_amount(repeated)["value"], 25_250_000_000)
+        totaled = repeated + " The total aggregate principal amount of the notes is $25,250,000,000."
+        self.assertEqual(deal_amount(totaled)["value"], 25_250_000_000)
+        self.assertEqual(deal_amount(totaled)["text"], "$25,250,000,000")
         self.assertEqual(self.config["min_deal_usd"], 50_000_000)
         for raw, expected in (("$1 million", 1_000_000), ("$2,000,000", 2_000_000), ("$3.5 million", 3_500_000)):
             note = f"Structured note. The aggregate principal amount of the notes is {raw}."
@@ -493,6 +503,52 @@ class DebtRaiseTests(unittest.TestCase):
             conn.close()
             self.assertEqual(stored, 2_500_000)
             self.assertNotIn("dropped deal below minimum", stderr.getvalue())
+
+    def test_same_issuer_deal_is_not_stored_twice_within_a_few_days(self):
+        body = (
+            "The Company is offering $10,250,000,000 aggregate principal amount of "
+            "4.800% Notes due 2031 and $15,000,000,000 aggregate principal amount of "
+            "5.150% Notes due 2036. "
+            "The total aggregate principal amount of the notes is $25,250,000,000."
+        )
+        other = "The facility funds data center construction of US$90 million."
+        first = _filing("0001193125-26-035603", "8-K", body, ["2.03"], ticker="ORCL")
+        second = _filing("0001193125-26-037840", "424B5", body, ticker="ORCL")
+        separate = _filing("0001193125-26-040000", "8-K", other, ["1.01"], ticker="ORCL")
+        first["filed"] = "2026-02-02"
+        second["filed"] = "2026-02-06"
+        separate["filed"] = "2026-02-04"
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                pipeline.run(
+                    [first, second, separate],
+                    db,
+                    documents={
+                        first["accession"]: body,
+                        second["accession"]: body,
+                        separate["accession"]: other,
+                    },
+                    started_at="2026-02-06T00:00:00Z",
+                )
+            logged = stderr.getvalue()
+            conn = sqlite3.connect(db)
+            conn.row_factory = sqlite3.Row
+            figures = conn.execute(
+                "SELECT value, period, announced_on FROM figures ORDER BY value"
+            ).fetchall()
+            scores = conn.execute("SELECT COUNT(*) FROM debt_scout_filing_scores").fetchone()[0]
+            conn.close()
+        self.assertIn("dropped duplicate deal", logged)
+        self.assertIn("ticker=ORCL", logged)
+        self.assertIn("0001193125-26-035603", logged)
+        self.assertIn("kept_accession=0001193125-26-037840", logged)
+        self.assertEqual(scores, 3)
+        self.assertEqual(sorted(row["value"] for row in figures), [90_000_000, 25_250_000_000])
+        notes = next(row for row in figures if row["value"] == 25_250_000_000)
+        self.assertIn("0001193125-26-037840", notes["period"])
+        self.assertEqual(notes["announced_on"], "2026-02-06")
 
     def test_amount_fixtures_pick_the_deal_and_send_the_rest_to_review(self):
         cases = [

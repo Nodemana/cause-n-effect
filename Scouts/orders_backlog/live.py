@@ -11,6 +11,7 @@ when this run stores no figure.
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from datetime import date, timedelta
@@ -103,6 +104,7 @@ def main(argv=None):
     table = pipeline.build_table(customer_facts, supplier_facts, releases)
     started = utc_now()
     seen = started[:10]
+    stale = pipeline.report_stale_latest(table["records"], seen)
     figures = dedupe_figures(_figures(table["records"], seen))
     if not figures:
         print("No orders-backlog figures.")
@@ -114,7 +116,7 @@ def main(argv=None):
             "orders-backlog",
             started,
             figures,
-            notes=f"records={len(table['records'])}",
+            notes=_run_notes(table["records"], stale),
         )
     finally:
         conn.close()
@@ -155,6 +157,49 @@ def _releases(documents, source_side):
     return rows
 
 
+def _run_notes(records, stale):
+    parts = [f"records={len(records)}"]
+    if stale:
+        listed = ",".join(f"{item['ticker']}:{item['period']}" for item in stale)
+        parts.append(f"stale={listed}")
+    return " ".join(parts)
+
+
+def _is_period(value):
+    text = (value or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return True
+    return re.fullmatch(r"Q[1-4] \d{4}", text, re.I) is not None
+
+
+def _segment(record):
+    raw = (record.get("equipment_or_period") or "").strip()
+    if raw and not _is_period(raw) and "|" not in raw:
+        return raw
+    for note in record.get("notes") or []:
+        if str(note).startswith("segment: "):
+            return str(note).split(": ", 1)[1]
+    return ""
+
+
+def _figure_period(record):
+    """A date or quarter. A segment word is not joined to the filing date.
+
+    Company-facts rows keep end|filed so two filings of one period stay distinct.
+    An 8-K with no period of its own uses the filing date alone, never '|date'.
+    """
+    raw = (record.get("equipment_or_period") or "").strip()
+    filed = (record.get("filing_date") or "")[:10]
+    timing = (record.get("timing") or "").strip()
+    if _is_period(raw):
+        if record.get("source_type") == "xbrl_company_facts" and filed and raw != filed:
+            return f"{raw}|{filed}"
+        return raw
+    if _is_period(timing):
+        return timing
+    return filed
+
+
 def _figures(records, seen):
     rows = []
     for record in records:
@@ -162,13 +207,14 @@ def _figures(records, seen):
             continue
         notes = record.get("notes") or []
         concept = notes[0] if notes and " " not in notes[0] else (record.get("disclosure") or "")
+        segment = _segment(record)
         rows.append(
             {
                 "ticker": record["ticker"],
                 "company": record.get("company"),
                 "figure_type": record.get("source_side") or "backlog",
-                "instrument": concept,
-                "period": f"{record.get('equipment_or_period') or ''}|{record.get('filing_date') or ''}",
+                "instrument": segment or concept,
+                "period": _figure_period(record),
                 "value": record["value"],
                 "value_text": str(record["value"]),
                 "currency": record.get("currency"),

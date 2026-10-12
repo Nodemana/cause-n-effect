@@ -1,7 +1,9 @@
 """Build the single orders-backlog table from facts and release text."""
 
 import json
+import re
 import sys
+from datetime import date
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
@@ -12,6 +14,9 @@ for _entry in (str(_REPO), str(_ROOT)):
 
 from parser import DEFAULT_RECENT_QUARTERS, parse_company_facts, parse_release  # noqa: E402
 from shared.store import connect, dedupe_figures, save_run  # noqa: E402
+
+# A latest period older than this, measured from the run date, is called out.
+DEFAULT_STALE_DAYS = 180
 
 _RECORD_KEYS = (
     "source_side",
@@ -117,6 +122,71 @@ def figures_from_records(records, seen_at):
             }
         )
     return rows
+
+
+def stale_latest_periods(records, as_of, max_age_days=DEFAULT_STALE_DAYS):
+    """Tickers whose newest dated period ends more than `max_age_days` before `as_of`.
+
+    The rows stay in the table. The caller prints them and marks the latest row.
+    """
+    as_of = _as_of(as_of)
+    latest = {}
+    for record in records or []:
+        ticker = record.get("ticker")
+        end = _period_end(record.get("equipment_or_period"))
+        if not ticker or end is None:
+            continue
+        current = latest.get(ticker)
+        if current is None or end > current[0]:
+            latest[ticker] = (end, record)
+    stale = []
+    for ticker, (end, record) in sorted(latest.items()):
+        age = (as_of - end).days
+        if age > int(max_age_days):
+            stale.append({"ticker": ticker, "period": end.isoformat(), "age_days": age, "record": record})
+    return stale
+
+
+def flag_stale_latest(records, as_of, max_age_days=DEFAULT_STALE_DAYS):
+    """Mark each stale latest row and return the tickers for the run output."""
+    stale = stale_latest_periods(records, as_of, max_age_days)
+    for item in stale:
+        record = item["record"]
+        flags = record.setdefault("flags", [])
+        if "stale_period" not in flags:
+            flags.append("stale_period")
+        notes = record.setdefault("notes", [])
+        note = f"stale latest period {item['period']}"
+        if note not in notes:
+            notes.append(note)
+    return stale
+
+
+def report_stale_latest(records, as_of, max_age_days=DEFAULT_STALE_DAYS, stream=None):
+    """Print one line per ticker whose latest period is stale. Returns those rows."""
+    stale = flag_stale_latest(records, as_of, max_age_days)
+    out = stream or sys.stdout
+    for item in stale:
+        print(
+            f"stale latest period ticker={item['ticker']} period={item['period']} age_days={item['age_days']}",
+            file=out,
+        )
+    return stale
+
+
+def _as_of(value):
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+def _period_end(value):
+    text = (value or "").strip()
+    if "|" in text:
+        text = text.split("|", 1)[0].strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return date.fromisoformat(text)
+    return None
 
 
 def _plain(value):

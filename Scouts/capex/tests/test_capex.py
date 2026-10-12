@@ -557,6 +557,32 @@ class CapexTests(unittest.TestCase):
         self.assertEqual(stored[0], 1)
         self.assertEqual(stored[1], 1)
 
+    def test_fiscal_q4_is_annual_minus_nine_month_ytd(self):
+        bundles = [
+            _span_bundle(
+                "MSFT",
+                "0000789019",
+                "2025-07-01",
+                ("2026-03-31", 10_000_000_000, "ytd", "2026-04-29"),
+                ("2026-06-30", 45_800_000_000, "annual", "2026-07-30"),
+            ),
+            _span_bundle(
+                "ORCL",
+                "0001341439",
+                "2025-06-01",
+                ("2026-02-28", 8_000_000_000, "ytd", "2026-03-10"),
+                ("2026-05-31", 24_500_000_000, "annual", "2026-06-12"),
+            ),
+        ]
+        figures = pipeline.figures_from_facts(bundles, "2026-10-12")
+        by_key = {(row["ticker"], row["period"], row["instrument"]): row["value"] for row in figures}
+        self.assertEqual(by_key[("MSFT", "2025-07-01/2026-03-31", "ytd")], 10_000_000_000)
+        self.assertEqual(by_key[("MSFT", "2025-07-01/2026-06-30", "annual")], 45_800_000_000)
+        self.assertEqual(by_key[("MSFT", "2026-04-01/2026-06-30", "quarter")], 35_800_000_000)
+        self.assertEqual(by_key[("ORCL", "2025-06-01/2026-02-28", "ytd")], 8_000_000_000)
+        self.assertEqual(by_key[("ORCL", "2025-06-01/2026-05-31", "annual")], 24_500_000_000)
+        self.assertEqual(by_key[("ORCL", "2026-03-01/2026-05-31", "quarter")], 16_500_000_000)
+
     def test_help_exits_zero_without_network(self):
         import subprocess
         import sys
@@ -573,6 +599,28 @@ class CapexTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertIn("usage", completed.stdout.lower())
+
+
+def _span_bundle(ticker, cik, start, ytd, annual):
+    facts = []
+    for end, value, label, filed in (ytd, annual):
+        facts.append(
+            {
+                "tag": "PaymentsToAcquirePropertyPlantAndEquipment",
+                "unit": "USD",
+                "period_label": label,
+                "row": {
+                    "start": start,
+                    "end": end,
+                    "val": value,
+                    "accn": f"{cik}-26-000001",
+                    "fp": "FY" if label == "annual" else "Q3",
+                    "form": "10-K" if label == "annual" else "10-Q",
+                    "filed": filed,
+                },
+            }
+        )
+    return {"ticker": ticker, "cik": cik, "company": ticker, "facts": facts}
 
 
 def _guidance_hit(file_date, description):

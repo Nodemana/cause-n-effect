@@ -392,26 +392,64 @@ def _parse_asx(document):
     ]
 
 
+_FIELD_LABEL = re.compile(
+    r"^(?:address|acn(?:/arsn(?:/[a-z]+)?)?(?:\s*\(if applicable\))?|name|"
+    r"notice|company(?:\s+name(?:/scheme)?)?|details of substantial holder.*|"
+    r"the holder\b.*|class of securities.*|previous notice|present notice|"
+    r"person's votes|voting power.*)\s*$",
+    re.I,
+)
+
+
+def _field_label(value):
+    return _FIELD_LABEL.match((value or "").strip()) is not None
+
+
+def _next_value(lines, start):
+    for later in lines[start:]:
+        later = later.strip()
+        if not later or _field_label(later):
+            continue
+        return later
+    return None
+
+
 def _asx_company(text):
     labeled = _labeled(text, r"Company(?:/[^\n:]{0,80})?\s+name") or _labeled(text, r"Company name")
-    if labeled:
+    if labeled and not _field_label(labeled):
         return labeled
-    match = re.search(r"Company Name/Scheme\s+(.+)", text, re.I)
-    if match:
+    match = re.search(r"Company Name/Scheme[ \t]+(\S.*)", text, re.I)
+    if match and not _field_label(match.group(1)):
         return match.group(1).strip()
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if re.search(r"Company Name/Scheme\s*$", line, re.I) or re.fullmatch(r"\s*Company name\s*:?\s*", line, re.I):
+            found = _next_value(lines, index + 1)
+            if found:
+                return found
     return None
 
 
 def _asx_holder(text):
-    """The substantial holder, not a later 'Name' label such as a contact line."""
+    """The substantial holder, not the Address label that follows Name on the form."""
     match = re.search(
-        r"Details of substantial holder\b.*?(?:^|\n)\s*Name\s*[:\-]?\s+([^\n]+)",
+        r"Details of substantial holder\b(.*?)(?:\n\s*2\.\s|\n\s*There was a change|\n\s*The holder became)",
         text,
         re.I | re.S,
     )
-    if match:
-        return match.group(1).strip()
-    return _line_value(text, r"Name")
+    block = match.group(1) if match else text
+    lines = block.splitlines()
+    for index, line in enumerate(lines):
+        named = re.fullmatch(r"\s*Name\s*[:\-]?\s*(.*)", line, re.I)
+        if not named:
+            continue
+        value = named.group(1).strip()
+        if value and not _field_label(value):
+            return value
+        found = _next_value(lines, index + 1)
+        if found:
+            return found
+    return None
 
 
 def _asx_form_from_hint(hinted):

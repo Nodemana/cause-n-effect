@@ -1,0 +1,23 @@
+{
+  "cik": 319201,
+  "entityName": "KLA CORP",
+  "facts": {
+    "us-gaap": {
+      "RevenueRemainingPerformanceObligation": {
+        "units": {
+          "USD": [
+            {
+              "end": "2025-06-30",
+              "val": 1000000000,
+              "accn": "0000319201-25-000001",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2025-08-06"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -97,7 +97,12 @@ def period_kind(start, end):
 
 
 def _derived_quarters(flows, seen_at):
-    """Single-quarter cash flow is the later year-to-date span minus the prior span with the same start."""
+    """Single-quarter cash flow is the later span minus the prior span with the same start.
+
+    A year-to-date span yields the quarter since the previous year-to-date span.
+    A full fiscal year yields the fourth quarter as annual minus the nine-month
+    year-to-date span. The stored span labels stay quarter, ytd, ttm, or annual.
+    """
     groups = {}
     for bundle, fact, stored in flows:
         start = fact["row"].get("start")
@@ -109,7 +114,7 @@ def _derived_quarters(flows, seen_at):
         for earlier, later in zip(items, items[1:]):
             _bundle, earlier_fact, earlier_row = earlier
             bundle, later_fact, later_row = later
-            if later_row["instrument"] != "ytd":
+            if later_row["instrument"] not in {"ytd", "annual"}:
                 continue
             earlier_end = earlier_fact["row"].get("end")
             later_end = later_fact["row"].get("end")

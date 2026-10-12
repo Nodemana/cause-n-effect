@@ -1,5 +1,6 @@
 """Fixture tests for insider and CEO buying. No network. Synthetic names only."""
 
+import io
 import json
 import os
 import sqlite3
@@ -7,6 +8,7 @@ import sys
 import tempfile
 import unittest
 import urllib.request
+from contextlib import redirect_stderr
 from pathlib import Path
 
 SCOUT = Path(__file__).resolve().parents[1]
@@ -485,6 +487,37 @@ Nature of change:
             if previous is not None:
                 os.environ["SEC_CONTACT_EMAIL"] = previous
 
+    def test_old_trade_on_a_late_form4_is_logged_and_not_stored(self):
+        recent = _xml(
+            "P", "A", 1000, 20, owner="Harbour Lane", title="Chief Executive Officer", officer="1", when="2026-03-20"
+        )
+        amended = _xml(
+            "P", "A", 1500, 22, owner="Harbour Lane", title="Chief Executive Officer", officer="1",
+            form="4/A", when="2025-12-01",
+        )
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            table = pipeline.build_table(
+                [
+                    {"source": "sec", "body": recent, "url": URL, "filing_date": "2026-03-22", "ticker": "NWT"},
+                    {"source": "sec", "body": amended, "url": URL, "filing_date": "2026-03-22", "ticker": "NWT"},
+                ]
+            )
+        self.assertEqual(len(table["records"]), 1)
+        self.assertEqual(table["records"][0]["transaction_date"], "2026-03-20")
+        self.assertEqual(table["config"]["max_trade_age_days"], 30)
+        logged = stderr.getvalue()
+        self.assertIn("dropped stale trade", logged)
+        self.assertIn("ticker=NWT", logged)
+        self.assertIn("transaction_date=2025-12-01", logged)
+        self.assertIn("filing_date=2026-03-22", logged)
+        self.assertIn("form=4/A", logged)
+        wider = pipeline.build_table(
+            [{"source": "sec", "body": amended, "url": URL, "filing_date": "2026-03-22", "ticker": "NWT"}],
+            ScreenConfig(max_trade_age_days=365),
+        )
+        self.assertEqual(len(wider["records"]), 1)
+        self.assertEqual(wider["records"][0]["transaction_date"], "2025-12-01")
 
     def test_help_exits_zero_without_network(self):
         import subprocess

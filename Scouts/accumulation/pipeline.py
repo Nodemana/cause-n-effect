@@ -103,13 +103,22 @@ def figure_from_position(position, seen_at, flags):
         "period": f"{filed}|{accession}|{filer}",
         "value": stake if stake is not None else shares,
         "value_text": text,
-        "currency": "AUD" if position.get("source") == "asx" else "USD",
+        "currency": _figure_currency(position),
         "seen_at": seen_at,
         "announced_on": filed or None,
         "source_url": _source_url(position.get("document_url"), accession),
         "source_type": "asx_announcement" if position.get("source") == "asx" else "filing",
         "verified": _cover_verified(stake, shares, flags),
     }
+
+
+def _figure_currency(position):
+    """A percent is not a dollar amount. Share counts are not a currency either."""
+    if position.get("source") != "asx":
+        return "USD"
+    if position.get("stake_pct") is not None:
+        return "pct"
+    return None
 
 
 def _cover_verified(stake, shares, flags):

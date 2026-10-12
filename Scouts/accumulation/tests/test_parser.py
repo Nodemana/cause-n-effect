@@ -223,12 +223,47 @@ class ParserTests(unittest.TestCase):
             [],
         )
         self.assertEqual(figure["verified"], 1)
-        self.assertEqual(figure["currency"], "AUD")
+        self.assertEqual(figure["currency"], "pct")
         self.assertEqual(figure["ticker"], "NWND.AX")
         self.assertEqual(figure["value"], 8.4)
         self.assertIn("12500000", figure["value_text"])
         self.assertIn("notice603", figure["source_url"])
         self.assertIn("notice603", figure["period"])
+
+    def test_asx_604_stacked_labels_keep_the_holder_and_a_percent(self):
+        change = parse_document(Document(
+            source="asx", body=load("asx_604_bhp.txt"), url="https://www.asx.com.au/bhp604",
+            form_type="604", filing_date="2026-10-09", ticker="BHP",
+        ))[0]
+        self.assertEqual(change.filer, "BlackRock, Inc.")
+        self.assertNotEqual(change.filer, "Address")
+        self.assertEqual(change.target_name, "BHP Group Limited")
+        self.assertEqual(change.stake_pct, 6.1)
+        self.assertEqual(change.share_count, 110000000)
+        self.assertEqual(change.event_date, "2026-10-08")
+        self.assertEqual(change.flags, [])
+
+        from Scouts.accumulation.pipeline import figure_from_position
+
+        figure = figure_from_position(
+            {
+                "source": "asx",
+                "form_type": "604",
+                "filer": change.filer,
+                "target": {"name": change.target_name, "ticker": "BHP"},
+                "stake_pct": change.stake_pct,
+                "share_count": change.share_count,
+                "filing_date": change.filing_date,
+                "document_url": "https://www.asx.com.au/bhp604",
+                "accession": "bhp604",
+            },
+            "2026-10-09",
+            [],
+        )
+        self.assertEqual(figure["ticker"], "BHP.AX")
+        self.assertEqual(figure["value"], 6.1)
+        self.assertEqual(figure["currency"], "pct")
+        self.assertIn("BlackRock, Inc.", figure["period"])
 
     def test_fixtures_contain_no_email(self):
         import re

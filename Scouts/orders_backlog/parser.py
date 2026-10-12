@@ -69,6 +69,9 @@ _QUARTER_TOKEN = re.compile(
     r"\b(?:Q([1-4])|([1-4])Q)\s*['’]?\s*(?:FY\s*)?(\d{4}|\d{2})\b",
     re.I,
 )
+_BARE_DATE = re.compile(
+    r"\b([A-Z][a-z]+ \d{1,2}, \d{4}|\d{4}-\d{2}-\d{2})\b"
+)
 
 # Company-facts history is quarterly. Keep the latest two years unless a caller asks otherwise.
 DEFAULT_RECENT_QUARTERS = 8
@@ -290,6 +293,9 @@ def _supplier_text(text, company, source_type, source_url, filing_date):
         counterparty, unnamed = _counterparty(sentence)
         flags = []
         notes = []
+        period = _proper_period(period)
+        if equipment and period:
+            notes.append(f"segment: {equipment}")
         value = currency = None
         if not amounts:
             flags.append("missing_value")
@@ -309,7 +315,7 @@ def _supplier_text(text, company, source_type, source_url, filing_date):
                 company=company["name"],
                 ticker=company.get("ticker"),
                 counterparty=None if unnamed else counterparty,
-                equipment_or_period=equipment,
+                equipment_or_period=period or equipment,
                 value=value,
                 currency=currency,
                 timing=timing,
@@ -424,13 +430,16 @@ def _period_cell(sentence):
         if parsed:
             return parsed
     match = _QUARTER_TOKEN.search(sentence or "")
-    if not match:
+    if match:
+        quarter = match.group(1) or match.group(2)
+        year = match.group(3)
+        if len(year) == 2:
+            year = "20" + year
+        return f"Q{quarter} {year}"
+    bare = _BARE_DATE.search(sentence or "")
+    if not bare:
         return None
-    quarter = match.group(1) or match.group(2)
-    year = match.group(3)
-    if len(year) == 2:
-        year = "20" + year
-    return f"Q{quarter} {year}"
+    return _parse_date(bare.group(1))
 
 
 def _parse_date(raw):
