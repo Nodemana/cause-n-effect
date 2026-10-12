@@ -151,7 +151,8 @@ class PipelineFlowTests(unittest.TestCase):
                     self.assertIsNone(row["macro_context"])
                 review = conn.execute(
                     """
-                    SELECT r.surviving_issues, r.assumptions_that_fail
+                    SELECT r.surviving_issues, r.assumptions_that_fail,
+                           r.price_run_stance, r.price_run_counterevidence
                     FROM praetorian_reviews AS r
                     JOIN theses AS t ON t.thesis_id = r.thesis_id
                     WHERE t.pass_number = 2
@@ -159,6 +160,135 @@ class PipelineFlowTests(unittest.TestCase):
                 ).fetchone()
                 self.assertGreaterEqual(review["surviving_issues"], 1)
                 self.assertIn("priced-in", review["assumptions_that_fail"])
+                self.assertEqual(review["price_run_stance"], "agree")
+                self.assertIn("priced-in", review["price_run_counterevidence"])
+            finally:
+                conn.close()
+
+    def test_macro_tables_outrank_the_json_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            cache = Path(tmp) / "macro.json"
+            cache.write_text(json.dumps({"summary": "JSON cache should not be used."}), encoding="utf-8")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "capex",
+                    "2026-10-12T15:00:00Z",
+                    [
+                        _figure(
+                            "AMZN",
+                            "Amazon",
+                            "PaymentsToAcquireProductiveAssets",
+                            "quarter",
+                            "2025-01-01/2025-03-31",
+                            5_000_000_000,
+                            "5000000000 supplier: Globex Power",
+                            AMZN_URL,
+                        )
+                    ],
+                )
+                save_run(
+                    conn,
+                    "orders-backlog",
+                    "2026-10-12T15:01:00Z",
+                    [
+                        _figure(
+                            "GEV",
+                            "Globex Power",
+                            "supplier_order",
+                            "Amazon",
+                            "2026-10-01",
+                            2_000_000_000,
+                            "2000000000",
+                            GEV_URL,
+                        )
+                    ],
+                )
+            finally:
+                conn.close()
+            conn = connect(path)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE macro_series (
+                        series_id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        source_url TEXT NOT NULL,
+                        unit TEXT NOT NULL,
+                        frequency TEXT NOT NULL,
+                        stale_after_hours INTEGER NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE macro_observations (
+                        series_id TEXT NOT NULL REFERENCES macro_series(series_id),
+                        obs_date TEXT NOT NULL,
+                        value REAL NOT NULL,
+                        fetched_at TEXT NOT NULL,
+                        UNIQUE (series_id, obs_date)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO macro_series (
+                        series_id, name, source, source_url, unit, frequency, stale_after_hours
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "DGS10",
+                        "10-Year Treasury",
+                        "FRED",
+                        "https://fred.stlouisfed.org/series/DGS10",
+                        "percent",
+                        "daily",
+                        24,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO macro_observations (series_id, obs_date, value, fetched_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    ("DGS10", "2026-10-01", 4.2, "2026-10-12T00:00:00Z"),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO macro_observations (series_id, obs_date, value, fetched_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    ("DGS10", "2026-09-01", 3.9, "2026-09-02T00:00:00Z"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), macro_cache=str(cache), token_budget=80000)
+            conn = connect(path)
+            try:
+                merged = conn.execute(
+                    "SELECT macro_context, assumptions FROM theses WHERE pass_number = 2"
+                ).fetchone()
+                self.assertIn("DGS10", merged["macro_context"])
+                self.assertIn("4.2", merged["macro_context"])
+                self.assertIn("2026-10-01", merged["macro_context"])
+                self.assertNotIn("2026-09-01", merged["macro_context"])
+                self.assertNotIn("JSON cache should not be used.", merged["macro_context"])
+                self.assertIn("Macro context used:", merged["assumptions"])
+                self.assertNotIn("JSON cache should not be used.", merged["assumptions"])
+                review = conn.execute(
+                    """
+                    SELECT price_run_stance, price_run_counterevidence
+                    FROM praetorian_reviews AS r
+                    JOIN theses AS t ON t.thesis_id = r.thesis_id
+                    WHERE t.pass_number = 2
+                    """
+                ).fetchone()
+                self.assertEqual(review["price_run_stance"], "agree")
             finally:
                 conn.close()
 

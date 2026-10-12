@@ -260,8 +260,9 @@ def insert_review(conn, run_id, thesis_id, review, critique_body, written_at):
             """
             INSERT INTO praetorian_reviews (
                 thesis_id, run_id, assumptions_that_fail, bad_sources,
-                contradicting_research, other_side, surviving_issues, written_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                contradicting_research, other_side, surviving_issues,
+                price_run_stance, price_run_counterevidence, written_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 thesis_id,
@@ -271,6 +272,8 @@ def insert_review(conn, run_id, thesis_id, review, critique_body, written_at):
                 review["contradicting_research"],
                 review["other_side"],
                 int(review["surviving_issues"]),
+                review.get("price_run_stance") or None,
+                review.get("price_run_counterevidence") or "",
                 written_at,
             ),
         )

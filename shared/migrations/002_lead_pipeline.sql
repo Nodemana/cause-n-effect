@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS praetorian_reviews (
   contradicting_research TEXT NOT NULL DEFAULT '',
   other_side TEXT NOT NULL DEFAULT '',
   surviving_issues INTEGER NOT NULL CHECK (surviving_issues >= 0),
+  price_run_stance TEXT
+    CHECK (price_run_stance IS NULL OR price_run_stance IN ('agree', 'disagree')),
+  price_run_counterevidence TEXT NOT NULL DEFAULT '',
   written_at TEXT NOT NULL
 );
 

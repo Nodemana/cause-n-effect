@@ -1,0 +1,80 @@
+424B2
+
+##### Table of Contents
+
+Filed Pursuant to Rule 424(b)(2)Registration No. 333-277990
+
+Prospectus Supplement
+
+(To Prospectus dated February 2, 2026)
+
+$25,000,000,000
+
+ORACLE CORPORATION
+
+$500,000,000 Floating Rate Notes due 2029
+
+$3,000,000,000 4.550% Notes due 2029
+
+$3,500,000,000 4.950% Notes due 2031
+
+$3,000,000,000 5.350% Notes due 2033
+
+$5,000,000,000 5.700% Notes due 2036
+
+$2,250,000,000 6.550% Notes due 2046
+
+$5,000,000,000 6.700% Notes due 2056
+
+$2,750,000,000 6.850% Notes due 2066
+
+Oracle Corporation is offering $500,000,000 aggregate principal amount of floating rate notes due 2029 (the “Floating Rate Notes”), $3,000,000,000 aggregate principal amount of 4.550% notes due 2029 (the “2029 Fixed Rate Notes”), $3,500,000,000 aggregate principal amount of 4.950% notes due 2031 (the “2031 Fixed Rate Notes”), $3,000,000,000 aggregate principal amount of 5.350% notes due 2033 (the “2033 Fixed Rate Notes”), $5,000,000,000 aggregate principal amount of 5.700% notes due 2036 (the “2036 Fixed Rate Notes”), $2,250,000,000 aggregate principal amount of 6.550% notes due 2046 (the “2046 Fixed Rate Notes”), $5,000,000,000 aggregate principal amount of 6.700% notes due 2056 (the “2056 Fixed Rate Notes”) and $2,750,000,000 aggregate principal amount of 6.850% notes due 2066 (the “2066 Fixed Rate Notes” and, together with the 2029 Fixed Rate Notes, the 2031 Fixed Rate Notes, the 2033 Fixed Rate Notes, the 2036 Fixed Rate Notes, the 2046 Fixed Rate Notes and the 2056 Fixed Rate Notes, the “Fixed Rate Notes”). We refer to the Floating Rate Notes and the Fixed Rate Notes collectively as the “Notes.”
+
+The Floating Rate Notes will bear interest at a floating rate equal to Compounded SOFR (as defined herein), plus 1.11% per year. Interest on the Floating Rate Notes will be payable quarterly on February 4, May 4, August 4 and November 4, commencing May 4, 2026.
+
+The 2029 Fixed Rate Notes will bear interest at the rate of 4.550% per year, the 2031 Fixed Rate Notes will bear interest at the rate of 4.950% per year, the 2033 Fixed Rate Notes will bear interest at the rate of 5.350% per year, the 2036 Fixed Rate Notes will bear interest at the rate of 5.700% per year, the 2046 Fixed Rate Notes will bear interest at the rate of 6.550% per year, the 2056 Fixed Rate Notes will bear interest at the rate of 6.700% per year and the 2066 Fixed Rate Notes will bear interest at the rate of 6.850% per year. Interest on the 2029 Fixed Rate Notes, the 2031 Fixed Rate Notes, the 2036 Fixed Rate Notes, the 2046 Fixed Rate Notes, the 2056 Fixed Rate Notes and the 2066 Fixed Rate Notes will be payable semi-annually on February 4 and August 4, commencing August 4, 2026. Interest on the 2033 Fixed Rate Notes will be payable semi-annually on May 4 and November 4, commencing November 4, 2026.
+
+The Floating Rate Notes will mature on February 4, 2029, the 2029 Fixed Rate Notes will mature on February 4, 2029, the 2031 Fixed Rate Notes will mature on February 4, 2031, the 2033 Fixed Rate Notes will mature on May 4, 2033, the 2036 Fixed Rate Notes will mature on February 4, 2036, the 2046 Fixed Rate Notes will mature on February 4, 2046, the 2056 Fixed Rate Notes will mature on February 4, 2056 and the 2066 Fixed Rate Notes will mature on February 4, 2066.
+
+We may not redeem the Floating Rate Notes prior to maturity. We may redeem the Fixed Rate Notes of any series, in whole or in part, at any time, each at the applicable redemption prices indicated under the heading “Description of the Notes—Optional Redemption” beginning on page S-22 of this prospectus supplement. The Notes will rank equally with all of our other existing and future unsecured and unsubordinated indebtedness from time to time outstanding.
+
+Concurrently with this offering and pursuant to a separate prospectus supplement, we are making a public offering of 100,000,000 depositary shares, each of which represents a 1/2,000th interest in a share of our 6.50% Series D Mandatory Convertible Preferred Stock (the “Depositary Shares Offering”). In addition, concurrently with this offering and pursuant to a separate prospectus supplement, we are entering into an Equity Distribution Agreement with certain agents under which we may sell up to $20 billion of shares of our common stock in “at-the-market” transactions from time to time (the “ATM Program” and, together with the Depositary Shares Offering, the “Concurrent Financing Transactions”). The closing of this offering is not conditioned upon the closing of the Depositary Shares Offering or entry into the ATM Program. Neither the closing of the Depositary Shares Offering nor entry into the ATM Program is conditioned upon the closing of this offering. We cannot assure you that the Depositary Shares Offering or the establishment of the ATM Program will be
+
+---
+
+##### Table of Contents
+
+completed on the terms described herein, or at all. Nothing contained herein shall constitute an offer to sell or a solicitation of an offer to buy any of the depositary shares or the mandatory convertible preferred stock being offered in the Depositary Shares Offering or the common stock being offered in the ATM Program. See the section titled “Concurrent Financing Transactions.”
+
+Investing in the Notes involves risks. See “Risk Factors” beginning on page S-7 of this prospectus supplement and see Part I, Item 1A. “Risk Factors” of our Annual Report on Form 10-K for the fiscal year ended May 31, 2025, which is incorporated by reference herein, for a discussion of certain risks that should be considered in connection with an investment in the Notes.
+
+Neither the U.S. Securities and Exchange Commission nor any state securities commission has approved or disapproved of the Notes or determined if this prospectus supplement or the accompanying prospectus is truthful or complete. Any representation to the contrary is a criminal offense.
+
+| | Public offerprice(1) | | Underwritingdiscount | | Proceeds beforeexpenses, to us | |
+| --- | --- | --- | --- | --- | --- | --- |
+| Floating Rate Notes | | 100.000% | | 0.175% | | 99.825% |
+| Total | $ | 500,000,000 | $ | 875,000 | $ | 499,125,000 |
+| 2029 Fixed Rate Notes | | 99.872% | | 0.175% | | 99.697% |
+| Total | $ | 2,996,160,000 | $ | 5,250,000 | $ | 2,990,910,000 |
+| 2031 Fixed Rate Notes | | 99.834% | | 0.200% | | 99.634% |
+| Total | $ | 3,494,190,000 | $ | 7,000,000 | $ | 3,487,190,000 |
+| 2033 Fixed Rate Notes | | 99.951% | | 0.225% | | 99.726% |
+| Total | $ | 2,998,530,000 | $ | 6,750,000 | $ | 2,991,780,000 |
+| 2036 Fixed Rate Notes | | 99.782% | | 0.250% | | 99.532% |
+| Total | $ | 4,989,100,000 | $ | 12,500,000 | $ | 4,976,600,000 |
+| 2046 Fixed Rate Notes | | 99.912% | | 0.400% | | 99.512% |
+| Total | $ | 2,248,020,000 | $ | 9,000,000 | $ | 2,239,020,000 |
+| 2056 Fixed Rate Notes | | 99.820% | | 0.425% | | 99.395% |
+| Total | $ | 4,991,000,000 | $ | 21,250,000 | $ | 4,969,750,000 |
+| 2066 Fixed Rate Notes | | 99.810% | | 0.450% | | 99.360% |
+| Total | $ | 2,744,775,000 | $ | 12,375,000 | $ | 2,732,400,000 |
+| Total | $ | 24,961,775,000 | $ | 75,000,000 | $ | 24,886,775,000 |
+
+
+
+
+BofA Securities, Inc., Citigroup Global Markets Inc., Deutsche Bank Securities Inc., Goldman Sachs & Co. LLC, HSBC Securities (USA) Inc. and J.P. Morgan Securities LLC are acting as global coordinators in the offering and as representatives of the underwriters named below. Subject to the terms and conditions stated in the underwriting agreement dated the date of this prospectus supplement, each underwriter named below has severally agreed to purchase, and we have agreed to sell to that underwriter, the principal amount of Notes of each series: $500,000,000 aggregate principal amount of the Floating Rate Notes, $3,000,000,000 aggregate principal amount of the 2029 Fixed Rate Notes, $3,500,000,000 aggregate principal amount of the 2031 Fixed Rate Notes, $3,000,000,000 aggregate principal amount of the 2033 Fixed Rate Notes, $5,000,000,000 aggregate principal amount of the 2036 Fixed Rate Notes, $2,250,000,000 aggregate principal amount of the 2046 Fixed Rate Notes, $5,000,000,000 aggregate principal amount of the 2056 Fixed Rate Notes and $2,750,000,000 aggregate principal amount of the 2066 Fixed Rate Notes set forth opposite the underwriter’s name.
+
+Issuance of Additional Notes
+
+The Notes are initially limited in aggregate principal amount to $500,000,000 for the Floating Rate Notes, $3,000,000,000 for the 2029 Fixed Rate Notes, $3,500,000,000 for the 2031 Fixed Rate Notes, $3,000,000,000 for the 2033 Fixed Rate Notes, $5,000,000,000 for the 2036 Fixed Rate Notes, $2,250,000,000 for the 2046 Fixed Rate Notes, $5,000,000,000 for the 2056 Fixed Rate Notes and $2,750,000,000 for the 2066 Fixed Rate Notes.

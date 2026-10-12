@@ -27,12 +27,13 @@ from tags import (
 _MONEY = re.compile(
     r"(?P<cur>A\$|US\$|USD|AUD|EUR|GBP|€|£|\$)\s*"
     r"(?P<num>\d[\d,]*(?:\.\d+)?)\s*"
-    r"(?P<scale>billion|million|thousand|bn|mn|m\b)?",
+    r"(?P<scale>billion|million|thousand|bn|\bb\b|mn|\bm\b)?",
     re.I,
 )
 _SCALE = {
     "billion": 1_000_000_000,
     "bn": 1_000_000_000,
+    "b": 1_000_000_000,
     "million": 1_000_000,
     "mn": 1_000_000,
     "m": 1_000_000,
@@ -233,10 +234,210 @@ def _backlog_text(text, company, source_type, source_url, filing_date):
     return rows
 
 
+_METRIC_AMOUNT = re.compile(
+    r"\b(?P<kind>total backlog|equipment backlog|order intake|orders|backlog|revenues?)\b"
+    r"(?P<mid>(?:(?!\b(?:orders|order intake|backlog|revenues?|ebitda)\b).){0,120}?)"
+    r"(?:of|to|was|were|at|reaching)?\s*"
+    r"(?:approximately\s+|about\s+|over\s+)?"
+    r"(?P<cur>A\$|US\$|USD|AUD|EUR|GBP|€|£|\$)\s*"
+    r"(?P<num>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<scale>billion|million|thousand|bn|\bb\b|mn|\bm\b)?",
+    re.I,
+)
+_METRIC_KIND = {
+    "order intake": "order_intake",
+    "orders": "orders",
+    "total backlog": "backlog",
+    "equipment backlog": "backlog",
+    "backlog": "backlog",
+    "revenue": "revenue",
+    "revenues": "revenue",
+}
+_CHANGE = re.compile(r"\b(?:growth|up|down|increase|decrease)\b", re.I)
+_CUSTOMER_ORDER = re.compile(r"\border from\b|\breceived an order\b|\border with\b", re.I)
+_SECTION = (
+    "Electrical Americas",
+    "Electrical Global",
+    "Aerospace",
+    "Electrification",
+    "data center",
+    "Prolec GE",
+    "Wind",
+    "Power",
+)
+_IN_ORDER_TO = re.compile(r"\bin order to\b", re.I)
+_ORDER_WORD = re.compile(r"\borders?\b|\bcontracts?\b|\bawarded\b", re.I)
+
+
+def _mentions_order(text):
+    """'in order to' is not an order. A customer order or an orders figure is."""
+    return _ORDER_WORD.search(_IN_ORDER_TO.sub(" ", text or "")) is not None
+
+
+def _document_period(text):
+    """Quarter-end stated once at the top of a release, used when a bullet has none."""
+    match = re.search(
+        r"(?:quarter|period|year|(?:three|six|nine|twelve)\s+months)\s+end(?:ed|ing)\s+"
+        r"([A-Z][a-z]+ \d{1,2}, \d{4}|\d{4}-\d{2}-\d{2})",
+        text or "",
+        re.I,
+    )
+    if not match:
+        return None
+    return _parse_date(match.group(1))
+
+
+def _metric_label(kind, segment):
+    base = _METRIC_KIND[kind.casefold()]
+    if segment and base != "order_intake":
+        return f"{base}:{segment}"
+    return base
+
+
+def _metric_segment(sentence, start, heading):
+    """The section closest to the figure. A heading covers a later performance line."""
+    window_at = max(0, start - 80)
+    window = sentence[window_at : start + 48]
+    best = None
+    best_at = -1
+    for name in _SECTION:
+        match = re.search(rf"\b{re.escape(name)}\b", window, re.I)
+        if match and match.start() >= best_at:
+            best = name
+            best_at = match.start()
+    return best or heading
+
+
+def _section_headings(text):
+    marks = []
+    for match in re.finditer(
+        r"(?m)^[ \t>|]*(Electrical Americas|Electrical Global|Aerospace|Electrification|Power|Wind)\b",
+        text or "",
+    ):
+        marks.append((match.start(), match.group(1)))
+    return marks
+
+
+def _heading_at(marks, pos):
+    current = None
+    for at, name in marks:
+        if at <= pos:
+            current = name
+        else:
+            break
+    return current
+
+
+def _metric_rows(sentence, company, source_type, source_url, filing_date, filed_period, heading=None):
+    """Company and segment orders, backlog, and revenue. None when this is a customer order."""
+    if _CUSTOMER_ORDER.search(sentence or ""):
+        return None
+    found = []
+    for match in _METRIC_AMOUNT.finditer(sentence or ""):
+        middle = match.group("mid") or ""
+        if _CHANGE.search(middle) or re.search(r"\b(?:intangible|assets?|amortiz)\b", middle, re.I):
+            continue
+        scale = _SCALE.get((match.group("scale") or "").casefold(), 1)
+        value = float(match.group("num").replace(",", "")) * scale
+        if value < 1_000_000:
+            continue
+        kind = match.group("kind").casefold()
+        if kind in {"revenue", "revenues"} and not _mentions_order(sentence) and "backlog" not in sentence.casefold():
+            continue
+        segment = None if kind == "total backlog" else _metric_segment(sentence, match.start(), heading)
+        label = _metric_label(kind, segment)
+        period = _period(sentence) or filed_period
+        found.append(
+            record(
+                source_side="supplier_order",
+                company=company["name"],
+                ticker=company.get("ticker"),
+                counterparty=None,
+                equipment_or_period=period,
+                value=value,
+                currency=_CURRENCY[(match.group("cur") or "").casefold()],
+                timing=period,
+                source_url=source_url,
+                filing_date=filing_date,
+                source_type=source_type,
+                disclosure=label,
+                notes=[label],
+            )
+        )
+    if not found:
+        return None
+    return found
+
+
+def _table_backlogs(text, company, source_type, source_url, filing_date, filed_period):
+    """'Backlog | $15,175' under a '($ in millions)' heading is millions, not dollars."""
+    if not re.search(r"\(\$\s*in millions\)", text or "", re.I):
+        return []
+    rows = []
+    lines = text.splitlines()
+    section = None
+    million = False
+    for index, line in enumerate(lines):
+        if re.search(r"\(\$\s*in millions\)", line, re.I):
+            million = True
+        stripped = line.strip()
+        for name in _SECTION:
+            if stripped.casefold() == name.casefold() or stripped.casefold().endswith(name.casefold()):
+                section = name
+        if not million or not re.search(r"^\s*\|?\s*Backlog\s*\|", line, re.I):
+            continue
+        if re.search(r"organic|book-to-bill", line, re.I):
+            continue
+        amounts = re.findall(r"\$\s*([\d,]+)", line)
+        if not amounts:
+            continue
+        value = float(amounts[0].replace(",", "")) * 1_000_000
+        period = _nearby_period(lines, index) or filed_period
+        label = f"backlog:{section}" if section else "backlog"
+        rows.append(
+            record(
+                source_side="supplier_order",
+                company=company["name"],
+                ticker=company.get("ticker"),
+                equipment_or_period=period,
+                value=value,
+                currency="USD",
+                timing=period,
+                source_url=source_url,
+                filing_date=filing_date,
+                source_type=source_type,
+                disclosure=label,
+                notes=[label],
+            )
+        )
+    return rows
+
+
+def _nearby_period(lines, index):
+    window = " ".join(lines[max(0, index - 8) : index + 1])
+    dates = []
+    for match in _BARE_DATE.finditer(window):
+        parsed = _parse_date(match.group(1))
+        if parsed:
+            dates.append(parsed)
+    if not dates:
+        return None
+    return max(dates)
+
+
 def _supplier_text(text, company, source_type, source_url, filing_date):
     rows = []
+    filed_period = _document_period(text)
+    rows.extend(_table_backlogs(text, company, source_type, source_url, filing_date, filed_period))
+    headings = _section_headings(text)
     equipment_words = [item.casefold() for item in company.get("equipment") or []]
+    cursor = 0
     for sentence in _sentences(text):
+        at = text.find(sentence, cursor)
+        if at < 0:
+            at = cursor
+        else:
+            cursor = at + len(sentence)
         if "|" in sentence:
             piped = _pipe_row(
                 sentence, company, "supplier_order", None, source_type, source_url, filing_date
@@ -244,9 +445,21 @@ def _supplier_text(text, company, source_type, source_url, filing_date):
             if piped is not None:
                 rows.append(piped)
                 continue
+        metrics = _metric_rows(
+            sentence,
+            company,
+            source_type,
+            source_url,
+            filing_date,
+            filed_period,
+            heading=_heading_at(headings, at),
+        )
+        if metrics is not None:
+            rows.extend(metrics)
+            continue
         folded = sentence.casefold()
         intake = "order intake" in folded or "orders received" in folded
-        orderish = intake or any(word in folded for word in ("order", "contract", "awarded"))
+        orderish = intake or _mentions_order(folded)
         if not orderish and not any(word in folded for word in equipment_words):
             continue
         if not orderish:

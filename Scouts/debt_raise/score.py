@@ -262,7 +262,7 @@ def _choose(candidates, plain, min_deal):
         if not group:
             continue
         if tier == 3:
-            combined = _combine_principal(group, plain, min_deal)
+            combined = _combine_principal(group, plain, min_deal, extras=candidates)
             if combined is None:
                 return None, True
             return combined, False
@@ -313,36 +313,84 @@ def _dedupe_tranches(plain, candidates):
     return kept
 
 
-def _combine_principal(group, plain, min_deal):
-    """Stated total, else the sum of the tranches, else the largest principal.
+def _has_maturity(plain, item):
+    return bool(_tranche_key(plain, item)[1])
 
-    A tranche list that appears twice (cover and body) is counted once.
-    A figure under `min_deal` is left out of the sum when a larger principal
-    amount is present, so a covenant floor is not added to the deal.
-    """
-    floor = float(min_deal)
-    totals = [item for item in group if _stated_total(plain, item)]
-    tranches = _dedupe_tranches(plain, [item for item in group if item not in totals])
-    candidates = totals or tranches
-    if any(item["value"] >= floor for item in candidates):
-        candidates = [item for item in candidates if item["value"] >= floor]
+
+def _above_floor(items, floor):
+    if any(item["value"] >= floor for item in items):
+        return [item for item in items if item["value"] >= floor]
+    return list(items)
+
+
+def _summed(candidates):
+    candidates = _one_currency(candidates)
     if not candidates:
         return None
-    candidates = _one_currency(candidates)
-    if totals:
-        return max(candidates, key=lambda item: item["value"])
     if _one_value(candidates) or len(candidates) == 1:
         return candidates[0]
     largest = max(candidates, key=lambda item: item["value"])
     rest = [item for item in candidates if item is not largest]
-    rest_sum = sum(item["value"] for item in rest)
-    if abs(largest["value"] - rest_sum) <= 1:
+    if abs(largest["value"] - sum(item["value"] for item in rest)) <= 1:
         return largest
     return {
         "value": sum(item["value"] for item in candidates),
         "currency": candidates[0]["currency"],
         "text": " + ".join(item["text"] for item in candidates),
     }
+
+
+def _leading_total(plain, pool, table):
+    """A cover amount with no maturity sitting in front of the tranche list.
+
+    $25,000,000,000 before the notes is that total. A covenant of $10 million
+    is smaller than the notes, so it is not.
+    """
+    if not table:
+        return None
+    first = min(table, key=lambda item: item["start"])
+    largest = max(item["value"] for item in table)
+    bare = [
+        item
+        for item in pool
+        if item["end"] <= first["start"] and not _has_maturity(plain, item) and item["value"] + 1 >= largest
+    ]
+    if not bare:
+        return None
+    return max(bare, key=lambda item: item["end"])
+
+
+def _combine_principal(group, plain, min_deal, extras=None):
+    """One tranche table, then a stated total when the filing gives one.
+
+    Only amounts tied to a maturity are tranches, so a later summary that
+    repeats the principal amounts without the coupon and maturity is not added
+    again. A repeated cover-page list is counted once. A stated total, including
+    the cover amount in front of that list, wins, and a sum that runs past it
+    is cut back to it. A figure under `min_deal` is left out when a larger
+    principal amount is present, so a covenant floor is not added to the deal.
+    """
+    floor = float(min_deal)
+    table = _above_floor(
+        _dedupe_tranches(plain, [item for item in group if _has_maturity(plain, item)]),
+        floor,
+    )
+    stated = _above_floor([item for item in group if _stated_total(plain, item)], floor)
+    table_sum = sum(item["value"] for item in table)
+    if stated:
+        matching = [item for item in stated if table and abs(item["value"] - table_sum) <= 1]
+        return max(matching or stated, key=lambda item: item["value"])
+    lead = _leading_total(plain, list(extras) if extras is not None else list(group), table)
+    if lead is not None and lead["value"] >= floor and (
+        abs(lead["value"] - table_sum) <= 1 or table_sum > lead["value"] + 1
+    ):
+        return lead
+    if table:
+        return _summed(table)
+    rest = _above_floor(_dedupe_tranches(plain, group), floor)
+    if not rest:
+        return None
+    return _summed(rest)
 
 
 def _one_currency(pool):

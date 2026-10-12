@@ -15,10 +15,11 @@ cause-n-effect/
     ├── orders_backlog/ # customer backlog and supplier orders, one table
     ├── debt_raise/     # use-of-proceeds gate for loans, facilities, and bonds
     ├── insider_buying/ # Form 4 and ASX Appendix 3Y open-market buys
-    └── capex/          # big spenders' capex → 2nd/3rd-tier suppliers
+    ├── capex/          # big spenders' capex → 2nd/3rd-tier suppliers
+    └── macro/          # cached official macro context; does not emit leads
 ```
 
-`Scouts/capex` pulls SEC companyfacts, EDGAR full-text capex guidance, and ASX announcements into the shared figures table. Each other scout keeps its fetcher, parser, and tests in its own folder.
+`Scouts/capex` pulls SEC companyfacts, EDGAR full-text capex guidance, and ASX announcements into the shared figures table. Each lead scout keeps its fetcher, parser, and tests in its own folder. `Scouts/macro` is documented only: a cached official dataset, with no fetcher yet.
 
 ## Environment
 
@@ -46,7 +47,7 @@ python3 Scouts/capex/tests/test_capex.py
 
 ## Lead pipeline
 
-`python -m pipeline run` reads the latest figures each scout stored, then rates, researches, merges, critiques, ranks, and writes pending decisions. `--help` does not open a database or a network connection. With no `LLM_API_KEY`, the offline stub runs every stage. Set `LLM_API_KEY` to use an OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). The key is not written to the database or to a log line. A macro file is optional: `cache/macro.json` with a `summary` string, or `--macro-cache`. If that file is missing, the return pass skips macro context.
+`python -m pipeline run` reads the latest figures each scout stored, then rates, researches, merges, critiques, ranks, and writes pending decisions. Only a merged finding gets a second Centurion pass. That pass classifies any prior price run as new, an acceleration, or priced-in, and notes the call as a concern. Praetorians then agree or disagree, with counter-evidence. `--help` does not open a database or a network connection. With no `LLM_API_KEY`, the offline stub runs every stage. Set `LLM_API_KEY` to use an OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). The key is not written to the database or to a log line. Macro context on the second pass is read from `macro_series` and `macro_observations` when those tables have rows. Otherwise it uses `cache/macro.json` with a `summary` string, or `--macro-cache`. If neither is present, the second pass skips macro context. The first pass does not read it.
 
 ```bash
 python3 -m pipeline run --help

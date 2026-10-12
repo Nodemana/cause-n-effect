@@ -110,10 +110,10 @@ def run_pipeline(
         rules_text(lead_type)
     provider = provider or resolve_provider()
     budget = TokenBudget(token_budget)
-    macro = load_macro(macro_cache)
     started = now or utc_now()
     conn = connect(db_path)
     try:
+        macro = load_macro(conn, macro_cache)
         figures = load_latest_figures(conn)
         names, _ciks = party_index(figures)
         working = figures[: int(limit)] if limit is not None else figures
@@ -270,12 +270,15 @@ def _critique(provider, budget, final):
         data = _complete(provider, budget, prompt, _MAX_PRAETORIAN)
         if data is None:
             continue
+        stance = _text(data.get("price_run_stance")).casefold()
         review = {
             "assumptions_that_fail": _text(data.get("assumptions_that_fail")),
             "bad_sources": _text(data.get("bad_sources")),
             "contradicting_research": _text(data.get("contradicting_research")),
             "other_side": _text(data.get("other_side")),
             "surviving_issues": max(0, int(data.get("surviving_issues") or 0)),
+            "price_run_stance": stance if stance in {"agree", "disagree"} else "",
+            "price_run_counterevidence": _text(data.get("price_run_counterevidence")),
         }
         lead.thesis.review = review
         lead.thesis.surviving_issues = review["surviving_issues"]
@@ -630,6 +633,10 @@ def _critique_body(review):
             "## Bad or non-official sources\n\n" + review["bad_sources"],
             "## Contradicting research\n\n" + review["contradicting_research"],
             "## The other side of the claim\n\n" + review["other_side"],
+            "## Price-run classification\n\n"
+            + (review.get("price_run_stance") or "")
+            + "\n"
+            + (review.get("price_run_counterevidence") or ""),
         ]
     )
 

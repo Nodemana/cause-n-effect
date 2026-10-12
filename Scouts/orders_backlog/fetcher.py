@@ -62,6 +62,90 @@ def collect_supplier_facts(companies, client=None):
     return collect_customer_facts(companies, client)
 
 
+def collect_supplier_reports(companies, client=None):
+    """Latest 10-Q or 10-K narrative for each supplier.
+
+    Eaton states firm backlog in the 10-Q, not in an OrdersReceived fact and not
+    in the earnings bullet list. The primary HTML is parsed as a release.
+    """
+    client = client or sec_client()
+    documents = []
+    for company in companies:
+        cik = company.get("cik")
+        if not cik:
+            continue
+        url = submissions_url(cik)
+        _require_sec(url)
+        payload = client.json(url)
+        filing = latest_periodic(payload)
+        if not filing:
+            continue
+        base = _archive_base(cik, filing["accession"])
+        index_url = base + "/index.json"
+        _require_sec(index_url)
+        index = client.json(index_url)
+        name = _primary_html(index)
+        if not name:
+            continue
+        doc_url = base + "/" + name
+        _require_sec(doc_url)
+        body, _ctype = client.get(doc_url, accept="text/html,text/plain")
+        documents.append(
+            {
+                "company": company,
+                "body": _decode(body),
+                "url": doc_url,
+                "filing_date": filing["filing_date"],
+                "form": filing["form"],
+            }
+        )
+    return documents
+
+
+def latest_periodic(payload):
+    """The newest 10-Q or 10-K in a submissions document. 10-Q wins a tie on the date."""
+    recent = ((payload or {}).get("filings") or {}).get("recent") or {}
+    forms = recent.get("form") or []
+    accessions = recent.get("accessionNumber") or []
+    dates = recent.get("filingDate") or []
+    best = None
+    for index, form in enumerate(forms):
+        if form not in {"10-Q", "10-K"}:
+            continue
+        filed = dates[index] if index < len(dates) else ""
+        row = {
+            "form": form,
+            "accession": accessions[index] if index < len(accessions) else "",
+            "filing_date": filed,
+        }
+        if not row["accession"] or not filed:
+            continue
+        if best is None or (filed, form == "10-Q") > (best["filing_date"], best["form"] == "10-Q"):
+            best = row
+    return best
+
+
+def _primary_html(index):
+    directory = (index or {}).get("directory") or {}
+    items = directory.get("item") or []
+    if isinstance(items, dict):
+        items = [items]
+    htmls = []
+    for item in items:
+        name = item.get("name") or ""
+        lower = name.lower()
+        if not lower.endswith((".htm", ".html")):
+            continue
+        if "ex99" in lower or "exhibit" in lower or _is_exhibit(lower):
+            continue
+        htmls.append(name)
+    return htmls[-1] if htmls else None
+
+
+def _is_exhibit(name):
+    return len(name) > 2 and name.startswith("ex") and name[2].isdigit()
+
+
 def collect_8k_exhibits(companies, client=None, items=_8K_SUPPLIER_ITEMS, since=None, limit_per_company=None):
     """Download 8-K exhibit text for filings whose items overlap `items`."""
     client = client or sec_client()

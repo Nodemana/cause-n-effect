@@ -76,16 +76,21 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
         lines.append("CONSTITUENTS_END")
         lines.append(
             "This lead is the single new lead from a Legate merge. "
+            "A lead that was not merged is not sent back. "
             "Still write one grade, one thesis, one ROI, one set of risks, one timeframe, "
             "and one assumptions list."
         )
         lines.append(
-            "Classify the price run as new, acceleration, or priced-in. "
-            "priced-in is a concern, not a source of figures."
+            "Classify any prior price run as new, acceleration, or priced-in, "
+            "with reasoning and evidence. Note that call as a concern where relevant. "
+            "There is no automatic rejection. Do not invent a stock price."
         )
         if macro:
             lines.append(f"MACRO: {_one_line(macro)}")
-            lines.append("Use the macro line only as context. Do not treat it as a figure.")
+            lines.append(
+                "Macro context is a concern on this pass only. "
+                "Use the macro line as supplied. Do not re-pull series and do not treat it as a company figure."
+            )
         else:
             lines.append("MACRO: none")
             lines.append("No macro cache is available. Do not invent macro conditions.")
@@ -111,15 +116,110 @@ def praetorian_prompt(thesis_markdown, price_run):
             thesis_markdown,
             "THESIS_END",
             "Critique only. Do not merge, rank, or add an assumptions list of your own.",
+            "The Centurion classified any prior price run first. "
+            "State whether you agree or disagree, with counter-evidence. "
+            "A priced-in call is a concern. Do not reject the lead automatically.",
             "Reply with one JSON object and no other text. Keys: assumptions_that_fail, "
-            "bad_sources, contradicting_research, other_side, surviving_issues. "
+            "bad_sources, contradicting_research, other_side, surviving_issues, "
+            "price_run_stance, price_run_counterevidence. "
+            "price_run_stance is agree, disagree, or empty when PRICE_RUN is none. "
             "surviving_issues is an integer. Empty strings are allowed for the text keys.",
         ]
     )
 
 
-def load_macro(path=None):
-    """Return the cache summary, or None when the file is missing or empty."""
+def load_macro(conn, path=None):
+    """Macro text for the second pass.
+
+    Observations in `macro_series` / `macro_observations` win when those
+    tables exist and have rows. Otherwise the JSON cache is used. A missing
+    or empty cache returns None, and the caller skips macro context.
+    """
+    cached = _macro_from_tables(conn)
+    if cached:
+        return cached
+    return _macro_from_file(path)
+
+
+def ordered_types(types):
+    wanted = set(types)
+    return [lead_type for lead_type in _LEAD_ORDER if lead_type in wanted]
+
+
+def _macro_from_tables(conn):
+    if conn is None or not _macro_tables(conn):
+        return None
+    series_cols = _table_columns(conn, "macro_series")
+    obs_cols = _table_columns(conn, "macro_observations")
+    if "series_id" not in series_cols or "series_id" not in obs_cols or "obs_date" not in obs_cols:
+        return None
+    name_sql = "s.name" if "name" in series_cols else "s.series_id"
+    source_sql = "s.source" if "source" in series_cols else "''"
+    unit_sql = "s.unit" if "unit" in series_cols else "''"
+    value_sql = "o.value" if "value" in obs_cols else "NULL"
+    text_sql = "o.value_text" if "value_text" in obs_cols else "NULL"
+    rows = conn.execute(
+        f"""
+        SELECT s.series_id AS series_id,
+               {name_sql} AS name,
+               {source_sql} AS source,
+               {unit_sql} AS unit,
+               o.obs_date AS obs_date,
+               {value_sql} AS value,
+               {text_sql} AS value_text
+        FROM macro_observations AS o
+        JOIN macro_series AS s ON s.series_id = o.series_id
+        WHERE o.obs_date = (
+            SELECT MAX(later.obs_date)
+            FROM macro_observations AS later
+            WHERE later.series_id = o.series_id
+        )
+        ORDER BY s.series_id
+        """
+    ).fetchall()
+    lines = []
+    for row in rows:
+        reading = _observation_text(row["value_text"], row["value"])
+        if not reading:
+            continue
+        unit = f" {row['unit']}" if row["unit"] else ""
+        source = f" ({row['source']})" if row["source"] else ""
+        name = row["name"] or row["series_id"]
+        lines.append(f"{row['series_id']} {name}: {reading}{unit} on {row['obs_date']}{source}")
+    if not lines:
+        return None
+    return "Macro scout cache: " + "; ".join(lines)
+
+
+def _macro_tables(conn):
+    rows = conn.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name IN ('macro_series', 'macro_observations')
+        """
+    ).fetchall()
+    found = {row["name"] for row in rows}
+    return "macro_series" in found and "macro_observations" in found
+
+
+def _table_columns(conn, table):
+    if table not in {"macro_series", "macro_observations"}:
+        return set()
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _observation_text(value_text, value):
+    text = " ".join(str(value_text or "").split())
+    if text:
+        return text
+    if value is None or value == "":
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _macro_from_file(path):
     if path is None:
         candidate = MACRO_CACHE
         if not candidate.is_file():
@@ -139,11 +239,6 @@ def load_macro(path=None):
     else:
         return None
     return summary or None
-
-
-def ordered_types(types):
-    wanted = set(types)
-    return [lead_type for lead_type in _LEAD_ORDER if lead_type in wanted]
 
 
 def _one_line(value):

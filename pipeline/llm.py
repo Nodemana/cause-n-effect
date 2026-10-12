@@ -446,10 +446,22 @@ def _praetorian(prompt):
             "The price-run classification is priced-in, so the claim that this is still early does not hold."
         )
         contradicting = "A priced-in classification is counter-evidence to treating the finding as an early lead."
+        stance = "agree"
+        counterevidence = (
+            "Agree: the stored text marks the run as priced-in, and that concern stands."
+        )
         issues = 1
+    elif price_run in {"new", "acceleration"}:
+        assumptions = ""
+        contradicting = ""
+        stance = "agree"
+        counterevidence = f"Agree: the {price_run} classification matches the stored official-source figures."
+        issues = 0
     else:
         assumptions = ""
         contradicting = ""
+        stance = ""
+        counterevidence = ""
         issues = 0
     if "sec.gov" in thesis or "asx.com.au" in thesis or "company release" in thesis.casefold():
         bad_sources = ""
@@ -464,4 +476,6 @@ def _praetorian(prompt):
             "The return fails if the named spending or order is cancelled before it reaches a filing the thesis can cite."
         ),
         "surviving_issues": issues,
+        "price_run_stance": stance,
+        "price_run_counterevidence": counterevidence,
     }
