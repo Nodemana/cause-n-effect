@@ -1,12 +1,14 @@
 """Keep open-market purchases at or above a value threshold, and mark clusters."""
 
+import sys
 from datetime import date
 
 
 class ScreenConfig:
-    def __init__(self, min_value=10_000, cluster_window_days=7):
+    def __init__(self, min_value=10_000, cluster_window_days=7, max_trade_age_days=30):
         self.min_value = float(min_value)
         self.cluster_window_days = int(cluster_window_days)
+        self.max_trade_age_days = int(max_trade_age_days)
 
 
 def screen(transactions, config=None):
@@ -32,6 +34,9 @@ def screen(transactions, config=None):
             continue
         if row["value"] < config.min_value:
             continue
+        if _stale_trade(row, config.max_trade_age_days):
+            _log_stale_trade(row, config.max_trade_age_days)
+            continue
         included.append(row)
     _mark_clusters(included, config.cluster_window_days)
     included.sort(key=_sort_key)
@@ -50,6 +55,34 @@ def _mark_clusters(rows, window):
                 _insider(other) != _insider(row) and _within(row, other, window)
                 for other in group
             )
+
+
+def _stale_trade(row, max_age_days):
+    """True when the trade date is more than `max_age_days` before the filing date.
+
+    A negative max age turns the filter off. The filing date is the clock,
+    because a late or amended Form 4 can arrive long after the trade.
+    """
+    if max_age_days < 0:
+        return False
+    traded = _as_date(row.get("transaction_date"))
+    filed = _as_date(row.get("filing_date"))
+    if traded is None or filed is None:
+        return False
+    return (filed - traded).days > int(max_age_days)
+
+
+def _log_stale_trade(row, max_age_days):
+    print(
+        "dropped stale trade"
+        f" ticker={row.get('ticker') or ''}"
+        f" insider={row.get('insider') or ''}"
+        f" transaction_date={row.get('transaction_date') or ''}"
+        f" filing_date={row.get('filing_date') or ''}"
+        f" form={row.get('form') or ''}"
+        f" max_age_days={int(max_age_days)}",
+        file=sys.stderr,
+    )
 
 
 def _within(left, right, window):

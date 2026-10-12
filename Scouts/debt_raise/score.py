@@ -245,6 +245,8 @@ def _classify(plain, match, prev_end, next_start):
     else:
         tier = 0
     amount["tier"] = tier
+    amount["prev_end"] = prev_end
+    amount["next_start"] = next_start
     return amount
 
 
@@ -272,15 +274,56 @@ def _choose(candidates, plain, min_deal):
     return None, True
 
 
+_COUPON = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_MATURITY = re.compile(
+    r"\bdue\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4}|\d{4}|[A-Z][a-z]+\s+\d{4})",
+    re.I,
+)
+
+
+def _tranche_key(plain, item):
+    """Coupon, maturity, and amount. A repeated cover-page list shares this key.
+
+    The coupon and maturity are taken from the gap before the next amount, then
+    from the gap after the previous amount, so a neighbouring tranche is not used.
+    """
+    prev = item.get("prev_end", max(0, item["start"] - 80))
+    nxt = item.get("next_start", min(len(plain), item["end"] + 80))
+    after = plain[item["end"] : nxt]
+    before = plain[prev : item["start"]]
+    coupon = _COUPON.search(after) or _COUPON.search(before)
+    maturity = _MATURITY.search(after) or _MATURITY.search(before)
+    return (
+        coupon.group(1) if coupon else "",
+        maturity.group(1).casefold() if maturity else "",
+        round(item["value"], 2),
+    )
+
+
+def _dedupe_tranches(plain, candidates):
+    """One copy of each (coupon, maturity, amount). Document order is kept."""
+    seen = set()
+    kept = []
+    for item in candidates:
+        key = _tranche_key(plain, item)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(item)
+    return kept
+
+
 def _combine_principal(group, plain, min_deal):
     """Stated total, else the sum of the tranches, else the largest principal.
 
+    A tranche list that appears twice (cover and body) is counted once.
     A figure under `min_deal` is left out of the sum when a larger principal
     amount is present, so a covenant floor is not added to the deal.
     """
     floor = float(min_deal)
     totals = [item for item in group if _stated_total(plain, item)]
-    candidates = totals or list(group)
+    tranches = _dedupe_tranches(plain, [item for item in group if item not in totals])
+    candidates = totals or tranches
     if any(item["value"] >= floor for item in candidates):
         candidates = [item for item in candidates if item["value"] >= floor]
     if not candidates:

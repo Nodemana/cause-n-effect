@@ -2,6 +2,7 @@
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -29,6 +30,9 @@ from score import (
 )
 from shared.nethttp import EndpointError, asx_client, sec_client
 from store import open_db, save_run, utc_now
+
+# An 8-K and the following 424B for the same notes land a few days apart.
+DEAL_REPEAT_DAYS = 7
 
 
 def run(
@@ -100,6 +104,7 @@ def run(
         if figure is not None:
             figures.append(figure)
 
+    figures = _dedupe_issuer_deals(figures)
     scores.sort(key=lambda row: row["accession"])
     buckets = histogram(row["score"] for row in scores)
     cheap_n = sum(1 for row in scores if row["stage_reached"] == "cheap_filter")
@@ -200,7 +205,69 @@ def _figure(filing, text, started_at, amount, min_deal=DEFAULT_MIN_DEAL_USD):
         "source_url": filing.get("document_url") or "",
         "source_type": filing.get("source_type") or "filing",
         "verified": 1,
+        "form": filing.get("form") or "",
+        "accession": filing.get("accession") or "",
     }
+
+
+def _dedupe_issuer_deals(figures, window_days=DEAL_REPEAT_DAYS):
+    """Keep one filing when the same issuer repeats the same amount within a few days.
+
+    The later filing is kept. An 8-K and a 424B for the same notes are one deal.
+    A different amount is a different deal and stays.
+    """
+    kept = []
+    for figure in figures:
+        match = next((prior for prior in kept if _same_deal(prior, figure, window_days)), None)
+        if match is None:
+            kept.append(figure)
+            continue
+        if _on(figure) >= _on(match):
+            kept.remove(match)
+            kept.append(figure)
+            _log_repeat(match, figure)
+        else:
+            _log_repeat(figure, match)
+    return kept
+
+
+def _same_deal(left, right, window_days):
+    if (left.get("ticker") or "") != (right.get("ticker") or ""):
+        return False
+    if (left.get("currency") or "") != (right.get("currency") or ""):
+        return False
+    if (left.get("figure_type") or "") != (right.get("figure_type") or ""):
+        return False
+    if round(float(left.get("value") or 0), 2) != round(float(right.get("value") or 0), 2):
+        return False
+    left_on = _on(left)
+    right_on = _on(right)
+    if left_on is None or right_on is None:
+        return False
+    return abs((left_on - right_on).days) <= int(window_days)
+
+
+def _on(figure):
+    raw = (figure.get("announced_on") or "")[:10]
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _log_repeat(dropped, kept):
+    print(
+        "dropped duplicate deal"
+        f" ticker={dropped.get('ticker') or ''}"
+        f" form={dropped.get('form') or ''}"
+        f" accession={dropped.get('accession') or ''}"
+        f" filed={dropped.get('announced_on') or ''}"
+        f" value={float(dropped.get('value') or 0):.0f}"
+        f" kept_form={kept.get('form') or ''}"
+        f" kept_accession={kept.get('accession') or ''}"
+        f" kept_filed={kept.get('announced_on') or ''}",
+        file=sys.stderr,
+    )
 
 
 def _period(filing):

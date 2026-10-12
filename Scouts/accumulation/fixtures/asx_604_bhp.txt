@@ -1,0 +1,27 @@
+Form 604
+Corporations Act 2001
+Section 671B
+
+Notice of change of interests of substantial holder
+
+To Company Name/Scheme
+BHP Group Limited
+
+ACN/ARSN
+004 028 077
+
+1. Details of substantial holder (1)
+
+Name
+Address
+
+BlackRock, Inc.
+
+There was a change in the interests of the substantial holder on 08/10/2026
+The previous notice was given to the company on 01/06/2026
+
+2. Previous and present voting power
+
+Class of securities (4)    Previous notice                         Present notice
+                           Person's votes    Voting power (5)      Person's votes    Voting power (5)
+Ordinary fully paid        100,000,000       5.20%                 110,000,000       6.10%

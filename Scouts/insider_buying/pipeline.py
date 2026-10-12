@@ -55,6 +55,7 @@ def build_table(documents, config=None):
         "config": {
             "min_value": config.min_value,
             "cluster_window_days": config.cluster_window_days,
+            "max_trade_age_days": config.max_trade_age_days,
         },
         "records": records,
         "review": review,

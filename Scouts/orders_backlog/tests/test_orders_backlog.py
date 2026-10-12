@@ -1,5 +1,6 @@
 """Fixture tests for the merged orders-backlog scout. No network."""
 
+import io
 import json
 import os
 import sqlite3
@@ -7,6 +8,7 @@ import sys
 import tempfile
 import unittest
 import urllib.request
+from contextlib import redirect_stdout
 from pathlib import Path
 
 SCOUT = Path(__file__).resolve().parents[1]
@@ -173,6 +175,65 @@ class OrdersBacklogTests(unittest.TestCase):
         self.assertNotIn("|", quarter["equipment_or_period"])
         self.assertIn("segment: turbines", quarter["notes"])
         self.assertTrue(all("|" not in (row["equipment_or_period"] or "") for row in rows))
+
+    def test_live_gev_period_is_a_date_and_the_segment_is_separate(self):
+        import live
+
+        text = (FIX / "exhibit99_gev_live.txt").read_text(encoding="utf-8")
+        gev = dict(SUPPLIER, ticker="GEV", name="GE Vernova Inc", equipment=["turbines"])
+        rows = parser.parse_release(
+            text, gev, "supplier_order", "8-K", "https://www.sec.gov/gev-live", "2026-07-22"
+        )
+        figures = live._figures(rows, "2026-07-22")
+        self.assertGreaterEqual(len(figures), 2)
+        periods = [row["period"] for row in figures]
+        self.assertNotIn("turbines|2026-07-22", periods)
+        self.assertFalse(any(period.startswith("|") for period in periods))
+        dated = next(row for row in figures if row["value"] == 18_000_000_000)
+        self.assertEqual(dated["period"], "2026-07-22")
+        self.assertEqual(dated["instrument"], "turbines")
+        bare = next(row for row in figures if row["value"] == 4_200_000_000)
+        self.assertEqual(bare["period"], "2026-07-22")
+        self.assertNotEqual(bare["instrument"], "")
+
+    def test_stale_latest_period_is_flagged_in_the_run_output(self):
+        import live
+
+        payload = json.loads((FIX / "klac_stale_facts.json").read_text(encoding="utf-8"))
+        rows = parser.parse_company_facts(payload, {"ticker": "KLAC", "name": "KLA Corp", "cik": "0000319201"}, "customer_backlog")
+        self.assertEqual(rows[0]["equipment_or_period"], "2025-06-30")
+        stdout = io.StringIO()
+        stale = pipeline.report_stale_latest(rows, "2026-10-12", stream=stdout)
+        self.assertEqual([item["ticker"] for item in stale], ["KLAC"])
+        self.assertEqual(stale[0]["period"], "2025-06-30")
+        self.assertIn("stale latest period ticker=KLAC period=2025-06-30", stdout.getvalue())
+        self.assertIn("stale_period", rows[0]["flags"])
+        fresh = parser.parse_company_facts(
+            json.loads((FIX / "amat_facts.json").read_text(encoding="utf-8")),
+            AMAT,
+            "customer_backlog",
+        )
+        self.assertEqual(pipeline.report_stale_latest(fresh, "2026-10-12", stream=io.StringIO()), [])
+
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = str(Path(tmp) / "history.sqlite")
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    code = live.main(
+                        ["--db", db, "--sec-fixture", str(FIX / "klac_stale_facts.json"), "--no-asx"]
+                    )
+                self.assertEqual(code, 0)
+                text = stdout.getvalue()
+                self.assertIn("stale latest period ticker=KLAC period=2025-06-30", text)
+                conn = sqlite3.connect(db)
+                note = conn.execute("SELECT notes FROM runs").fetchone()[0]
+                conn.close()
+                self.assertIn("stale=KLAC:2025-06-30", note)
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
 
     def test_one_table_shape(self):
         payload = json.loads((FIX / "amat_facts.json").read_text(encoding="utf-8"))
