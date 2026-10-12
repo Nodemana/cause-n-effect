@@ -1,10 +1,12 @@
 """Sweep latest scout figures into pending decisions.
 
-Stages, in order: thresholds and dedupe, significance inside the token
-budget, SEC counterparty names when a parties client is passed, one
-Centurion thesis per lead, Legate merge of linked theses,
-a second Centurion pass only for each merged lead, Praetorian critique,
-Legate ranking, and a pending decision for each presented lead.
+`run_pipeline` does the deterministic work, writes significance task files,
+records status awaiting_agents, and returns. `ingest_run` checks result
+files and advances one judgement stage. Legate merge and ranking stay in
+process and do not write task files.
+
+Stage order: significance, centurion pass 1, legate merge, centurion pass 2
+for merged leads only, praetorian, ranking.
 
 The merge decision is deterministic. It uses the suppliers, customers, and
 buyers named in the theses plus the source URLs. A shared sector is not a
@@ -14,14 +16,26 @@ priced-in, and includes macro text only when a macro cache is present.
 
 import json
 import math
+from pathlib import Path
 
 from shared.pipeline_store import connect
 from shared.shares import cache_shares_outstanding, companies_from_figures
 from shared.store import utc_now
 
-from pipeline.budget import TokenBudget
+from pipeline.agent import (
+    SIGNIFICANCE_SCHEMA,
+    CENTURION_SCHEMA,
+    PRAETORIAN_SCHEMA,
+    AgentResultError,
+    figure_task_id,
+    lead_task_id,
+    load_results,
+    outstanding_tasks,
+    schema_for,
+    write_task,
+)
+from pipeline.checkpoint import SweepState, load_state, save_state
 from pipeline.counterparties import enrich_leads, is_common_heading
-from pipeline.llm import parse_json_object, resolve_provider
 from pipeline.load import is_quarter_figure, load_latest_figures
 from pipeline.marketcap import UNVERIFIED
 from pipeline.names import normalise_name
@@ -49,11 +63,11 @@ SHORTLIST_MAX = 5
 # One surviving issue costs this many score points. Magnitude and growth
 # can still place a large backlog or a sharp capex print above a small stake.
 _ISSUE_PENALTY = 8.0
-_MAX_SIGNIFICANCE = 300
-_MAX_CENTURION = 800
-_MAX_PRAETORIAN = 500
 _PRICE_RUNS = {"new", "acceleration", "priced-in"}
 _LEAD_TYPES = ("capex", "debt_raise", "orders_backlog", "accumulation", "insider_buying")
+_AGENT_STAGES = ("significance", "centurion_1", "centurion_2", "praetorian")
+_JUDGEMENT_STAGE = "agent"
+PRAETORIAN_RULES = Path(__file__).resolve().parents[1] / "Praetorians" / "README.md"
 
 
 class PlannedThesis:
@@ -108,25 +122,23 @@ def run_pipeline(
     *,
     dry_run=False,
     limit=None,
-    token_budget=80000,
-    provider=None,
     macro_cache=None,
     now=None,
     shares_client=None,
-    parties_client=None,
+    queue_dir=None,
 ):
-    """Run one sweep. `dry_run` computes the result and writes nothing.
+    """Do the deterministic work and queue significance tasks.
 
-    `parties_client` is a sec_client() used to name counterparties from SEC
-    filings. The role comes from the sentence. With no client that step is skipped.
+    Counterparties are named later, on ingest, and only when that call is
+    given a parties client. This function does not judge a lead and does not
+    call a model.
     """
     if limit is not None and int(limit) < 1:
         raise ValueError("limit must be a positive integer")
     for lead_type in _LEAD_TYPES:
         rules_text(lead_type)
-    provider = provider or resolve_provider()
-    budget = TokenBudget(token_budget)
     started = now or utc_now()
+    queue = str(Path(queue_dir or "data/agent_queue").resolve())
     conn = connect(db_path)
     try:
         macro = load_macro(conn, macro_cache)
@@ -140,73 +152,295 @@ def run_pipeline(
             )
         names, _ciks = party_index(figures)
         candidates, rejects, used = prefilter(conn, figures, limit=limit, now=started)
-        leads = _rate(conn, provider, budget, candidates, rejects)
-        enrich_leads(leads, client=parties_client, names=names, as_of=started)
-        _research(conn, provider, budget, leads, names, macro)
-        leads = _drop_hard_failures(leads, rejects)
-        merged = _merge(conn, provider, budget, leads, macro)
-        merged = _drop_hard_failures(merged, rejects)
-        final = _final_leads(leads, merged)
-        _critique(provider, budget, final)
-        ranked = _rank(final)
-        presented = [lead for lead in ranked if lead.presented]
-        run_id = None
-        if not dry_run:
-            run_id = _persist(conn, started, budget, provider.name, rejects, leads, merged, ranked)
+        if dry_run:
+            return _awaiting_result(
+                SweepState(),
+                status="dry_run",
+                tasks=len(candidates),
+                figures=used,
+                macro=macro,
+                dry_run=True,
+            )
+        state = SweepState()
+        state.started = started
+        state.macro = macro
+        state.names = names
+        state.candidates = candidates
+        state.queue_dir = queue
+        state.figures = used
+        state.deterministic_rejects = len(rejects)
+        state.stage = "significance"
+        run_id = store.start_run(conn, started)
+        state.run_id = run_id
+        store.begin_pipeline_run(conn, run_id, started, queue, "awaiting_agents", "significance")
+        for planned in rejects:
+            store.insert_reject(conn, run_id, planned, utc_now())
+        if not candidates:
+            _finish(conn, state, leads=[], merged=[], ranked=[])
+            return _complete_result(conn, state)
+        tasks = _write_significance_tasks(state)
+        save_state(state)
+        store.set_pipeline_stage(conn, run_id, "awaiting_agents", "significance")
+    finally:
+        conn.close()
+    return _awaiting_result(state, status="awaiting_agents", tasks=tasks, figures=used, macro=macro)
+
+
+def ingest_run(db_path, run_id, *, queue_dir=None, parties_client=None):
+    """Validate the current stage's results, store them, and advance.
+
+    A missing or malformed result raises AgentResultError and leaves the
+    stage where it is. Legate merge and ranking run here when their inputs
+    are ready. Ranking writes no task files.
+    """
+    conn = connect(db_path)
+    try:
+        row = store.pipeline_run(conn, run_id)
+        if row is None:
+            raise AgentResultError(f"no pipeline run {run_id}")
+        stored_queue = row["queue_dir"]
+        if queue_dir is not None and stored_queue and str(Path(queue_dir).resolve()) != str(Path(stored_queue).resolve()):
+            raise AgentResultError(
+                f"queue dir {queue_dir} does not match the run's queue dir {stored_queue}"
+            )
+        queue = stored_queue or str(Path(queue_dir or "data/agent_queue").resolve())
+        if row["finished_at"]:
+            state = load_state(queue, run_id)
+            return _complete_result(conn, state)
+        state = load_state(queue, run_id)
+        if state.pending_persist:
+            _finish(conn, state, leads=state.leads, merged=state.merged, ranked=_ranked_from_state(state))
+            return _complete_result(conn, state)
+        stage = state.stage
+        if stage not in _AGENT_STAGES:
+            raise AgentResultError(f"run {run_id} is not waiting on an agent stage ({stage})")
+        results = load_results(queue, run_id, stage)
+        if stage == "significance":
+            _apply_significance(conn, state, results, parties_client)
+        elif stage == "centurion_1":
+            _apply_centurion_1(conn, state, results)
+        elif stage == "centurion_2":
+            _apply_centurion_2(conn, state, results)
+        elif stage == "praetorian":
+            _apply_praetorian(conn, state, results)
+        if state.pending_persist:
+            _finish(conn, state, leads=state.leads, merged=state.merged, ranked=_ranked_from_state(state))
+            return _complete_result(conn, state)
+        save_state(state)
+        store.set_pipeline_stage(conn, run_id, "awaiting_agents", state.stage)
+        from pipeline.agent import task_files
+
+        tasks = len(task_files(queue, run_id, state.stage))
+    finally:
+        conn.close()
+    return _awaiting_result(state, status="awaiting_agents", tasks=tasks, figures=state.figures, macro=state.macro)
+
+
+def pipeline_status(db_path, run_id):
+    """Outstanding task files for one run."""
+    conn = connect(db_path)
+    try:
+        row = store.pipeline_run(conn, run_id)
+        if row is None:
+            raise AgentResultError(f"no pipeline run {run_id}")
+        stage = row["stage"]
+        queue = row["queue_dir"] or ""
+        if row["finished_at"] or stage not in _AGENT_STAGES:
+            pending = []
+        else:
+            pending = outstanding_tasks(queue, run_id, stage)
     finally:
         conn.close()
     return {
         "run_id": run_id,
-        "provider": provider.name,
-        "tokens_used": budget.used,
-        "token_budget": budget.limit,
-        "figures": used,
-        "leads": len(leads) + len(merged),
-        "rejects": len(rejects),
-        "merges": len(merged),
-        "rankings": len(ranked),
-        "decisions": len(presented),
-        "dry_run": bool(dry_run),
-        "macro": _macro_log(macro, merged),
+        "status": row["status"],
+        "stage": stage,
+        "queue_dir": queue,
+        "outstanding": [
+            {"lead_id": path.name[: -len(".task.json")], "stage": stage, "task": str(path)}
+            for path in pending
+        ],
     }
 
 
-def _macro_log(macro, merged):
-    if not macro:
-        return "skipped"
-    second_pass = sum(
-        1
-        for lead in merged
-        if getattr(lead, "thesis", None) is not None and lead.thesis.pass_number == 2
-    )
-    return f"loaded (second-pass theses: {second_pass})"
+def _awaiting_result(state, *, status, tasks, figures, macro, dry_run=False):
+    return {
+        "run_id": None if dry_run else state.run_id,
+        "provider": "agent",
+        "tokens_used": 0,
+        "token_budget": 0,
+        "figures": figures,
+        "leads": 0,
+        "rejects": 0 if dry_run else state.deterministic_rejects,
+        "merges": 0,
+        "rankings": 0,
+        "decisions": 0,
+        "dry_run": bool(dry_run),
+        "macro": _macro_log(macro, []),
+        "status": status,
+        "stage": "significance" if dry_run else state.stage,
+        "tasks": tasks,
+        "queue_dir": None if dry_run else state.queue_dir,
+    }
 
 
-def _rate(conn, provider, budget, candidates, rejects):
+def _complete_result(conn, state):
+    run_id = state.run_id
+    leads = conn.execute("SELECT COUNT(*) FROM leads WHERE run_id = ?", (run_id,)).fetchone()[0]
+    rejects = conn.execute("SELECT COUNT(*) FROM lead_rejects WHERE run_id = ?", (run_id,)).fetchone()[0]
+    merges = conn.execute("SELECT COUNT(*) FROM legate_merges WHERE run_id = ?", (run_id,)).fetchone()[0]
+    rankings = conn.execute("SELECT COUNT(*) FROM rankings WHERE run_id = ?", (run_id,)).fetchone()[0]
+    decisions = conn.execute("SELECT COUNT(*) FROM decisions WHERE run_id = ?", (run_id,)).fetchone()[0]
+    second = conn.execute(
+        "SELECT COUNT(*) FROM theses WHERE run_id = ? AND pass_number = 2",
+        (run_id,),
+    ).fetchone()[0]
+    if not state.macro:
+        macro = "skipped"
+    else:
+        macro = f"loaded (second-pass theses: {second})"
+    return {
+        "run_id": run_id,
+        "provider": "agent",
+        "tokens_used": 0,
+        "token_budget": 0,
+        "figures": state.figures,
+        "leads": leads,
+        "rejects": rejects,
+        "merges": merges,
+        "rankings": rankings,
+        "decisions": decisions,
+        "dry_run": False,
+        "macro": macro,
+        "status": "complete",
+        "stage": "ranking",
+        "tasks": 0,
+        "queue_dir": state.queue_dir,
+    }
+
+
+def _ranked_from_state(state):
+    by_id = {lead.synthetic_id: lead for lead in list(state.leads) + list(state.merged)}
+    final = [by_id[item] for item in state.final_ids]
+    return [lead for lead in final if getattr(lead, "rank", None)]
+
+
+def _write_significance_tasks(state):
+    count = 0
+    for candidate in state.candidates:
+        figure = candidate.figure
+        lead_id = figure_task_id(figure.figure_id)
+        prompt = significance_prompt(candidate)
+        _write_judgement_task(
+            state,
+            "significance",
+            lead_id,
+            prompt,
+            rules_text(candidate.lead_type),
+            {
+                "ticker": figure.ticker,
+                "lead_type": candidate.lead_type,
+                "company": figure.company,
+            },
+            {
+                "figure_id": figure.figure_id,
+                "ticker": figure.ticker,
+                "lead_type": candidate.lead_type,
+                "figure_type": figure.figure_type,
+                "value": figure.value,
+                "value_text": figure.value_text,
+                "instrument": figure.instrument,
+                "period": figure.period,
+                "source_url": figure.source_url,
+                "growth_pct": getattr(figure, "growth_pct", None),
+                "growth_text": getattr(figure, "growth_text", None),
+            },
+            None,
+            SIGNIFICANCE_SCHEMA,
+        )
+        count += 1
+    return count
+
+
+def _write_centurion_tasks(conn, state, leads, pass_number, stage):
+    count = 0
+    macro_context = state.macro if pass_number == 2 else None
+    for lead in leads:
+        criteria = store.criteria_for(conn, lead.grade_types)
+        constituents = [_constituent_payload(member) for member in lead.members] if pass_number == 2 else None
+        prompt = centurion_prompt(
+            lead,
+            criteria,
+            pass_number,
+            constituents=constituents,
+            macro=state.macro if pass_number == 2 else None,
+        )
+        rules = "\n\n".join(rules_text(lead_type) for lead_type in ordered_types(lead.grade_types))
+        _write_judgement_task(
+            state,
+            stage,
+            lead_task_id(lead.synthetic_id),
+            prompt,
+            rules,
+            {"ticker": lead.ticker, "lead_type": lead.lead_type, "company": lead.company},
+            {
+                "ticker": lead.ticker,
+                "company": lead.company,
+                "lead_type": lead.lead_type,
+                "pass_number": pass_number,
+                "figure_ids": list(lead.figure_ids),
+                "counterparties": list(lead.counterparties or []),
+                "criteria": criteria,
+                "constituents": constituents or [],
+            },
+            macro_context,
+            CENTURION_SCHEMA,
+        )
+        count += 1
+    return count
+
+
+def _write_praetorian_tasks(state, leads):
+    rules = PRAETORIAN_RULES.read_text(encoding="utf-8")
+    count = 0
+    for lead in leads:
+        prompt = praetorian_prompt(lead.thesis.markdown, lead.thesis.price_run)
+        _write_judgement_task(
+            state,
+            "praetorian",
+            lead_task_id(lead.synthetic_id),
+            prompt,
+            rules,
+            {"ticker": lead.ticker, "lead_type": lead.lead_type, "company": lead.company},
+            {
+                "thesis": lead.thesis.markdown,
+                "price_run": lead.thesis.price_run,
+                "source_url": lead.source_url,
+                "macro_context": lead.thesis.macro_context,
+            },
+            lead.thesis.macro_context,
+            PRAETORIAN_SCHEMA,
+        )
+        count += 1
+    return count
+
+
+def _apply_significance(conn, state, results, parties_client):
     leads = []
     next_id = 1
-    for candidate in candidates:
-        prompt = significance_prompt(candidate)
-        data = _complete(provider, budget, prompt, _MAX_SIGNIFICANCE)
+    for candidate in state.candidates:
+        lead_id = figure_task_id(candidate.figure.figure_id)
+        data = results.get(lead_id)
         if data is None:
-            rejects.append(
-                PlannedReject(
-                    candidate.figure,
-                    candidate.lead_type,
-                    "llm",
-                    "token budget exhausted",
-                    parties=candidate.parties,
-                )
-            )
-            continue
+            raise AgentResultError(f"{lead_id}: missing result for a queued figure")
         rating = Rating.from_model(data)
         ignore_on_time = _quarter_timing(candidate)
         if not interesting(rating, ignore_on_time=ignore_on_time):
-            rejects.append(
+            state.judgement_rejects.append(
                 PlannedReject(
                     candidate.figure,
                     candidate.lead_type,
-                    "llm",
+                    _JUDGEMENT_STAGE,
                     failure_reason(rating, ignore_on_time=ignore_on_time),
                     rating,
                     candidate.parties,
@@ -219,7 +453,115 @@ def _rate(conn, provider, budget, candidates, rejects):
         next_id += 1
         lead.parent_position_id = store.open_position_id(conn, lead.ticker)
         leads.append(lead)
-    return leads
+    enrich_leads(leads, client=parties_client, names=state.names, as_of=state.started)
+    state.leads = leads
+    state.candidates = []
+    if not leads:
+        _queue_ranking(conn, state)
+        return
+    _write_centurion_tasks(conn, state, leads, 1, "centurion_1")
+    state.stage = "centurion_1"
+
+
+def _apply_centurion_1(conn, state, results):
+    for lead in state.leads:
+        lead_id = lead_task_id(lead.synthetic_id)
+        data = results.get(lead_id)
+        if data is None:
+            raise AgentResultError(f"{lead_id}: missing centurion result")
+        criteria = store.criteria_for(conn, lead.grade_types)
+        lead.thesis = _thesis_from_model(data, lead, criteria, 1, macro=None)
+        _resolve_parties(lead.thesis, state.names)
+    state.leads = _drop_hard_failures(state.leads, state.judgement_rejects)
+    merged = _merge(conn, state.leads, state.macro)
+    state.merged = merged
+    if merged:
+        _write_centurion_tasks(conn, state, merged, 2, "centurion_2")
+        state.stage = "centurion_2"
+        return
+    _queue_praetorian(conn, state)
+
+
+def _apply_centurion_2(conn, state, results):
+    for lead in state.merged:
+        lead_id = lead_task_id(lead.synthetic_id)
+        data = results.get(lead_id)
+        if data is None:
+            raise AgentResultError(f"{lead_id}: missing second-pass result")
+        criteria = store.criteria_for(conn, lead.grade_types)
+        lead.thesis = _thesis_from_model(data, lead, criteria, 2, macro=state.macro)
+        _resolve_parties(lead.thesis, state.names)
+    state.merged = _drop_hard_failures(state.merged, state.judgement_rejects)
+    _queue_praetorian(conn, state)
+
+
+def _apply_praetorian(conn, state, results):
+    by_id = {lead.synthetic_id: lead for lead in list(state.leads) + list(state.merged)}
+    final = [by_id[item] for item in state.final_ids]
+    for lead in final:
+        lead_id = lead_task_id(lead.synthetic_id)
+        data = results.get(lead_id)
+        if data is None:
+            raise AgentResultError(f"{lead_id}: missing praetorian result")
+        _attach_review(lead, data)
+    ranked = _rank(final)
+    state.final_ids = [lead.synthetic_id for lead in final]
+    state.pending_persist = True
+    state.stage = "praetorian"
+    save_state(state)
+    _ = (conn, ranked)
+
+
+def _queue_praetorian(conn, state):
+    final = _final_leads(state.leads, state.merged)
+    state.final_ids = [lead.synthetic_id for lead in final]
+    if not final:
+        _queue_ranking(conn, state)
+        return
+    _write_praetorian_tasks(state, final)
+    state.stage = "praetorian"
+
+
+def _queue_ranking(conn, state):
+    final = _final_leads(state.leads, state.merged)
+    state.final_ids = [lead.synthetic_id for lead in final]
+    ranked = _rank(final)
+    state.pending_persist = True
+    state.stage = "praetorian"
+    save_state(state)
+    _ = (conn, ranked)
+
+
+def _write_judgement_task(state, stage, lead_id, prompt, rules, subject, evidence, macro_context, output_schema):
+    schema_for(stage)
+    write_task(
+        state.queue_dir,
+        state.run_id,
+        stage,
+        lead_id,
+        {
+            "run_id": state.run_id,
+            "stage": stage,
+            "lead_id": lead_id,
+            "subject": subject,
+            "prompt": prompt,
+            "rules": rules,
+            "evidence": evidence,
+            "macro_context": macro_context,
+            "output_schema": output_schema,
+        },
+    )
+
+
+def _macro_log(macro, merged):
+    if not macro:
+        return "skipped"
+    second_pass = sum(
+        1
+        for lead in merged
+        if getattr(lead, "thesis", None) is not None and lead.thesis.pass_number == 2
+    )
+    return f"loaded (second-pass theses: {second_pass})"
 
 
 def _quarter_timing(candidate):
@@ -256,17 +598,6 @@ def _lead_from_candidate(candidate, rating):
     return lead
 
 
-def _research(conn, provider, budget, leads, names, macro):
-    for lead in leads:
-        criteria = store.criteria_for(conn, lead.grade_types)
-        prompt = centurion_prompt(lead, criteria, 1, macro=macro)
-        data = _complete(provider, budget, prompt, _MAX_CENTURION)
-        if data is None:
-            continue
-        lead.thesis = _thesis_from_model(data, lead, criteria, 1, macro=None)
-        _resolve_parties(lead.thesis, names)
-
-
 HARD_CRITERIA = {
     "min_market_cap",
     "capex_growth_yoy",
@@ -290,7 +621,7 @@ def _drop_hard_failures(leads, rejects):
             PlannedReject(
                 lead.figure,
                 lead.lead_type,
-                "llm",
+                _JUDGEMENT_STAGE,
                 reason,
                 lead.rating,
                 parties,
@@ -351,7 +682,7 @@ def _unverified_grade(lead, name, evidence):
     return UNVERIFIED in text
 
 
-def _merge(conn, provider, budget, leads, macro):
+def _merge(conn, leads, macro):
     mergeable = [lead for lead in leads if lead.thesis is not None and lead.parent_position_id is None]
     merged = []
     next_id = 1 + max((lead.synthetic_id for lead in leads), default=0)
@@ -393,13 +724,9 @@ def _merge(conn, provider, budget, leads, macro):
             if issue and issue not in issues:
                 issues.append(issue)
         lead.significance_issue = "; ".join(issues) if issues else None
-        criteria = store.criteria_for(conn, lead.grade_types)
-        constituents = [_constituent_payload(member) for member in members]
-        prompt = centurion_prompt(lead, criteria, 2, constituents=constituents, macro=macro)
-        data = _complete(provider, budget, prompt, _MAX_CENTURION)
-        if data is not None:
-            lead.thesis = _thesis_from_model(data, lead, criteria, 2, macro=macro)
+        lead.thesis = None
         merged.append(lead)
+    _ = (conn, macro)
     return merged
 
 
@@ -417,26 +744,21 @@ def _final_leads(leads, merged):
     return final
 
 
-def _critique(provider, budget, final):
-    for lead in final:
-        prompt = praetorian_prompt(lead.thesis.markdown, lead.thesis.price_run)
-        data = _complete(provider, budget, prompt, _MAX_PRAETORIAN)
-        if data is None:
-            continue
-        stance = _text(data.get("price_run_stance")).casefold()
-        review = {
-            "assumptions_that_fail": _text(data.get("assumptions_that_fail")),
-            "bad_sources": _text(data.get("bad_sources")),
-            "contradicting_research": _text(data.get("contradicting_research")),
-            "other_side": _text(data.get("other_side")),
-            "surviving_issues": max(0, int(data.get("surviving_issues") or 0)),
-            "price_run_stance": stance if stance in {"agree", "disagree"} else "",
-            "price_run_counterevidence": _text(data.get("price_run_counterevidence")),
-        }
-        _note_unverified_cap(lead, review)
-        _note_significance(lead, review)
-        lead.thesis.review = review
-        lead.thesis.surviving_issues = review["surviving_issues"]
+def _attach_review(lead, data):
+    stance = _text(data.get("price_run_stance")).casefold()
+    review = {
+        "assumptions_that_fail": _text(data.get("assumptions_that_fail")),
+        "bad_sources": _text(data.get("bad_sources")),
+        "contradicting_research": _text(data.get("contradicting_research")),
+        "other_side": _text(data.get("other_side")),
+        "surviving_issues": max(0, int(data.get("surviving_issues") or 0)),
+        "price_run_stance": stance if stance in {"agree", "disagree"} else "",
+        "price_run_counterevidence": _text(data.get("price_run_counterevidence")),
+    }
+    _note_unverified_cap(lead, review)
+    _note_significance(lead, review)
+    lead.thesis.review = review
+    lead.thesis.surviving_issues = review["surviving_issues"]
 
 
 def _note_significance(lead, review):
@@ -537,8 +859,16 @@ def _rank_figures(lead):
     return rows
 
 
-def _persist(conn, started, budget, provider_name, rejects, leads, merged, ranked):
-    run_id = store.start_run(conn, started)
+def _finish(conn, state, leads, merged, ranked):
+    row = store.pipeline_run(conn, state.run_id)
+    if row is None or row["finished_at"] is None:
+        _persist(conn, state.run_id, state.judgement_rejects, leads, merged, ranked)
+    state.pending_persist = False
+    state.stage = "ranking"
+    save_state(state)
+
+
+def _persist(conn, run_id, rejects, leads, merged, ranked):
     created = utc_now()
     for planned in rejects:
         store.insert_reject(conn, run_id, planned, created)
@@ -599,17 +929,8 @@ def _persist(conn, started, budget, provider_name, rejects, leads, merged, ranke
             continue
         status = "researched" if lead.thesis is not None else "assigned"
         store.set_status(conn, lead.real_id, status)
-    store.finish_run(conn, run_id, budget.limit, budget.used, provider_name, started, utc_now())
+    store.complete_run(conn, run_id, utc_now())
     return run_id
-
-
-def _complete(provider, budget, prompt, max_tokens):
-    estimate = budget.estimate(prompt, max_tokens)
-    if not budget.can_spend(estimate):
-        return None
-    result = provider.complete(prompt, max_tokens=max_tokens)
-    budget.charge(result.prompt_tokens, result.completion_tokens)
-    return parse_json_object(result.text)
 
 
 def _thesis_from_model(data, lead, criteria, pass_number, macro):

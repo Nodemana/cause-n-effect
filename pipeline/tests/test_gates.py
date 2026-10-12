@@ -17,7 +17,7 @@ if str(REPO) not in sys.path:
 
 import pipeline.flow as flow  # noqa: E402
 from pipeline.flow import run_pipeline  # noqa: E402
-from pipeline.llm import Completion, StubProvider  # noqa: E402
+from pipeline.fixture import fixture_response, run_with_fixture  # noqa: E402
 from pipeline.load import _collapse_identical, event_date, load_latest_figures, period_span_days  # noqa: E402
 from pipeline.marketcap import resolve_market_cap  # noqa: E402
 from pipeline.prefilter import (  # noqa: E402
@@ -88,7 +88,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            result = run_pipeline(path, provider=StubProvider(), limit=1, token_budget=80000)
+            result = run_with_fixture(path, limit=1)
             self.assertEqual(result["figures"], 1)
             conn = connect(path)
             try:
@@ -119,7 +119,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000)
+            run_with_fixture(path)
             conn = connect(path)
             try:
                 reasons = [row["reason"] for row in conn.execute("SELECT reason FROM lead_rejects WHERE ticker = 'CAT'")]
@@ -171,7 +171,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000)
+            run_with_fixture(path)
             conn = connect(path)
             try:
                 reasons = {}
@@ -267,7 +267,7 @@ class GateTests(unittest.TestCase):
                 save_run(conn, "orders-backlog", "2026-10-12T14:31:00Z", labels)
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000)
+            run_with_fixture(path)
             conn = connect(path)
             try:
                 names = [
@@ -299,7 +299,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000)
+            run_with_fixture(path)
             conn = connect(path)
             try:
                 rows = {
@@ -311,7 +311,7 @@ class GateTests(unittest.TestCase):
                 sim_llm = conn.execute(
                     """
                     SELECT reason FROM lead_rejects
-                    WHERE ticker = 'SIM' AND rejection_stage = 'llm'
+                    WHERE ticker = 'SIM' AND rejection_stage = 'agent'
                     """
                 ).fetchall()
                 sim = conn.execute(
@@ -331,7 +331,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(sim["significance_timing"], "early")
         self.assertIn("novelty routine", sim["assumptions_that_fail"])
         self.assertGreaterEqual(sim["surviving_issues"], 1)
-        self.assertEqual(rows["OLD"]["rejection_stage"], "llm")
+        self.assertEqual(rows["OLD"]["rejection_stage"], "agent")
         self.assertEqual(rows["OLD"]["significance_timing"], "late")
         self.assertIn("timing late", rows["OLD"]["reason"])
 
@@ -362,9 +362,8 @@ class GateTests(unittest.TestCase):
             ),
             "new",
         )
-        provider = StubProvider()
-        bad = json.loads(provider.complete(failed, max_tokens=400).text)
-        good = json.loads(provider.complete(clean, max_tokens=400).text)
+        bad = fixture_response(failed)
+        good = fixture_response(clean)
         self.assertGreaterEqual(bad["surviving_issues"], 2)
         self.assertIn("fail", bad["assumptions_that_fail"])
         self.assertIn("missing evidence", bad["assumptions_that_fail"])
@@ -387,7 +386,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=_FailMarketCap(), token_budget=80000)
+            run_with_fixture(path, responder=_fail_market_cap)
             conn = connect(path)
             try:
                 rows = conn.execute(
@@ -399,7 +398,7 @@ class GateTests(unittest.TestCase):
                 conn.close()
         failed = [row for row in rows if "failed min_market_cap" in row["reason"]]
         self.assertEqual(len(failed), 1)
-        self.assertEqual(failed[0]["rejection_stage"], "llm")
+        self.assertEqual(failed[0]["rejection_stage"], "agent")
         self.assertEqual(ranked, 0)
         self.assertEqual(leads, 0)
 
@@ -524,7 +523,7 @@ class GateTests(unittest.TestCase):
                 self.assertEqual(loaded[0].run_id, latest)
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 lead = conn.execute(
@@ -567,7 +566,7 @@ class GateTests(unittest.TestCase):
             finally:
                 conn.close()
             self.assertEqual(loaded, {"FRESH"})
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 seen = {
@@ -651,7 +650,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 rejects = conn.execute(
@@ -683,7 +682,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(len(trade), 1)
         self.assertEqual(trade[0]["significance_timing"], "late")
         self.assertIn("timing late", trade[0]["reason"])
-        self.assertEqual(trade[0]["rejection_stage"], "llm")
+        self.assertEqual(trade[0]["rejection_stage"], "agent")
         self.assertEqual(on_time, [])
         self.assertEqual(kept["significance_timing"], "on_time")
         self.assertNotIn("timing on_time", kept["assumptions_that_fail"])
@@ -718,7 +717,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000)
+            run_with_fixture(path)
             conn = connect(path)
             try:
                 roles = {
@@ -769,7 +768,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000)
+            run_with_fixture(path)
             conn = connect(path)
             try:
                 reasons = {}
@@ -893,10 +892,10 @@ class GateTests(unittest.TestCase):
             finally:
                 conn.close()
             dry = Fake()
-            run_pipeline(path, provider=StubProvider(), dry_run=True, token_budget=80000, shares_client=dry)
+            run_pipeline(path, dry_run=True, shares_client=dry)
             self.assertEqual(dry.urls, [])
             live = Fake()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, shares_client=live)
+            run_with_fixture(path, shares_client=live)
             self.assertEqual(live.urls, [])
             conn = connect(path)
             try:
@@ -984,7 +983,7 @@ class GateTests(unittest.TestCase):
             finally:
                 conn.close()
             live = Fake()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, shares_client=live, now=SWEEP_AT)
+            run_with_fixture(path, shares_client=live, now=SWEEP_AT)
             self.assertTrue(any("CIK0002121401" in url for url in live.urls))
             self.assertFalse(any("CIK0001018724" in url for url in live.urls))
             conn = connect(path)
@@ -1046,7 +1045,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
@@ -1109,7 +1108,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
@@ -1184,34 +1183,19 @@ class GateTests(unittest.TestCase):
         self.assertIn("official price", announced_reason)
         self.assertIsNone(web)
         self.assertEqual(web_reason, "market cap unverified")
-        provider = StubProvider()
-        cited = json.loads(
-            provider.complete(
-                praetorian_prompt(
-                    "Source: https://asx.api.markitdigital.com/asx-research/1.0/file/2924-123",
-                    "new",
-                ),
-                max_tokens=400,
-            ).text
+        cited = fixture_response(
+            praetorian_prompt(
+                "Source: https://asx.api.markitdigital.com/asx-research/1.0/file/2924-123",
+                "new",
+            )
         )
-        named = json.loads(
-            provider.complete(
-                praetorian_prompt("The figure is an ASX announcement.", "new"),
-                max_tokens=400,
-            ).text
-        )
-        unofficial = json.loads(
-            provider.complete(
-                praetorian_prompt("Source: https://example.com/quote", "new"),
-                max_tokens=400,
-            ).text
-        )
+        named = fixture_response(praetorian_prompt("The figure is an ASX announcement.", "new"))
+        unofficial = fixture_response(praetorian_prompt("Source: https://example.com/quote", "new"))
         self.assertEqual(cited["bad_sources"], "")
         self.assertEqual(named["bad_sources"], "")
         self.assertIn("does not cite", unofficial["bad_sources"])
 
     def test_stub_novelty_timing_and_return_follow_the_figure(self):
-        provider = StubProvider()
 
         def significance(earlier, age, value="5000000000", lead_type="capex"):
             prompt = "\n".join(
@@ -1225,7 +1209,7 @@ class GateTests(unittest.TestCase):
                     f"PERIOD_AGE_DAYS: {age}",
                 ]
             )
-            return json.loads(provider.complete(prompt, max_tokens=400).text)
+            return fixture_response(prompt)
 
         def centurion(lead_type, value, pass_number="1", constituents=None, extra=None, market_cap="10000000000"):
             lines = [
@@ -1244,7 +1228,7 @@ class GateTests(unittest.TestCase):
                 lines.append("CONSTITUENTS_BEGIN")
                 lines.extend(constituents)
                 lines.append("CONSTITUENTS_END")
-            return json.loads(provider.complete("\n".join(lines), max_tokens=800).text)
+            return fixture_response("\n".join(lines))
 
         first = significance("no", "10")
         self.assertEqual(first["novelty"], "first")
@@ -1260,43 +1244,37 @@ class GateTests(unittest.TestCase):
         self.assertEqual(centurion("capex", "200000000")["roi_pct"], 12)
         self.assertEqual(centurion("capex", "50000000")["roi_pct"], 6)
         sharp = significance("yes", "104", lead_type="capex")
-        sharp_prompt = json.loads(
-            provider.complete(
-                "\n".join(
-                    [
-                        "TASK: significance",
-                        "LEAD_TYPE: capex",
-                        "VALUE: 16800000000",
-                        "VALUE_TEXT: stored",
-                        "EARLIER_FIGURE: yes",
-                        "EARLIER_SIMILAR: no",
-                        "GROWTH_PCT: 68",
-                        "QUARTER_FIGURE: yes",
-                        "PERIOD_AGE_DAYS: 104",
-                    ]
-                ),
-                max_tokens=400,
-            ).text
+        sharp_prompt = fixture_response(
+            "\n".join(
+                [
+                    "TASK: significance",
+                    "LEAD_TYPE: capex",
+                    "VALUE: 16800000000",
+                    "VALUE_TEXT: stored",
+                    "EARLIER_FIGURE: yes",
+                    "EARLIER_SIMILAR: no",
+                    "GROWTH_PCT: 68",
+                    "QUARTER_FIGURE: yes",
+                    "PERIOD_AGE_DAYS: 104",
+                ]
+            )
         )
         self.assertEqual(sharp_prompt["novelty"], "first")
         self.assertIn("68", sharp_prompt["novelty_rationale"])
         self.assertEqual(sharp_prompt["timing"], "on_time")
-        modest = json.loads(
-            provider.complete(
-                "\n".join(
-                    [
-                        "TASK: significance",
-                        "LEAD_TYPE: capex",
-                        "VALUE: 11200000000",
-                        "VALUE_TEXT: stored",
-                        "EARLIER_FIGURE: yes",
-                        "GROWTH_PCT: 12",
-                        "QUARTER_FIGURE: yes",
-                        "PERIOD_AGE_DAYS: 104",
-                    ]
-                ),
-                max_tokens=400,
-            ).text
+        modest = fixture_response(
+            "\n".join(
+                [
+                    "TASK: significance",
+                    "LEAD_TYPE: capex",
+                    "VALUE: 11200000000",
+                    "VALUE_TEXT: stored",
+                    "EARLIER_FIGURE: yes",
+                    "GROWTH_PCT: 12",
+                    "QUARTER_FIGURE: yes",
+                    "PERIOD_AGE_DAYS: 104",
+                ]
+            )
         )
         self.assertEqual(modest["novelty"], "routine")
         self.assertIn("12", modest["novelty_rationale"])
@@ -1424,7 +1402,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 leads = {
@@ -1436,7 +1414,7 @@ class GateTests(unittest.TestCase):
                 reasons = [
                     row["reason"] or ""
                     for row in conn.execute(
-                        "SELECT ticker, reason FROM lead_rejects WHERE rejection_stage = 'llm'"
+                        "SELECT ticker, reason FROM lead_rejects WHERE rejection_stage = 'agent'"
                     )
                 ]
             finally:
@@ -1465,7 +1443,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 kept = conn.execute(
@@ -1482,7 +1460,7 @@ class GateTests(unittest.TestCase):
                     for row in conn.execute(
                         """
                         SELECT reason FROM lead_rejects
-                        WHERE ticker = 'LATE' AND rejection_stage = 'llm'
+                        WHERE ticker = 'LATE' AND rejection_stage = 'agent'
                         """
                     )
                 ]
@@ -1544,7 +1522,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
@@ -1585,7 +1563,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 leads = conn.execute(
@@ -1660,7 +1638,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 ranks = {
@@ -1722,7 +1700,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 leads = {
@@ -1742,7 +1720,7 @@ class GateTests(unittest.TestCase):
                     for row in conn.execute(
                         """
                         SELECT ticker FROM lead_rejects
-                        WHERE rejection_stage = 'llm'
+                        WHERE rejection_stage = 'agent'
                           AND (reason LIKE '%novelty routine%' OR reason LIKE '%timing on_time%')
                         """
                     )
@@ -1773,7 +1751,7 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
                 grade = conn.execute(
@@ -1798,18 +1776,15 @@ class GateTests(unittest.TestCase):
         self.assertGreaterEqual(grade["surviving_issues"], 1)
 
 
-class _FailMarketCap(StubProvider):
-    def complete(self, prompt, *, max_tokens):
-        result = super().complete(prompt, max_tokens=max_tokens)
-        if "TASK: centurion" not in prompt:
-            return result
-        data = json.loads(result.text)
-        for grade in data.get("grades") or []:
-            if grade.get("name") == "min_market_cap":
-                grade["passed"] = False
-                grade["evidence"] = "market cap is not in the stored figure"
-        text = json.dumps(data, sort_keys=True)
-        return Completion(text, result.prompt_tokens, max(1, (len(text) + 3) // 4))
+def _fail_market_cap(task):
+    data = fixture_response(task["prompt"])
+    if "TASK: centurion" not in task["prompt"]:
+        return data
+    for grade in data.get("grades") or []:
+        if grade.get("name") == "min_market_cap":
+            grade["passed"] = False
+            grade["evidence"] = "market cap is not in the stored figure"
+    return data
 
 
 def _history(path):

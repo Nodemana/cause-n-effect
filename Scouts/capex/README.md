@@ -18,7 +18,7 @@ Companyfacts keep 10-K, 10-Q, and 20-F facts (including amendments) for capex ca
 
 ## Significance
 
-The pull above is the cheap filter's first half. Thresholds and a dedupe run on that pull. A small LLM pass, inside a per-run token budget, then judges the shortlist and emits a lead only when the print is genuinely interesting. A Centurion should not see every routine maintenance line.
+The pull above is the cheap filter's first half. Thresholds and a dedupe run on that pull. An external agent then judges the shortlist from a task file and emits a lead only when the print is genuinely interesting. The sweep does not call a model. A Centurion should not see every routine maintenance line.
 
 Each emitted lead stores a short label and a one-line reason on four dimensions. The same four fields are stored on a reject.
 

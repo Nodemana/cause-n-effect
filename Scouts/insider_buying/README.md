@@ -18,7 +18,7 @@ Open-market purchases only. Form 4 keeps transaction code `P` marked acquired. A
 
 ## Significance
 
-The code already keeps open-market purchases above the value minimum. That pull is not a lead. The purchase filter, the minimum value, and a dedupe run first. A small LLM pass, inside a per-run token budget, then judges the shortlist. A Centurion should not see every token purchase that cleared 10,000.
+The code already keeps open-market purchases above the value minimum. That pull is not a lead. The purchase filter, the minimum value, and a dedupe run first. An external agent then judges the shortlist from a task file. The sweep does not call a model. A Centurion should not see every token purchase that cleared 10,000.
 
 Each emitted lead stores a short label and a one-line reason on four dimensions. The same four fields are stored on a reject.
 

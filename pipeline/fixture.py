@@ -1,151 +1,65 @@
-"""LLM providers.
+"""Deterministic fixture responder for tests.
 
-The live client speaks the OpenAI chat-completions API. It reads
-LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL from the environment. The key is
-never written to a log line, a repr, or an exception message.
-
-When LLM_API_KEY is unset, resolve_provider returns the stub. The stub is
-deterministic and does not open a socket. Tests use it the same way.
+Live `python -m pipeline run` does not import this module and does not call
+a model. Tests use `run_with_fixture` to write each stage's result files and
+ingest them until ranking finishes.
 """
 
 import json
-import os
 import re
-import urllib.error
-import urllib.request
+from pathlib import Path
 
 from pipeline.counterparties import is_common_heading
 
-DEFAULT_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_MODEL = "gpt-4o-mini"
-
-
-class LLMError(RuntimeError):
+class FixtureError(RuntimeError):
     pass
 
 
-class Completion:
-    def __init__(self, text, prompt_tokens, completion_tokens):
-        self.text = text
-        self.prompt_tokens = int(prompt_tokens)
-        self.completion_tokens = int(completion_tokens)
-
-    @property
-    def total_tokens(self):
-        return self.prompt_tokens + self.completion_tokens
-
-
-class OpenAICompatibleProvider:
-    """HTTP client for an OpenAI-compatible /chat/completions endpoint."""
-
-    name = "openai-compatible"
-
-    def __init__(self, api_key, base_url, model, opener=None):
-        self._api_key = api_key
-        self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
-        self.model = model or DEFAULT_MODEL
-        self._opener = opener or urllib.request.urlopen
-
-    def __repr__(self):
-        return f"OpenAICompatibleProvider(model={self.model!r})"
-
-    def complete(self, prompt, *, max_tokens):
-        url = self.base_url + "/chat/completions"
-        body = json.dumps(
-            {
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": int(max_tokens),
-            }
-        ).encode("utf-8")
-        request = urllib.request.Request(url, data=body, method="POST")
-        request.add_header("Content-Type", "application/json")
-        request.add_header("Authorization", "Bearer " + self._api_key)
-        try:
-            with self._opener(request, timeout=60) as response:
-                raw = response.read()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:500]
-            raise LLMError(_redact(f"LLM request failed with HTTP {exc.code}: {detail}", self._api_key)) from None
-        except urllib.error.URLError as exc:
-            raise LLMError(_redact(f"LLM request failed: {exc.reason}", self._api_key)) from None
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            raise LLMError("LLM response was not JSON") from exc
-        try:
-            text = payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError("LLM response had no message content") from exc
-        usage = payload.get("usage") or {}
-        prompt_tokens = usage.get("prompt_tokens")
-        completion_tokens = usage.get("completion_tokens")
-        if prompt_tokens is None:
-            prompt_tokens = max(1, (len(prompt) + 3) // 4)
-        if completion_tokens is None:
-            completion_tokens = max(1, (len(text) + 3) // 4)
-        return Completion(text, prompt_tokens, completion_tokens)
+def fixture_response(prompt):
+    """Return the JSON object the offline fixture would write for this prompt."""
+    task = _field(prompt, "TASK")
+    if task == "significance":
+        return _significance(prompt)
+    if task == "centurion":
+        return _centurion(prompt)
+    if task == "praetorian":
+        return _praetorian(prompt)
+    raise FixtureError(f"fixture has no response for task {task!r}")
 
 
-class StubProvider:
-    """Deterministic offline stand-in. No socket, no key, stable JSON."""
+def run_with_fixture(db_path, *, responder=None, queue_dir=None, **kwargs):
+    """Drive a sweep offline. Not used by the live CLI."""
+    from pipeline.agent import read_tasks, result_path
+    from pipeline.flow import ingest_run, run_pipeline
 
-    name = "stub"
-
-    def __repr__(self):
-        return "StubProvider()"
-
-    def complete(self, prompt, *, max_tokens):
-        text = _stub_text(prompt)
-        return Completion(text, _count(prompt), _count(text))
-
-
-def resolve_provider(environ=None):
-    """Stub when LLM_API_KEY is missing or blank. Otherwise the HTTP client.
-
-    The key is read here and stored only on the provider instance.
-    """
-    env = os.environ if environ is None else environ
-    key = (env.get("LLM_API_KEY") or "").strip()
-    if not key:
-        return StubProvider()
-    base = (env.get("LLM_BASE_URL") or DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL
-    model = (env.get("LLM_MODEL") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    return OpenAICompatibleProvider(key, base, model)
-
-
-def parse_json_object(text):
-    """Parse a JSON object from a model reply, including a fenced block."""
-    raw = (text or "").strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1]
-        if raw.endswith("```"):
-            raw = raw[: raw.rfind("```")]
-        raw = raw.strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start < 0 or end <= start:
-            raise LLMError("model reply was not a JSON object")
-        try:
-            data = json.loads(raw[start : end + 1])
-        except json.JSONDecodeError as exc:
-            raise LLMError("model reply was not a JSON object") from exc
-    if not isinstance(data, dict):
-        raise LLMError("model reply was not a JSON object")
-    return data
-
-
-def _redact(message, secret):
-    if secret and secret in message:
-        return message.replace(secret, "[redacted]")
-    return message
-
-
-def _count(text):
-    return max(1, (len(text or "") + 3) // 4)
+    if queue_dir is None:
+        queue_dir = str(Path(db_path).parent / "agent_queue")
+    responder = responder or (lambda task: fixture_response(task["prompt"]))
+    parties_client = kwargs.pop("parties_client", None)
+    result = run_pipeline(db_path, queue_dir=queue_dir, **kwargs)
+    prompts = []
+    seen = set()
+    while result.get("status") == "awaiting_agents":
+        tasks = read_tasks(queue_dir, result["run_id"], result["stage"])
+        if not tasks:
+            break
+        for task, path in tasks:
+            key = str(path)
+            if key not in seen:
+                prompts.append(task["prompt"])
+                seen.add(key)
+            answer = result_path(path)
+            if not answer.is_file():
+                payload = responder(task)
+                answer.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        result = ingest_run(
+            db_path,
+            result["run_id"],
+            queue_dir=queue_dir,
+            parties_client=parties_client,
+        )
+    result["prompts"] = prompts
+    return result
 
 
 def _field(prompt, key):
@@ -181,7 +95,7 @@ def _stub_text(prompt):
         return json.dumps(_centurion(prompt), sort_keys=True)
     if task == "praetorian":
         return json.dumps(_praetorian(prompt), sort_keys=True)
-    raise LLMError(f"stub has no response for task {task!r}")
+    raise FixtureError(f"stub has no response for task {task!r}")
 
 
 _LARGE = {

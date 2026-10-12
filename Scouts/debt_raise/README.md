@@ -18,7 +18,7 @@ The scout uses a two-stage use-of-proceeds filter with threshold analytics. Stag
 
 ## Significance
 
-The code already pulls and scores filings. That pull is not a lead. The use-of-proceeds threshold and a dedupe run first. A small LLM pass, inside a per-run token budget, then judges the shortlist. The point is that a Centurion never receives hundreds of routine bond issues from different companies.
+The code already pulls and scores filings. That pull is not a lead. The use-of-proceeds threshold and a dedupe run first. An external agent then judges the shortlist from a task file. The sweep does not call a model. The point is that a Centurion never receives hundreds of routine bond issues from different companies.
 
 Each emitted lead stores a short label and a one-line reason on four dimensions. The same four fields are stored on a reject.
 

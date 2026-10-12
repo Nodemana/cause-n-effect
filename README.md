@@ -14,7 +14,7 @@ flowchart LR
   P --> R[Legate: rank] --> I[Imperator]
 ```
 
-**Scouts.** Scouts are the cheap filter: thresholds and dedupe run first, then a small per-run token budget judges magnitude, novelty, attention, and timing, and only a surviving lead is stored. Each of those leads is one-to-one with a Centurion, and scouts do not merge them.
+**Scouts.** Scouts are the cheap filter: thresholds and dedupe run first, then an external agent judges magnitude, novelty, attention, and timing from a task file, and only a surviving lead is stored. Each of those leads is one-to-one with a Centurion, and scouts do not merge them. The sweep does not call a model. The handoff is in [docs/agent-protocol.md](docs/agent-protocol.md).
 
 **Centurions.** One Centurion takes one lead and the rules file for that lead's type, researches only that lead, and writes one thesis ([Centurions/README.md](Centurions/README.md)). A capex Centurion works out what the spending is on and which suppliers it reaches; an orders_backlog Centurion works out which customers the orders came from.
 
@@ -83,4 +83,4 @@ Acting on a lead means he has taken a position in his brokerage account at Inter
 2. **Monitor** each acted-on lead against the Centurion's thesis, predicted ROI, stated risks, and timeframe. The comparison uses live portfolio data from that brokerage account: actual position and profit and loss. Those results are written back to the lead's `outcome`. That record is what a later rubric version is tuned from.
 
 ## Status
-Scouts are fixture-tested. The sweep from figures to pending decisions runs with `python -m pipeline run` (see [docs/setup.md](docs/setup.md)). It uses a deterministic offline stub when `LLM_API_KEY` is unset. A weekly Saturday report is planned.
+Scouts are fixture-tested. The sweep from figures to pending decisions runs with `python -m pipeline run`, then `python -m pipeline ingest` after an agent writes each stage's result files (see [docs/setup.md](docs/setup.md) and [docs/agent-protocol.md](docs/agent-protocol.md)). A weekly Saturday report is planned.

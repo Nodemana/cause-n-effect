@@ -2,8 +2,8 @@
 
 ensure_pipeline applies shared/migrations/001_pipeline.sql, then
 002_lead_pipeline.sql, then 003_holder_role.sql, then
-004_lead_counterparties.sql, then 005_deal_party_role.sql, and records
-each filename in schema_migrations.
+004_lead_counterparties.sql, then 005_deal_party_role.sql, then
+006_agent_handoff.sql, and records each filename in schema_migrations.
 An older leads table (no lead_id) is rebuilt and its rows are kept.
 lodge_lead, record_criterion_result, and compute_quality_score are the
 write path. quality_score is the number of criteria with passed = 1.
@@ -23,6 +23,7 @@ MIGRATIONS = (
     "003_holder_role.sql",
     "004_lead_counterparties.sql",
     "005_deal_party_role.sql",
+    "006_agent_handoff.sql",
 )
 
 LEAD_TYPES = (
@@ -89,7 +90,13 @@ def ensure_pipeline(conn):
         if name == MIGRATION_NAME:
             _rename_legacy_leads(conn)
         path = HERE / "migrations" / name
+        # 006 rebuilds lead_rejects while lead_reject_counterparties still
+        # references it. Foreign keys are off only for that script.
+        if name == "006_agent_handoff.sql":
+            conn.execute("PRAGMA foreign_keys = OFF")
         conn.executescript(path.read_text(encoding="utf-8"))
+        if name == "006_agent_handoff.sql":
+            conn.execute("PRAGMA foreign_keys = ON")
         with conn:
             if name == MIGRATION_NAME:
                 _copy_legacy_leads(conn)

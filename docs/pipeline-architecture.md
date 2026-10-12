@@ -1,6 +1,6 @@
 # Pipeline architecture
 
-Design for the path from a scout finding to the few theses the Imperator reads each week. Scouts already fetch, parse, and store figures. The Legate, Centurions, and Praetorians are specified in this document, in [Centurions/README.md](../Centurions/README.md), and in [Praetorians/README.md](../Praetorians/README.md). The sweep that runs those stages is `python -m pipeline run`. When `LLM_API_KEY` is unset it uses a deterministic offline stub and does not open a network connection.
+Design for the path from a scout finding to the few theses the Imperator reads each week. Scouts already fetch, parse, and store figures. The Legate, Centurions, and Praetorians are specified in this document, in [Centurions/README.md](../Centurions/README.md), and in [Praetorians/README.md](../Praetorians/README.md). The sweep that runs those stages is `python -m pipeline run`, then `python -m pipeline ingest` for each agent stage. The live commands do not call a model. The task-file protocol is in [agent-protocol.md](agent-protocol.md).
 
 Each scout has a live command documented in [setup.md](setup.md).
 
@@ -10,7 +10,7 @@ Today `shared/schema.sql` stores `runs` and `figures`, plus a small `leads` tabl
 
 ## Flow
 
-Scouts are the cheap filter. Centurions are the expensive research. A scout's existing code pulls and parses, deterministic thresholds and a dedupe run first, and a small per-run token budget then judges the shortlist. Only a lead that survives is lodged. Scouts do not merge. The Macro scout does not lodge leads. It refreshes a cached series only when that series is stale, and the second-pass Centurion reads that cache. Each surviving lead goes to one Centurion, which writes one thesis. After those individual theses exist, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis. The Legate ranks that set. The ranked list is what reaches the Imperator.
+Scouts are the cheap filter. Centurions are the expensive research. A scout's existing code pulls and parses, deterministic thresholds and a dedupe run first, and an external agent then judges the shortlist from a task file. Only a lead that survives is lodged. Scouts do not merge. The Macro scout does not lodge leads. It refreshes a cached series only when that series is stale, and the second-pass Centurion reads that cache. Each surviving lead goes to one Centurion, which writes one thesis. After those individual theses exist, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis. The Legate ranks that set. The ranked list is what reaches the Imperator.
 
 ```mermaid
 flowchart TD
@@ -52,11 +52,11 @@ flowchart TD
   DB -->|later scout hit near a position| ASSIGN
 ```
 
-Research, the second pass, the critiques, and the ranking stay inside the run. The Imperator sees the ranked list, then records an action. A later scout hit near a position the Imperator already took comes back as an update on that position. It is a new lead, not a merge into the open position.
+Significance, the Centurion passes, and the Praetorian critiques are task files for an external agent. Legate merge and ranking stay in process. The Imperator sees the ranked list, then records an action. A later scout hit near a position the Imperator already took comes back as an update on that position. It is a new lead, not a merge into the open position.
 
 ## Scouts
 
-Each scout pulls official findings (SEC, ASX, company releases) with the code already in its folder. That pull is not a lead. Deterministic gates run first: the scout's own thresholds, then a dedupe of the pull. What remains is a shortlist. A small LLM pass, inside a per-run token budget, reads that shortlist and applies four judgments. It emits a row into `leads` only when the item is genuinely interesting. A reject is written to `lead_rejects` and is not inserted into `leads`. The aim is that a Centurion never receives a run of low-value leads, such as hundreds of routine bond issues.
+Each scout pulls official findings (SEC, ASX, company releases) with the code already in its folder. That pull is not a lead. Deterministic gates run first: the scout's own thresholds, then a dedupe of the pull. What remains is a shortlist. An external agent reads that shortlist from a task file and applies four judgments. It emits a row into `leads` only when the item is genuinely interesting. A reject is written to `lead_rejects` and is not inserted into `leads`. The aim is that a Centurion never receives a run of low-value leads, such as hundreds of routine bond issues.
 
 A lodged lead is one finding: ticker, lead type, source link, the figure it rests on, and a significance assessment. Lead types match the scout folders: `capex`, `debt_raise`, `orders_backlog`, `accumulation`, `insider_buying`. The macro scout is not in that list. It does not lodge leads. It refreshes `macro_series` and `macro_observations`, and the second-pass Centurion reads that cache.
 
@@ -65,7 +65,7 @@ Each dimension is a short label plus a one-line rationale, not necessarily a num
 - **Magnitude** (`significance_magnitude`, `significance_magnitude_rationale`): how large the move is, absolute and relative to the company's size.
 - **Novelty** (`significance_novelty`, `significance_novelty_rationale`): the first time this company has done it, or routine behaviour.
 - **Market attention** (`significance_attention`, `significance_attention_rationale`): whether anyone else has written about or noticed it. Media and aggregators may be checked only for that. They are never a source of figures.
-- **Timing** (`significance_timing`, `significance_timing_rationale`): how early this is relative to the next earnings date or catalyst. The stub measures age from the event date (the insider trade date, otherwise the period end, otherwise the filing date) to the sweep date.
+- **Timing** (`significance_timing`, `significance_timing_rationale`): how early this is relative to the next earnings date or catalyst. Age is measured from the event date (the insider trade date, otherwise the period end, otherwise the filing date) to the sweep date.
 
 Per-type guidance for those four judgments is in each scout README.
 
@@ -73,7 +73,7 @@ Per-type guidance for those four judgments is in each scout README.
 
 `lead_rejects` is the searchable record of what a scout saw and did not emit. The use case is a look-back: a small company's stock jumps because a large buyer spent heavily with it, the owner missed it, and the log should show why. Search is by the lead's ticker and by any named counterparty (buyer, supplier, customer, or holder). A counterparty query is a case-insensitive token prefix (`north` matches Northwind Capital; `wind` does not match inside a token) or a ticker prefix (`amz` matches AMZN).
 
-Each reject row stores the scout, the ticker and the CIK when known, the filing date, the source URL, and the accession. `rejection_stage` is `deterministic` (threshold or dedupe) or `llm` (the token-budget judgment). `reason` is the one-line cause. The four significance labels and their rationales are on the same row. An LLM reject fills all four. A deterministic reject fills the dimensions that gate used and leaves the others empty.
+Each reject row stores the scout, the ticker and the CIK when known, the filing date, the source URL, and the accession. `rejection_stage` is `deterministic` (threshold or dedupe) or `agent` (the significance or hard-grade judgement). `reason` is the one-line cause. The four significance labels and their rationales are on the same row. An agent reject fills all four when the significance result rejected the figure. A deterministic reject fills the dimensions that gate used and leaves the others empty.
 
 Named counterparties from the source text are child rows in `lead_reject_counterparties`: a normalised name, a ticker and CIK where they resolve, and a role of `buyer`, `supplier`, `customer`, or `holder`. An accumulation filer is a holder. A capex filing that names a supplier, or a supplier order that names Amazon as the buyer, is findable without reading the filing again.
 

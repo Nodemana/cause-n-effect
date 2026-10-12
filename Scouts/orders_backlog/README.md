@@ -18,7 +18,7 @@ The backlog side covers defence, industrials, and chip equipment only, including
 
 ## Significance
 
-The code already reads backlog tags and order announcements. That pull is not a lead. The sector gate, the review flags, and a dedupe run first. A small LLM pass, inside a per-run token budget, then judges the shortlist and emits a lead only when the demand is genuinely interesting.
+The code already reads backlog tags and order announcements. That pull is not a lead. The sector gate, the review flags, and a dedupe run first. An external agent then judges the shortlist from a task file and emits a lead only when the demand is genuinely interesting. The sweep does not call a model.
 
 Each emitted lead stores a short label and a one-line reason on four dimensions. The same four fields are stored on a reject.
 

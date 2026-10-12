@@ -52,16 +52,42 @@ def start_run(conn, started_at):
     return run_id
 
 
-def finish_run(conn, run_id, token_budget, tokens_used, provider, started_at, finished_at):
+def begin_pipeline_run(conn, run_id, started_at, queue_dir, status, stage):
     with conn:
         conn.execute(
             """
             INSERT INTO pipeline_runs (
-                run_id, token_budget, tokens_used, provider, started_at, finished_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                run_id, token_budget, tokens_used, provider, started_at, finished_at,
+                status, stage, queue_dir
+            ) VALUES (?, 0, 0, 'agent', ?, NULL, ?, ?, ?)
             """,
-            (run_id, int(token_budget), int(tokens_used), provider, started_at, finished_at),
+            (run_id, started_at, status, stage, queue_dir),
         )
+
+
+def set_pipeline_stage(conn, run_id, status, stage):
+    with conn:
+        conn.execute(
+            "UPDATE pipeline_runs SET status = ?, stage = ? WHERE run_id = ?",
+            (status, stage, run_id),
+        )
+
+
+def complete_run(conn, run_id, finished_at):
+    with conn:
+        conn.execute(
+            """
+            UPDATE pipeline_runs
+            SET status = 'complete', stage = 'ranking', finished_at = ?,
+                token_budget = 0, tokens_used = 0, provider = 'agent'
+            WHERE run_id = ?
+            """,
+            (finished_at, run_id),
+        )
+
+
+def pipeline_run(conn, run_id):
+    return conn.execute("SELECT * FROM pipeline_runs WHERE run_id = ?", (run_id,)).fetchone()
 
 
 def insert_reject(conn, run_id, planned, created_at):

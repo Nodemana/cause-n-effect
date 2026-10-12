@@ -28,8 +28,8 @@ from pipeline.counterparties import (
     submissions_url,
 )
 import pipeline.counterparties as counterparties
-from pipeline.flow import PlannedLead, run_pipeline
-from pipeline.llm import StubProvider
+from pipeline.flow import PlannedLead
+from pipeline.fixture import fixture_response, run_with_fixture
 from pipeline.prompts import centurion_prompt
 from shared.nethttp import EndpointError
 from shared.store import save_run
@@ -383,7 +383,7 @@ class CounterpartyTests(unittest.TestCase):
         prompt = centurion_prompt(lead, [], 1)
         self.assertIn("COUNTERPARTIES_BEGIN", prompt)
         self.assertIn("Globex Power", prompt)
-        data = json.loads(StubProvider().complete(prompt, max_tokens=800).text)
+        data = fixture_response(prompt)
         self.assertEqual(data["suppliers"][0]["name"], "Globex Power")
         self.assertIn("Suppliers named: Globex Power", data["thesis"])
 
@@ -393,7 +393,7 @@ class CounterpartyTests(unittest.TestCase):
         capex.grade_types = []
         capex.figure = _bare_figure()
         capex.counterparties = []
-        capex_data = json.loads(StubProvider().complete(centurion_prompt(capex, [], 1), max_tokens=800).text)
+        capex_data = fixture_response(centurion_prompt(capex, [], 1))
         self.assertIn("Suppliers named: none found", capex_data["thesis"])
         self.assertNotIn("Customers named:", capex_data["thesis"])
         backlog = _lead(
@@ -406,7 +406,7 @@ class CounterpartyTests(unittest.TestCase):
         backlog.figure = _bare_figure()
         backlog.figure.figure_type = "backlog"
         backlog.counterparties = []
-        backlog_data = json.loads(StubProvider().complete(centurion_prompt(backlog, [], 1), max_tokens=800).text)
+        backlog_data = fixture_response(centurion_prompt(backlog, [], 1))
         self.assertIn("Customers named: none found", backlog_data["thesis"])
         self.assertNotIn("Suppliers named:", backlog_data["thesis"])
 
@@ -435,10 +435,8 @@ class CounterpartyTests(unittest.TestCase):
             finally:
                 conn.close()
             with self.assertLogs("pipeline.counterparties", level="WARNING") as caught:
-                run_pipeline(
+                run_with_fixture(
                     path,
-                    provider=StubProvider(),
-                    token_budget=80000,
                     now=SWEEP_AT,
                     parties_client=client,
                 )
@@ -605,10 +603,8 @@ class CounterpartyTests(unittest.TestCase):
                 save_run(conn, "capex", "2026-10-12T14:30:52Z", [current, prior, *_caps("ORCL")])
             finally:
                 conn.close()
-            run_pipeline(
+            run_with_fixture(
                 path,
-                provider=StubProvider(),
-                token_budget=80000,
                 now=SWEEP_AT,
                 parties_client=client,
             )
@@ -1042,10 +1038,8 @@ class CounterpartyTests(unittest.TestCase):
                 save_run(conn, "orders-backlog", "2026-10-12T14:31:00Z", [backlog])
             finally:
                 conn.close()
-            run_pipeline(
+            run_with_fixture(
                 path,
-                provider=StubProvider(),
-                token_budget=80000,
                 now=SWEEP_AT,
                 parties_client=client,
             )

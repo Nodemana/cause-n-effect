@@ -1,4 +1,4 @@
-"""Full sweep against fixture figures. The stub provider never opens a socket."""
+"""Full sweep against fixture figures. The live commands never call a model."""
 
 import io
 import json
@@ -16,14 +16,11 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from pipeline.agent import AgentResultError  # noqa: E402
 from pipeline.cli import main  # noqa: E402
 import pipeline.flow as flow  # noqa: E402
-from pipeline.flow import run_pipeline  # noqa: E402
-from pipeline.llm import (  # noqa: E402
-    OpenAICompatibleProvider,
-    StubProvider,
-    resolve_provider,
-)
+from pipeline.fixture import run_with_fixture  # noqa: E402
+from pipeline.flow import ingest_run, pipeline_status, run_pipeline  # noqa: E402
 from shared.pipeline_store import connect, lodge_lead  # noqa: E402
 from shared.store import save_run  # noqa: E402
 
@@ -34,37 +31,24 @@ ORCL_URL = "https://www.sec.gov/Archives/edgar/data/1341439/000134143926000001/o
 ORCL_PRIOR = "https://www.sec.gov/Archives/edgar/data/1341439/000134143925000001/prior.htm"
 
 
-class RecordingProvider:
-    def __init__(self):
-        self.inner = StubProvider()
-        self.name = self.inner.name
-        self.prompts = []
-
-    def complete(self, prompt, *, max_tokens):
-        self.prompts.append(prompt)
-        return self.inner.complete(prompt, max_tokens=max_tokens)
-
-
 class PipelineFlowTests(unittest.TestCase):
     def setUp(self):
-        self._saved_key = os.environ.pop("LLM_API_KEY", None)
         self._utc_now = flow.utc_now
         flow.utc_now = lambda: "2026-10-12T18:00:00Z"
 
     def tearDown(self):
         flow.utc_now = self._utc_now
-        if self._saved_key is not None:
-            os.environ["LLM_API_KEY"] = self._saved_key
 
     def test_full_sweep_with_stub(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "history.sqlite")
             _seed(path)
-            provider = RecordingProvider()
-            result = run_pipeline(path, provider=provider, token_budget=80000)
-            self.assertEqual(result["provider"], "stub")
-            self.assertGreater(result["tokens_used"], 0)
-            self.assertLessEqual(result["tokens_used"], 80000)
+            result = run_with_fixture(path)
+            self.assertEqual(result["provider"], "agent")
+            self.assertEqual(result["tokens_used"], 0)
+            self.assertEqual(result["token_budget"], 0)
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["stage"], "ranking")
             self.assertEqual(result["macro"], "skipped")
             self.assertFalse(result["dry_run"])
             self.assertEqual(result["merges"], 1)
@@ -75,13 +59,13 @@ class PipelineFlowTests(unittest.TestCase):
             try:
                 self._assert_migration_once(conn)
                 self._assert_rejects(conn)
-                self._assert_leads_and_theses(conn, provider)
+                self._assert_leads_and_theses(conn, result["prompts"])
                 self._assert_merge_rank_and_decisions(conn)
                 before = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
             finally:
                 conn.close()
 
-            again = run_pipeline(path, provider=StubProvider(), token_budget=80000)
+            again = run_with_fixture(path)
             conn = connect(path)
             try:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0], before)
@@ -153,7 +137,7 @@ class PipelineFlowTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), macro_cache=str(cache), token_budget=80000)
+            run_with_fixture(path, macro_cache=str(cache))
             conn = connect(path)
             try:
                 merged = conn.execute(
@@ -313,7 +297,7 @@ class PipelineFlowTests(unittest.TestCase):
                 conn.commit()
             finally:
                 conn.close()
-            run_pipeline(path, provider=StubProvider(), macro_cache=str(cache), token_budget=80000)
+            run_with_fixture(path, macro_cache=str(cache))
             conn = connect(path)
             try:
                 merged = conn.execute(
@@ -414,7 +398,7 @@ class PipelineFlowTests(unittest.TestCase):
                     conn.commit()
                 finally:
                     conn.close()
-                result = run_pipeline(path, provider=StubProvider(), token_budget=80000)
+                result = run_with_fixture(path)
                 conn = connect(path)
                 try:
                     merged = conn.execute(
@@ -513,7 +497,7 @@ class PipelineFlowTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            result = run_pipeline(path, provider=StubProvider(), macro_cache=str(cache), token_budget=80000)
+            result = run_with_fixture(path, macro_cache=str(cache))
             conn = connect(path)
             try:
                 self.assertEqual(result["merges"], 1)
@@ -557,9 +541,10 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertEqual({item["source_url"] for item in evidence}, {AMZN_URL, GEV_URL})
         self.assertEqual({item["ticker"] for item in evidence}, {"AMZN", "GEV"})
 
-    def test_token_budget_stops_before_the_model(self):
+    def test_run_stops_before_judgement(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "history.sqlite")
+            queue = str(Path(tmp) / "agent_queue")
             conn = _history(path)
             try:
                 save_run(
@@ -573,28 +558,37 @@ class PipelineFlowTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
-            provider = RecordingProvider()
-            result = run_pipeline(path, provider=provider, token_budget=0)
-            self.assertEqual(provider.prompts, [])
+            result = run_pipeline(path, queue_dir=queue)
+            self.assertEqual(result["status"], "awaiting_agents")
+            self.assertEqual(result["stage"], "significance")
             self.assertEqual(result["tokens_used"], 0)
             self.assertEqual(result["leads"], 0)
+            self.assertGreater(result["tasks"], 0)
+            report = pipeline_status(path, result["run_id"])
+            self.assertEqual(len(report["outstanding"]), result["tasks"])
+            task = json.loads(Path(report["outstanding"][0]["task"]).read_text(encoding="utf-8"))
+            self.assertTrue(task["prompt"].startswith("TASK: significance"))
+            self.assertIn("output_schema", task)
+            self.assertIn("rules", task)
             conn = connect(path)
             try:
-                row = conn.execute("SELECT rejection_stage, reason, significance_magnitude FROM lead_rejects").fetchone()
-                self.assertEqual(row["rejection_stage"], "llm")
-                self.assertEqual(row["reason"], "token budget exhausted")
-                self.assertIsNone(row["significance_magnitude"])
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM leads WHERE run_id = ?", (result["run_id"],)).fetchone()[0], 0)
+                reasons = [row["reason"] for row in conn.execute("SELECT reason FROM lead_rejects")]
+                self.assertFalse(any("token budget" in reason for reason in reasons))
             finally:
                 conn.close()
 
     def test_dry_run_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "history.sqlite")
+            queue = Path(tmp) / "agent_queue"
             _seed(path)
-            result = run_pipeline(path, provider=StubProvider(), dry_run=True, token_budget=80000)
+            result = run_pipeline(path, dry_run=True, queue_dir=str(queue))
             self.assertTrue(result["dry_run"])
             self.assertIsNone(result["run_id"])
-            self.assertGreater(result["leads"], 0)
+            self.assertGreater(result["tasks"], 0)
+            self.assertEqual(result["leads"], 0)
+            self.assertFalse(queue.exists())
             conn = connect(path)
             try:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0], 1)
@@ -613,8 +607,12 @@ class PipelineFlowTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(completed.returncode, 0)
-        self.assertIn("token-budget", completed.stdout)
-        self.assertIn("LLM_API_KEY", completed.stdout)
+        self.assertNotIn("token-budget", completed.stdout)
+        self.assertNotIn("LLM_API_KEY", completed.stdout)
+        self.assertNotIn("LLM_BASE_URL", completed.stdout)
+        self.assertNotIn("LLM_MODEL", completed.stdout)
+        self.assertIn("awaiting_agents", completed.stdout)
+        self.assertIn("agent_queue", completed.stdout)
 
         def bomb(*_args, **_kwargs):
             raise AssertionError("socket opened")
@@ -630,6 +628,12 @@ class PipelineFlowTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as caught:
                 main(["rejects", "--help"])
             self.assertEqual(caught.exception.code, 0)
+            with self.assertRaises(SystemExit) as caught:
+                main(["status", "--help"])
+            self.assertEqual(caught.exception.code, 0)
+            with self.assertRaises(SystemExit) as caught:
+                main(["ingest", "--help"])
+            self.assertEqual(caught.exception.code, 0)
         finally:
             socket.socket = real_socket
             urllib.request.urlopen = real_open
@@ -638,7 +642,7 @@ class PipelineFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "history.sqlite")
             _seed(path)
-            run_pipeline(path, provider=StubProvider(), token_budget=80000)
+            run_with_fixture(path)
             stdout = io.StringIO()
             with _capture(stdout):
                 code = main(["rejects", "--db", path, "--ticker", "scg"])
@@ -662,34 +666,51 @@ class PipelineFlowTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 main(["rejects", "--db", path])
 
-    def test_http_provider_sends_the_key_and_does_not_record_it(self):
-        secret = "test-key"
-        captured = {}
-
-        def opener(request, timeout=0):
-            captured["auth"] = request.get_header("Authorization")
-            captured["timeout"] = timeout
-            body = json.dumps(
-                {
-                    "choices": [{"message": {"content": "{\"ok\": true}"}}],
-                    "usage": {"prompt_tokens": 3, "completion_tokens": 4},
-                }
-            ).encode("utf-8")
-            return _Response(body)
-
-        provider = resolve_provider(
-            {"LLM_API_KEY": secret, "LLM_BASE_URL": "https://llm.example/v1", "LLM_MODEL": "demo-model"}
-        )
-        self.assertIsInstance(provider, OpenAICompatibleProvider)
-        self.assertNotIn(secret, repr(provider))
-        provider._opener = opener
-        result = provider.complete("hello", max_tokens=8)
-        self.assertEqual(result.text, '{"ok": true}')
-        self.assertEqual(result.prompt_tokens, 3)
-        self.assertEqual(result.completion_tokens, 4)
-        self.assertEqual(captured["auth"], "Bearer " + secret)
-        self.assertNotIn(secret, repr(provider))
-        self.assertIsInstance(resolve_provider({}), StubProvider)
+    def test_ingest_rejects_a_malformed_result_and_does_not_advance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            queue = str(Path(tmp) / "agent_queue")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "insider-buying",
+                    "2026-10-12T16:00:00Z",
+                    [
+                        _figure("MSFT", "Microsoft", "insider_purchase", "ceo", "2026-10-01|Ada", 250000, "250000 shares", MSFT_URL),
+                        *_caps("MSFT"),
+                    ],
+                )
+            finally:
+                conn.close()
+            result = run_pipeline(path, queue_dir=queue)
+            report = pipeline_status(path, result["run_id"])
+            task = Path(report["outstanding"][0]["task"])
+            task.with_name(task.name.replace(".task.json", ".result.json")).write_text(
+                '{"magnitude": "huge"}\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(AgentResultError) as caught:
+                ingest_run(path, result["run_id"])
+            self.assertIn("magnitude must be large, moderate, or small", str(caught.exception))
+            again = pipeline_status(path, result["run_id"])
+            self.assertEqual(again["status"], "awaiting_agents")
+            self.assertEqual(again["stage"], "significance")
+            conn = connect(path)
+            try:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM leads WHERE run_id = ?", (result["run_id"],)).fetchone()[0],
+                    0,
+                )
+            finally:
+                conn.close()
+            for relative in ("pipeline/cli.py", "pipeline/flow.py", "pipeline/__init__.py"):
+                source = (REPO / relative).read_text(encoding="utf-8")
+                self.assertNotIn("LLM_API_KEY", source)
+                self.assertNotIn("LLM_BASE_URL", source)
+                self.assertNotIn("LLM_MODEL", source)
+                self.assertNotIn("fixture_response", source)
+                self.assertNotIn("openai", source.casefold())
 
     def _assert_migration_once(self, conn):
         names = [row["name"] for row in conn.execute("SELECT name FROM schema_migrations")]
@@ -697,6 +718,7 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertEqual(names.count("003_holder_role.sql"), 1)
         self.assertEqual(names.count("004_lead_counterparties.sql"), 1)
         self.assertEqual(names.count("005_deal_party_role.sql"), 1)
+        self.assertEqual(names.count("006_agent_handoff.sql"), 1)
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         self.assertIn("lead_counterparties", tables)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}
@@ -772,10 +794,9 @@ class PipelineFlowTests(unittest.TestCase):
         ]
         self.assertEqual(lead_periods, ["2026-07-01/2026-09-30"])
 
-    def _assert_leads_and_theses(self, conn, provider):
+    def _assert_leads_and_theses(self, conn, prompts):
         pass_two = conn.execute("SELECT COUNT(*) FROM theses WHERE pass_number = 2").fetchone()[0]
         self.assertEqual(pass_two, 1)
-        prompts = provider.prompts
         self.assertEqual(sum(1 for prompt in prompts if prompt.startswith("TASK: centurion") and "\nPASS: 2\n" in prompt), 1)
         return_pass = next(prompt for prompt in prompts if "\nPASS: 2\n" in prompt)
         self.assertIn("what the spending is actually on", return_pass)
@@ -850,10 +871,12 @@ class PipelineFlowTests(unittest.TestCase):
             """
         ).fetchone()
         self.assertEqual(rank["source_scout"], "legate")
-        tokens = conn.execute("SELECT tokens_used, token_budget, provider FROM pipeline_runs").fetchone()
-        self.assertEqual(tokens["provider"], "stub")
-        self.assertGreater(tokens["tokens_used"], 0)
-        self.assertLessEqual(tokens["tokens_used"], tokens["token_budget"])
+        tokens = conn.execute("SELECT tokens_used, token_budget, provider, status, stage FROM pipeline_runs").fetchone()
+        self.assertEqual(tokens["provider"], "agent")
+        self.assertEqual(tokens["tokens_used"], 0)
+        self.assertEqual(tokens["token_budget"], 0)
+        self.assertEqual(tokens["status"], "complete")
+        self.assertEqual(tokens["stage"], "ranking")
 
 
 def _seed(path):
