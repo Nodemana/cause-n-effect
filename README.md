@@ -83,4 +83,4 @@ Acting on a lead means he has taken a position in his brokerage account at Inter
 2. **Monitor** each acted-on lead against the Centurion's thesis, predicted ROI, stated risks, and timeframe. The comparison uses live portfolio data from that brokerage account: actual position and profit and loss. Those results are written back to the lead's `outcome`. That record is what a later rubric version is tuned from.
 
 ## Status
-Structure and tests only, no live runs yet. A weekly Saturday report is planned.
+Scouts are fixture-tested. The sweep from figures to pending decisions runs with `python -m pipeline run` (see [docs/setup.md](docs/setup.md)). It uses a deterministic offline stub when `LLM_API_KEY` is unset. A weekly Saturday report is planned.
