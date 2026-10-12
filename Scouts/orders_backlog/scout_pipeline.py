@@ -12,11 +12,22 @@ for _entry in (str(_REPO), str(_ROOT)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from Scouts.orders_backlog.parser import DEFAULT_RECENT_QUARTERS, parse_company_facts, parse_release  # noqa: E402
+from Scouts.orders_backlog.parser import (  # noqa: E402
+    DEFAULT_RECENT_QUARTERS,
+    _recent_periods,
+    parse_company_facts,
+    parse_release,
+)
+from Scouts.orders_backlog.tags import ACTIVE_BACKLOG_TAGS, STALE_BACKLOG_TAGS  # noqa: E402
 from shared.store import connect, dedupe_figures, save_run  # noqa: E402
 
 # A latest period older than this, measured from the run date, is called out.
 DEFAULT_STALE_DAYS = 180
+
+# A company-total backlog smaller than this share of the same company's other
+# total is not a second total. It is a misread award, cash-flow, or segment figure.
+_IMPLAUSIBLE_RATIO = 0.10
+_COMPANY_BACKLOG = {"backlog", *ACTIVE_BACKLOG_TAGS, *STALE_BACKLOG_TAGS}
 
 _RECORD_KEYS = (
     "source_side",
@@ -61,6 +72,7 @@ def build_table(customer_facts=(), supplier_facts=(), releases=(), max_quarters=
                 accession=release.get("accession"),
             )
         )
+    rows = _recent_periods(rows, max_quarters)
     rows.sort(
         key=lambda row: (
             row.get("filing_date") or "",
@@ -84,7 +96,11 @@ def store_run(db_path, table, started_at, notes=None):
     beats a year-to-date value, then the latest filing wins. Drops are logged.
     """
     seen_at = started_at[:10]
-    figures = dedupe_figures(keep_distinct_amounts(figures_from_records(table.get("records") or [], seen_at)))
+    figures = figures_from_records(table.get("records") or [], seen_at)
+    # A sentence that names backlog without an amount shares the unique key.
+    # The valued row has to be seen first so a tie keeps the amount.
+    figures.sort(key=lambda row: row.get("value") is None)
+    figures = dedupe_figures(keep_distinct_amounts(drop_implausible_totals(figures)))
     conn = connect(db_path)
     try:
         run_id = save_run(conn, "orders-backlog", started_at, figures, notes=notes)
@@ -123,6 +139,50 @@ def figures_from_records(records, seen_at):
             }
         )
     return rows
+
+
+def drop_implausible_totals(figures, ratio=_IMPLAUSIBLE_RATIO):
+    """Drop a company-total backlog that is under 10% of that company's other total.
+
+    Segment rows stay. The larger total is the companyfacts figure or another
+    backlog total in the same run. The skip is printed.
+    """
+    prior = {}
+    for row in figures or []:
+        if not _is_company_backlog(row):
+            continue
+        value = _amount(row)
+        if value is None:
+            continue
+        ticker = row.get("ticker") or ""
+        prior[ticker] = max(prior.get(ticker, 0.0), value)
+    kept = []
+    for row in figures or []:
+        if _is_company_backlog(row):
+            value = _amount(row)
+            ceiling = prior.get(row.get("ticker") or "", 0.0)
+            if value is not None and ceiling and value < ceiling * float(ratio):
+                print(
+                    f"skipped implausible backlog ticker={row.get('ticker')} "
+                    f"value={value:.0f} prior={ceiling:.0f} period={row.get('period') or ''}"
+                )
+                continue
+        kept.append(row)
+    return kept
+
+
+def _is_company_backlog(row):
+    instrument = row.get("instrument") or ""
+    if ":" in instrument:
+        return False
+    return instrument in _COMPANY_BACKLOG
+
+
+def _amount(row):
+    value = row.get("value")
+    if value is None:
+        return None
+    return float(value)
 
 
 def keep_distinct_amounts(figures):

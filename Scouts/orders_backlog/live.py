@@ -107,7 +107,9 @@ def main(argv=None):
     started = utc_now()
     seen = started[:10]
     stale = pipeline.report_stale_latest(table["records"], seen)
-    figures = dedupe_figures(pipeline.keep_distinct_amounts(_figures(table["records"], seen)))
+    figures = dedupe_figures(
+        pipeline.keep_distinct_amounts(pipeline.drop_implausible_totals(_figures(table["records"], seen)))
+    )
     if not figures:
         print("No orders-backlog figures.")
         return 1

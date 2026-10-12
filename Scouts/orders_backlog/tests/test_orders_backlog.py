@@ -473,6 +473,195 @@ class OrdersBacklogTests(unittest.TestCase):
             self.assertEqual(row["accession"], accession)
         self.assertEqual(pipeline.report_stale_latest(rows, "2026-10-12", stream=io.StringIO()), [])
 
+    def test_etn_ixbrl_segment_cells_are_stored_and_logged(self):
+        text = (FIX / "etn_10q_ixbrl.html").read_text(encoding="utf-8")
+        self.assertIn("ix:nonFraction", text)
+        self.assertIn("June&nbsp;30,&nbsp;2026", text)
+        self.assertIn("<span>$</span>", text)
+        self.assertIn(">15,175<", text)
+        self.assertNotIn("$15,175", text)
+        etn = {
+            "ticker": "ETN",
+            "name": "Eaton Corp plc",
+            "cik": "0001551182",
+            "equipment": ["transformers", "switchgear"],
+        }
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rows = parser.parse_release(
+                text,
+                etn,
+                "supplier_order",
+                "10-Q",
+                "https://www.sec.gov/Archives/edgar/data/1551182/000155118226000030/etn-20260630.htm",
+                "2026-07-31",
+                accession="0001551182-26-000030",
+            )
+        logged = stdout.getvalue()
+        figures = dedupe_figures(pipeline.keep_distinct_amounts(live._figures(rows, "2026-07-31")))
+        stored = {row["instrument"]: row for row in figures}
+        self.assertEqual(stored["backlog"]["value"], 24_100_000_000)
+        self.assertEqual(stored["backlog"]["period"], "2026-06-30")
+        self.assertEqual(stored["backlog"]["announced_on"], "2026-07-31")
+        self.assertEqual(stored["backlog:Electrical Americas"]["value"], 15_175_000_000)
+        self.assertEqual(stored["backlog:Electrical Global"]["value"], 3_602_000_000)
+        self.assertEqual(stored["backlog:Aerospace"]["value"], 5_164_000_000)
+        for row in figures:
+            self.assertEqual(row["period"], "2026-06-30")
+            self.assertNotEqual(row["period"], "2026-07-31")
+        for segment, value in (
+            ("Electrical Americas", 15_175_000_000),
+            ("Electrical Global", 3_602_000_000),
+            ("Aerospace", 5_164_000_000),
+        ):
+            self.assertIn(
+                f"segment backlog ticker=ETN instrument=backlog:{segment} period=2026-06-30 value={value}",
+                logged,
+            )
+
+    def test_rtx_backlog_is_the_quarter_end_total_not_free_cash_flow(self):
+        text = (FIX / "exhibit99_rtx_2q26.txt").read_text(encoding="utf-8")
+        self.assertIn("free cash flow* of $2.9 billion", text)
+        self.assertIn("Company backlog of $289 billion", text)
+        self.assertIn("our backlog is up 22 percent", text)
+        self.assertIn("Quarter ended June 30, 2026", text)
+        rtx = {"ticker": "RTX", "name": "RTX Corp", "cik": "0000101829", "sector": "defense"}
+        rows = parser.parse_release(
+            text,
+            rtx,
+            "customer_backlog",
+            "8-K",
+            "https://www.sec.gov/Archives/edgar/data/101829/000010182926000025/a2026-07x238xkerexhibit99.htm",
+            "2026-07-23",
+            accession="0000101829-26-000025",
+        )
+        valued = [row for row in rows if row.get("value") is not None]
+        self.assertEqual(
+            [(row["disclosure"], row["equipment_or_period"], row["value"]) for row in valued],
+            [("backlog", "2026-06-30", 289_000_000_000)],
+        )
+        self.assertNotIn(2_900_000_000, {row["value"] for row in valued})
+        self.assertNotIn("2026-07-23", {row["equipment_or_period"] for row in valued})
+        self.assertEqual(valued[0]["filing_date"], "2026-07-23")
+
+        ends = [
+            "2024-06-30",
+            "2024-09-30",
+            "2024-12-31",
+            "2025-03-31",
+            "2025-06-30",
+            "2025-09-30",
+            "2025-12-31",
+            "2026-03-31",
+            "2026-06-30",
+        ]
+        facts = {
+            "facts": {
+                "us-gaap": {
+                    "RevenueRemainingPerformanceObligation": {
+                        "units": {
+                            "USD": [
+                                {
+                                    "end": end,
+                                    "val": 250_000_000_000 if end != "2026-06-30" else 289_000_000_000,
+                                    "filed": "2026-07-23",
+                                    "fp": "Q2",
+                                    "fy": int(end[:4]),
+                                    "form": "10-Q",
+                                    "accn": "0000101829-26-000025",
+                                }
+                                for end in ends
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        table = pipeline.build_table(
+            customer_facts=[(rtx, facts)],
+            releases=[
+                {
+                    "company": rtx,
+                    "body": text,
+                    "url": "https://www.sec.gov/Archives/edgar/data/101829/000010182926000025/a2026-07x238xkerexhibit99.htm",
+                    "filing_date": "2026-07-23",
+                    "source_side": "customer_backlog",
+                    "source_type": "8-K",
+                    "accession": "0000101829-26-000025",
+                },
+                {
+                    "company": rtx,
+                    "body": "For the quarter ended June 30, 2018, backlog was $200 billion.",
+                    "url": "https://www.sec.gov/rtx-2018",
+                    "filing_date": "2018-07-24",
+                    "source_side": "customer_backlog",
+                    "source_type": "8-K",
+                },
+            ],
+        )
+        valued_rows = [row for row in table["records"] if row.get("value") is not None and row["ticker"] == "RTX"]
+        periods = {row["equipment_or_period"] for row in valued_rows}
+        self.assertNotIn("2024-06-30", periods)
+        self.assertNotIn("2018-06-30", periods)
+        self.assertNotIn("2026-07-23", periods)
+        self.assertEqual(
+            periods,
+            {
+                "2024-09-30",
+                "2024-12-31",
+                "2025-03-31",
+                "2025-06-30",
+                "2025-09-30",
+                "2025-12-31",
+                "2026-03-31",
+                "2026-06-30",
+            },
+        )
+        self.assertIn(289_000_000_000, {row["value"] for row in valued_rows})
+        self.assertNotIn(2_900_000_000, {row["value"] for row in valued_rows})
+
+    def test_implausible_backlog_total_is_logged_and_skipped(self):
+        figures = [
+            {
+                "ticker": "RTX",
+                "figure_type": "customer_backlog",
+                "instrument": "RevenueRemainingPerformanceObligation",
+                "period": "2026-06-30|2026-07-23",
+                "value": 289_000_000_000,
+                "announced_on": "2026-07-23",
+            },
+            {
+                "ticker": "RTX",
+                "figure_type": "customer_backlog",
+                "instrument": "backlog",
+                "period": "2026-07-23",
+                "value": 2_900_000_000,
+                "announced_on": "2026-07-23",
+            },
+            {
+                "ticker": "RTX",
+                "figure_type": "customer_backlog",
+                "instrument": "backlog:commercial",
+                "period": "2026-06-30",
+                "value": 170_000_000_000,
+                "announced_on": "2026-07-23",
+            },
+        ]
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            kept = pipeline.drop_implausible_totals(figures)
+        self.assertEqual(
+            {(row["instrument"], row["value"]) for row in kept},
+            {
+                ("RevenueRemainingPerformanceObligation", 289_000_000_000),
+                ("backlog:commercial", 170_000_000_000),
+            },
+        )
+        self.assertIn(
+            "skipped implausible backlog ticker=RTX value=2900000000 prior=289000000000 period=2026-07-23",
+            stdout.getvalue(),
+        )
+
     def test_supplier_10q_is_collected_without_a_socket(self):
         text = (FIX / "etn_10q_backlog.txt").read_text(encoding="utf-8")
         etn = {
