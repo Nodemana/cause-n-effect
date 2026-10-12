@@ -2,7 +2,7 @@
 
 Detect early M&A positioning from official ownership filings.
 
-This scout owns its software in this folder. Fetching and parsing are deterministic. The Portfolio Manager decides which flagged leads matter and whether they are priced in. Tests use fixture documents only. They do not open a network connection.
+This scout owns its software in this folder. Fetching and parsing are deterministic. The Legate decides which flagged leads pass a threshold. Tests use fixture documents only. They do not open a network connection.
 
 ## Sources
 

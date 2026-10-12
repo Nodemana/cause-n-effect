@@ -10,7 +10,7 @@ Customer backlog is what a defence contractor, industrial, or chip-equipment mak
 
 Every row has the same columns: `source_side` (`customer_backlog` or `supplier_order`), `company`, `ticker`, `counterparty`, `equipment_or_period`, `value`, `currency`, `timing`, `capacity`, `source_url`, `filing_date`, `source_type`, `disclosure` (`backlog`, `order`, or `order_intake`), `flags`, and `notes`.
 
-An empty `flags` list is the included row. A non-empty list is for the Portfolio Manager. Unnamed customers on a specific order, missing values, two amounts in one sentence, a stale XBRL tag, and a tag switch are flagged rather than treated as a clean figure. Aggregate backlog and aggregate order intake have no counterparty because the filing states a total. That is not an unnamed-customer flag.
+An empty `flags` list is the included row. A non-empty list is for the Legate. Unnamed customers on a specific order, missing values, two amounts in one sentence, a stale XBRL tag, and a tag switch are flagged rather than treated as a clean figure. Aggregate backlog and aggregate order intake have no counterparty because the filing states a total. That is not an unnamed-customer flag.
 
 ## Customer side
 

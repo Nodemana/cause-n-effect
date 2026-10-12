@@ -4,7 +4,7 @@ Two-stage gate for use of proceeds on new loans, credit facilities, and bond iss
 
 Stage 1 scores the filing index description (`file_description` from the EDGAR search hit), or the ASX headline, with the phrase rules in `scoring.json`. General corporate purposes scores 0. Capex, acquisitions, and a named project such as data center construction score higher. The score is the highest matching weight, so boilerplate next to a named project does not wipe the named project out. No matching phrase means the cheap filter cannot decide, and a debt headline in that state is sent to the PDF.
 
-Stage 2 reads the primary filing text only when the cheap score is above the configurable threshold, or when stage 1 cannot decide. It uses the same rules on that text. It does not call a model. A filing the full text still cannot score is flagged `undecided` for the Portfolio Manager. Earnings-call transcripts are not a source.
+Stage 2 reads the primary filing text only when the cheap score is above the configurable threshold, or when stage 1 cannot decide. It uses the same rules on that text. It does not call a model. A filing the full text still cannot score is flagged `undecided` for the Legate. Earnings-call transcripts are not a source.
 
 This is a spotter for specific uses of proceeds, not a complete list of every borrowing.
 

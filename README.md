@@ -4,9 +4,18 @@ Cause and effect investment agent orchestration.
 
 ## Architecture
 
-A high-level AI agent, the Portfolio Manager, orchestrates sub-agent scouts. Each scout owns the software in its own folder under `scouts/`.
+Five roles. Scout software, in each folder under `scouts/`, does the deterministic work: fetching, parsing, storing, and diffing time-stamped figures in SQLite.
 
-Software does the deterministic work: fetching, parsing, storing, and diffing time-stamped figures in SQLite. The agent layer handles judgment: which leads matter, and whether they are priced in.
+- **Imperator** — the human owner. Decides which theses to act on, and places the trades.
+- **Legate** — the AI assistant, the Portfolio Manager. Runs the field for the Imperator: dispatches the other agents, applies thresholds, and brings ranked theses up.
+- **Scouts** — the data-finding agents, formerly the exploratores. They are accumulation, orders-backlog, debt-raise, insider-buying, and capex.
+- **Centurions** — researchers. They take scout findings that score past a threshold and develop them into theses.
+- **Praetorians** — critics, named for the guard that protected the Imperator. They pull each thesis apart and surface its weaknesses.
+
+```mermaid
+flowchart LR
+  Scouts --> Centurions --> Praetorians --> Legate --> Imperator
+```
 
 ```
 cause-n-effect/
@@ -30,7 +39,7 @@ Every SEC and ASX request goes through `shared/nethttp.py`. That module spaces r
 
 ## Scouts
 
-- `scouts/accumulation` — early M&A positioning from SEC Schedules 13D and 13G (legacy `SC 13D`/`SC 13G` and XML `SCHEDULE 13D`/`SCHEDULE 13G`, including amendments) and ASX Forms 603, 604, and 605. Software in that folder fetches, parses, and screens. Ambiguous filings are flagged for the Portfolio Manager.
+- `scouts/accumulation` — early M&A positioning from SEC Schedules 13D and 13G (legacy `SC 13D`/`SC 13G` and XML `SCHEDULE 13D`/`SCHEDULE 13G`, including amendments) and ASX Forms 603, 604, and 605. Software in that folder fetches, parses, and screens. Ambiguous filings are flagged for the Legate.
 - `scouts/orders-backlog` — one table for customer-side disclosed backlog (defence, industrials, chip equipment) and supplier-side orders (turbines, transformers, switchgear). A spotter's signal, not a full ledger.
 - `scouts/capex` — follow big spenders' capex to 2nd/3rd-tier suppliers.
 - `scouts/debt-raise` — use-of-proceeds gate for SEC 8-K items 1.01/2.03, 424B filings, and ASX debt announcements. A cheap phrase filter scores the index text or headline; the full filing is read only above a configurable threshold or when that filter cannot decide. Run analytics and any stated amount sit in the SQLite history database. SEC calls require `SEC_CONTACT_EMAIL` and are refused before send when it is missing.

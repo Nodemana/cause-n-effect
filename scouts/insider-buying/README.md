@@ -13,7 +13,7 @@ Open-market purchases only.
 
 `ScreenConfig` in `filters.py` sets the minimum value (default 10,000 in the transaction's own currency, with no FX conversion) and the cluster window (default 7 days). A row is marked `cluster` when a different insider at the same company buys inside that window. The same person buying twice is not a cluster.
 
-Missing prices, unparseable dates, joint Form 4 owners, equity swaps, and amounts that disagree are flagged for the Portfolio Manager and are not included.
+Missing prices, unparseable dates, joint Form 4 owners, equity swaps, and amounts that disagree are flagged for the Legate and are not included.
 
 ## Record
 
