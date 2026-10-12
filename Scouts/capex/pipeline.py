@@ -12,7 +12,7 @@ for _entry in (str(_REPO), str(_HERE)):
 
 from fetcher import FLOW_TAGS  # noqa: E402
 from money import first_amount  # noqa: E402
-from shared.store import connect, save_run  # noqa: E402
+from shared.store import connect, dedupe_figures, save_run  # noqa: E402
 
 
 def run(db_path, facts, guidance, announcements, started_at, seen_at, notes=None):
@@ -21,6 +21,7 @@ def run(db_path, facts, guidance, announcements, started_at, seen_at, notes=None
     figures.extend(figures_from_facts(facts, seen_at))
     figures.extend(figures_from_guidance(guidance, seen_at))
     figures.extend(figures_from_asx(announcements, seen_at))
+    figures = dedupe_figures(figures)
     conn = connect(db_path)
     try:
         run_id = save_run(conn, "capex", started_at, figures, notes=notes)
@@ -62,6 +63,10 @@ def _fact_figure(bundle, fact, seen_at):
         "source_url": _archive(bundle["cik"], accn) if accn else None,
         "source_type": "filing",
         "verified": 1,
+        "start": start,
+        "end": end,
+        "frame": row.get("frame"),
+        "fp": row.get("fp"),
     }
 
 

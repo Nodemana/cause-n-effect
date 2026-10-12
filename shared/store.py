@@ -1,9 +1,14 @@
 """SQLite history shared by the scouts. The figures table is defined in schema.sql."""
 
+import logging
 import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+_QUARTER_FRAME = re.compile(r"CY\d{4}Q[1-4]\Z")
 
 SCHEMA_NAME = "shared_schema.sql"
 HERE = Path(__file__).resolve().parent
@@ -88,16 +93,74 @@ def ensure_history(conn):
     conn.commit()
 
 
+def figure_key(row):
+    """The figures unique key, aside from run_id."""
+    return (
+        row.get("ticker") or "",
+        row.get("figure_type") or "",
+        row.get("instrument") or "",
+        row.get("period") or "",
+    )
+
+
+def prefer_fact(candidate, incumbent):
+    """True when `candidate` should replace `incumbent`.
+
+    A single-quarter value outranks a year-to-date or annual value. When that
+    specificity ties, the most recent filing wins.
+    """
+    return _rank(candidate) > _rank(incumbent)
+
+
+def dedupe_figures(figures):
+    """One row per ticker, type, instrument, and period. Dropped rows are logged."""
+    kept = {}
+    order = []
+    for row in figures or []:
+        key = figure_key(row)
+        current = kept.get(key)
+        if current is None:
+            kept[key] = row
+            order.append(key)
+            continue
+        if prefer_fact(row, current):
+            log_duplicate(current, row)
+            kept[key] = row
+        else:
+            log_duplicate(row, current)
+    return [kept[key] for key in order]
+
+
+def log_duplicate(dropped, kept):
+    """Say which figure lost the unique key, and which one was kept."""
+    log.warning(
+        "dropped duplicate figure ticker=%s type=%s instrument=%s period=%s "
+        "value=%s currency=%s announced_on=%s; kept value=%s currency=%s announced_on=%s",
+        dropped.get("ticker") or "",
+        dropped.get("figure_type") or "",
+        dropped.get("instrument") or "",
+        dropped.get("period") or "",
+        dropped.get("value"),
+        dropped.get("currency") or "",
+        _filed(dropped),
+        kept.get("value"),
+        kept.get("currency") or "",
+        _filed(kept),
+    )
+
+
 def save_run(conn, scout, started_at, figures, notes=None):
     """Insert one new run and its figures. Return the run id.
 
     The id is the UTC date, the UTC time as HHMMSS, and the scout name.
     A second run that starts in the same second gets a numeric suffix.
     Figures already stored for another run are not updated or deleted.
+    Duplicate keys in this batch are collapsed first (single-quarter, then
+    latest filing; drops are logged). A leftover duplicate is skipped.
     Leads are left for the Legate.
     """
     ensure_history(conn)
-    rows = _unique_figures(figures)
+    rows = _unique_figures(dedupe_figures(figures))
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         run_id = allocate_run_id(conn, started_at, scout)
@@ -108,11 +171,20 @@ def save_run(conn, scout, started_at, figures, notes=None):
             """,
             (run_id, scout, started_at, notes),
         )
-        conn.executemany(
-            f"INSERT INTO figures ({', '.join(_FIGURE_COLUMNS)}) VALUES ({', '.join('?' * len(_FIGURE_COLUMNS))})",
-            [_figure_row(run_id, row) for row in rows],
-        )
+        _insert_figures(conn, run_id, rows)
     return run_id
+
+
+def _insert_figures(conn, run_id, figures):
+    columns = ", ".join(_FIGURE_COLUMNS)
+    placeholders = ", ".join("?" * len(_FIGURE_COLUMNS))
+    conn.executemany(
+        f"""
+        INSERT INTO figures ({columns}) VALUES ({placeholders})
+        ON CONFLICT(run_id, ticker, figure_type, instrument, period) DO NOTHING
+        """,
+        [_figure_row(run_id, row) for row in figures],
+    )
 
 
 def _unique_figures(figures):
@@ -134,6 +206,57 @@ def _unique_figures(figures):
         used.add(key)
         kept.append(row)
     return kept
+
+
+def _filed(row):
+    raw = row.get("announced_on") or row.get("filed") or ""
+    return str(raw)[:10]
+
+
+def _rank(row):
+    return (_specificity(row), _filed(row))
+
+
+def _specificity(row):
+    """3 is a single quarter, 2 is unknown, 1 is year-to-date, 0 is a full year."""
+    frame = str(row.get("frame") or "")
+    if _QUARTER_FRAME.fullmatch(frame):
+        return 3
+    if frame.endswith("YTD"):
+        return 1
+    if re.fullmatch(r"CY\d{4}", frame):
+        return 0
+    fp = str(row.get("fp") or "").upper()
+    days = _span_days(row)
+    if fp in {"Q1", "Q2", "Q3", "Q4"} and days is not None and days <= 100:
+        return 3
+    if fp == "FY" or (days is not None and days > 300):
+        return 0
+    if days is not None and days <= 100:
+        return 3
+    if days is not None:
+        return 1
+    return 2
+
+
+def _span_days(row):
+    start = row.get("start")
+    end = row.get("end")
+    if not start or not end:
+        period = row.get("period") or ""
+        if isinstance(period, str) and "/" in period:
+            start, _, end = period.partition("/")
+    if not isinstance(start, str) or not isinstance(end, str):
+        return None
+    try:
+        began = datetime.strptime(start, "%Y-%m-%d")
+        ended = datetime.strptime(end, "%Y-%m-%d")
+    except ValueError:
+        return None
+    days = (ended - began).days
+    if days < 0:
+        return None
+    return days
 
 
 def _figure_row(run_id, row):

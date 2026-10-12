@@ -11,7 +11,7 @@ for _entry in (str(_REPO), str(_ROOT)):
         sys.path.insert(0, _entry)
 
 from parser import parse_company_facts, parse_release  # noqa: E402
-from shared.store import connect, save_run  # noqa: E402
+from shared.store import connect, dedupe_figures, save_run  # noqa: E402
 
 _RECORD_KEYS = (
     "source_side",
@@ -72,9 +72,13 @@ def to_json(table):
 
 
 def store_run(db_path, table, started_at, notes=None):
-    """Insert one orders-backlog run. Earlier runs and their figures stay put."""
+    """Insert one orders-backlog run. Earlier runs and their figures stay put.
+
+    Rows that share a figures key are collapsed first. A single-quarter value
+    beats a year-to-date value, then the latest filing wins. Drops are logged.
+    """
     seen_at = started_at[:10]
-    figures = figures_from_records(table.get("records") or [], seen_at)
+    figures = dedupe_figures(figures_from_records(table.get("records") or [], seen_at))
     conn = connect(db_path)
     try:
         run_id = save_run(conn, "orders-backlog", started_at, figures, notes=notes)
@@ -106,6 +110,10 @@ def figures_from_records(records, seen_at):
                 "source_url": record.get("source_url"),
                 "source_type": record.get("source_type"),
                 "verified": 0 if record.get("flags") else 1,
+                "start": record.get("start"),
+                "end": record.get("end"),
+                "frame": record.get("frame"),
+                "fp": record.get("fp"),
             }
         )
     return rows

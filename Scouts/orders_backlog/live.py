@@ -23,7 +23,7 @@ for _entry in (str(_REPO), str(_HERE)):
 
 import fetcher  # noqa: E402
 import pipeline  # noqa: E402
-from shared.store import connect, save_run, utc_now  # noqa: E402
+from shared.store import connect, dedupe_figures, save_run, utc_now  # noqa: E402
 
 DEFAULT_DB = Path("/tmp/cause-n-effect-orders.sqlite")
 EXHIBIT_DAYS = 120
@@ -100,7 +100,7 @@ def main(argv=None):
     table = pipeline.build_table(customer_facts, supplier_facts, releases)
     started = utc_now()
     seen = started[:10]
-    figures = _figures(table["records"], seen)
+    figures = dedupe_figures(_figures(table["records"], seen))
     if not figures:
         print("No orders-backlog figures.")
         return 1

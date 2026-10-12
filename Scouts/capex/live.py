@@ -67,7 +67,7 @@ def main(argv=None):
                 "ticker": company["ticker"],
                 "cik": str(int(company["cik"])).zfill(10),
                 "company": payload.get("entityName") or company.get("name"),
-                "facts": fetcher.select_facts(payload, quarters=quarters),
+                "facts": fetcher.select_facts(payload, ticker=company["ticker"], quarters=quarters),
             }
         ]
         print(f"SEC fixture {fixture}")

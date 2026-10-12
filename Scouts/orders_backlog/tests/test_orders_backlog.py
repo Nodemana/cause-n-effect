@@ -15,6 +15,7 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(SCOUT))
 
 import fetcher  # noqa: E402
+import live  # noqa: E402
 import parser  # noqa: E402
 import pipeline  # noqa: E402
 from tags import CUSTOMER_SECTORS, PROXY_TAGS, SUPPLIER_EQUIPMENT  # noqa: E402
@@ -189,6 +190,140 @@ class OrdersBacklogTests(unittest.TestCase):
         with self.assertRaises(EndpointError):
             fetcher.collect_customer_facts([AMAT])
 
+    def test_same_end_keeps_the_single_quarter_over_a_newer_ytd(self):
+        payload = _orders(
+            [
+                {
+                    "start": "2026-01-01",
+                    "end": "2026-06-30",
+                    "val": 900,
+                    "filed": "2026-08-01",
+                    "fp": "Q2",
+                    "fy": 2026,
+                    "form": "10-Q",
+                    "accn": "0000999001-26-000008",
+                },
+                {
+                    "start": "2026-04-01",
+                    "end": "2026-06-30",
+                    "val": 400,
+                    "filed": "2026-05-01",
+                    "fp": "Q2",
+                    "fy": 2026,
+                    "form": "10-Q",
+                    "frame": "CY2026Q2",
+                    "accn": "0000999001-26-000004",
+                },
+            ]
+        )
+        with self.assertLogs("shared.store", level="WARNING") as caught:
+            rows = parser.parse_company_facts(payload, SUPPLIER, "supplier_order")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["value"], 400)
+        self.assertEqual(rows[0]["filing_date"], "2026-05-01")
+        self.assertIn("conflicting_value", rows[0]["flags"])
+        self.assertTrue(any("value=900" in line and "kept value=400" in line for line in caught.output))
+
+    def test_same_span_keeps_the_newer_filing(self):
+        payload = _orders(
+            [
+                {
+                    "start": "2026-04-01",
+                    "end": "2026-06-30",
+                    "val": 400,
+                    "filed": "2026-05-01",
+                    "fp": "Q2",
+                    "form": "10-Q",
+                    "accn": "0000999001-26-000004",
+                },
+                {
+                    "start": "2026-04-01",
+                    "end": "2026-06-30",
+                    "val": 450,
+                    "filed": "2026-08-01",
+                    "fp": "Q2",
+                    "form": "10-Q",
+                    "accn": "0000999001-26-000009",
+                },
+            ]
+        )
+        with self.assertLogs("shared.store", level="WARNING") as caught:
+            rows = parser.parse_company_facts(payload, SUPPLIER, "supplier_order")
+        self.assertEqual(rows[0]["value"], 450)
+        self.assertEqual(rows[0]["filing_date"], "2026-08-01")
+        self.assertTrue(any("value=400" in line and "kept value=450" in line for line in caught.output))
+
+    def test_live_duplicate_currencies_store_one_figure(self):
+        payload = {
+            "cik": 6951,
+            "entityName": "Applied Materials Inc",
+            "facts": {
+                "us-gaap": {
+                    "RevenueRemainingPerformanceObligation": {
+                        "units": {
+                            "USD": [
+                                {
+                                    "end": "2026-04-26",
+                                    "val": 100,
+                                    "accn": "0000006951-26-000001",
+                                    "fy": 2026,
+                                    "fp": "Q2",
+                                    "form": "10-Q",
+                                    "filed": "2026-06-01",
+                                },
+                                {
+                                    "end": "2025-10-26",
+                                    "val": 50,
+                                    "accn": "0000006951-25-000040",
+                                    "fy": 2025,
+                                    "fp": "FY",
+                                    "form": "10-K",
+                                    "filed": "2025-12-01",
+                                },
+                            ],
+                            "EUR": [
+                                {
+                                    "end": "2026-04-26",
+                                    "val": 200,
+                                    "accn": "0000006951-26-000009",
+                                    "fy": 2026,
+                                    "fp": "Q2",
+                                    "form": "10-Q",
+                                    "filed": "2026-06-01",
+                                }
+                            ],
+                        }
+                    }
+                }
+            },
+        }
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                fixture = Path(tmp) / "facts.json"
+                fixture.write_text(json.dumps(payload), encoding="utf-8")
+                db = str(Path(tmp) / "history.sqlite")
+                with self.assertLogs("shared.store", level="WARNING") as caught:
+                    code = live.main(["--db", db, "--sec-fixture", str(fixture), "--no-asx"])
+                self.assertEqual(code, 0)
+                conn = sqlite3.connect(db)
+                conn.row_factory = sqlite3.Row
+                run = conn.execute("SELECT scout FROM runs").fetchone()["scout"]
+                rows = conn.execute(
+                    "SELECT period, value, currency FROM figures ORDER BY period"
+                ).fetchall()
+                conn.close()
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
+        self.assertEqual(run, "orders-backlog")
+        stored = {(row["period"], row["currency"]): row["value"] for row in rows}
+        self.assertEqual(
+            stored,
+            {("2025-10-26|2025-12-01", "USD"): 50, ("2026-04-26|2026-06-01", "USD"): 100},
+        )
+        self.assertTrue(any("value=200" in line and "kept value=100" in line for line in caught.output))
+
     def test_ir_urls_are_the_only_non_sec_asx_fetches(self):
         from shared.nethttp import EndpointError
 
@@ -302,6 +437,10 @@ class OrdersBacklogTests(unittest.TestCase):
         finally:
             if previous is not None:
                 os.environ["SEC_CONTACT_EMAIL"] = previous
+
+
+def _orders(points):
+    return {"facts": {"us-gaap": {"OrdersReceived": {"units": {"USD": points}}}}}
 
 
 if __name__ == "__main__":
