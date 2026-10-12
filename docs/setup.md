@@ -36,6 +36,7 @@ Every SEC and ASX request goes through `shared/nethttp.py`. The client spaces re
 Run from the repository root. These use fixtures and do not open a network connection.
 
 ```bash
+python3 -m unittest discover
 python3 -m unittest discover -s shared/tests -t .
 python3 -m unittest discover -s pipeline/tests -t .
 python3 -m unittest discover -s Scouts/accumulation/tests -t .
@@ -47,7 +48,7 @@ python3 Scouts/capex/tests/test_capex.py
 
 ## Lead pipeline
 
-`python -m pipeline run` reads the latest figures each scout stored, then rates, researches, merges, critiques, ranks, and writes pending decisions. Only a merged finding gets a second Centurion pass. That pass classifies any prior price run as new, an acceleration, or priced-in, and notes the call as a concern. Praetorians then agree or disagree, with counter-evidence. `--help` does not open a database or a network connection. With no `LLM_API_KEY`, the offline stub runs every stage. Set `LLM_API_KEY` to use an OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). The key is not written to the database or to a log line. Macro context on the second pass is read from `macro_series` and `macro_observations` when those tables have rows. Otherwise it uses `cache/macro.json` with a `summary` string, or `--macro-cache`. If neither is present, the second pass skips macro context. The first pass does not read it.
+`python -m pipeline run` reads the latest figures each scout stored, then rates, researches, merges, critiques, ranks, and writes pending decisions. `--limit` keeps the newest lead figures (`announced_on`, then `figure_id`), not alphabetical tickers. Only the latest period of each figure is rated, and capex keeps one span (quarter, then ttm). Older rows stay in `figures` for the growth comparison. A missing market cap, a missing official price, or a failed hard rubric grade is a reject, not a silent pass. Market cap is shares outstanding times an official USD price when both are already stored. Only a merged finding gets a second Centurion pass. That pass classifies any prior price run as new, an acceleration, or priced-in, and notes the call as a concern. Praetorians then agree or disagree, with counter-evidence. `--help` does not open a database or a network connection. With no `LLM_API_KEY`, the offline stub runs every stage. Set `LLM_API_KEY` to use an OpenAI-compatible endpoint (`LLM_BASE_URL`, `LLM_MODEL`). The key is not written to the database or to a log line. Macro context on the second pass is read from `macro_series` and `macro_observations` when those tables have rows. Otherwise it uses `cache/macro.json` with a `summary` string, or `--macro-cache`. If neither is present, the second pass skips macro context. The first pass does not read it.
 
 ```bash
 python3 -m pipeline run --help

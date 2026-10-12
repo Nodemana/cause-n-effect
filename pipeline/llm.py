@@ -207,24 +207,31 @@ def _significance(prompt):
     else:
         magnitude = "moderate"
         magnitude_rationale = f"The stored figure {value:g} clears the threshold and sits under the large bar."
-    if "low-signal" in text or "routine" in text:
+    if "low-signal" in text or "routine" in text or _field(prompt, "EARLIER_SIMILAR") == "yes":
         novelty = "routine"
-        novelty_rationale = "The stored text marks this as routine rather than a first occurrence."
+        if _field(prompt, "EARLIER_SIMILAR") == "yes":
+            novelty_rationale = "An earlier period stores a similar value, so this print is routine."
+        else:
+            novelty_rationale = "The stored text marks this as routine rather than a first occurrence."
     else:
         novelty = "first"
-        novelty_rationale = "The stored text does not mark this as routine."
+        novelty_rationale = "No earlier period stores a similar value."
     if "already noticed" in text:
         attention = "noticed"
         attention_rationale = "The stored text says this item was already noticed."
     else:
         attention = "unnoticed"
         attention_rationale = "No media note is stored on the figure, so attention stays unnoticed."
-    if "after earnings" in text:
+    age = _age_days(prompt)
+    if "after earnings" in text or (age is not None and age > 120):
         timing = "late"
-        timing_rationale = "The stored text places this after earnings."
+        if age is not None and age > 120:
+            timing_rationale = f"The period is {age} days old, past the 120 day staleness line."
+        else:
+            timing_rationale = "The stored text places this after earnings."
     else:
         timing = "early"
-        timing_rationale = "No earnings-date note is stored, so timing stays early."
+        timing_rationale = "The period is inside 120 days and no earnings-date note is stored."
     return {
         "magnitude": magnitude,
         "magnitude_rationale": magnitude_rationale,
@@ -307,18 +314,32 @@ def _centurion(prompt):
 
 
 def _grades(prompt):
+    market = _optional_float(_field(prompt, "MARKET_CAP"))
+    value = _optional_float(_field(prompt, "VALUE"))
     grades = []
     for line in _block(prompt, "CRITERIA").splitlines():
         line = line.strip()
         if not line.startswith("- "):
             continue
-        name, _, _description = line[2:].partition(" | ")
-        name = name.strip()
+        parts = [part.strip() for part in line[2:].split(" | ")]
+        name = parts[0] if parts else ""
         if not name:
             continue
-        if "market_cap" in name or name == "raise_vs_company":
-            passed = False
-            evidence = "market cap is not in the stored figure"
+        threshold = _optional_float(parts[1]) if len(parts) > 1 else None
+        if "market_cap" in name:
+            if market is not None and threshold is not None and market >= threshold:
+                passed = True
+                evidence = "shares outstanding times an official price"
+            else:
+                passed = False
+                evidence = "market cap is not in the stored figure"
+        elif name == "raise_vs_company":
+            if market and value is not None and threshold is not None and (100.0 * value / market) >= threshold:
+                passed = True
+                evidence = "the raise clears the percent of the official market cap"
+            else:
+                passed = False
+                evidence = "market cap is not in the stored figure" if market is None else "the raise is below the percent of market cap"
         elif "growth" in name:
             passed = "PRIOR_COMPARISON: yes" in prompt
             evidence = "prior comparison in the figures table" if passed else "no prior comparison in the figures table"
@@ -401,9 +422,15 @@ _STOP_PARTIES = {
 }
 
 
+_METRIC_LABELS = {"orders", "order", "backlog", "revenue"}
+
+
 def _is_party(text):
     cleaned = (text or "").strip()
-    if len(cleaned) < 2 or cleaned.casefold() in _STOP_PARTIES:
+    folded = cleaned.casefold()
+    if len(cleaned) < 2 or folded in _STOP_PARTIES or folded in _METRIC_LABELS:
+        return False
+    if "|" in cleaned:
         return False
     if any(char.isalpha() for char in cleaned):
         if any(char.islower() for char in cleaned) and any(char.isupper() for char in cleaned[1:]):
@@ -438,9 +465,39 @@ def _unique_parties(items):
     return kept
 
 
+def _age_days(prompt):
+    return _optional_float(_field(prompt, "PERIOD_AGE_DAYS"))
+
+
+def _optional_float(text):
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _grade_issues(thesis):
+    found = []
+    for line in (thesis or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("- ") or ":" not in stripped:
+            continue
+        body = stripped.split(":", 1)[1].strip()
+        mark, _, evidence = body.partition(".")
+        mark = mark.strip().lower()
+        evidence = evidence.strip().lower()
+        if mark == "fail" or evidence in {"", "missing", "missing evidence", "not graded"}:
+            found.append(stripped)
+    return found
+
+
 def _praetorian(prompt):
     price_run = _field(prompt, "PRICE_RUN")
     thesis = _block(prompt, "THESIS")
+    grade_issues = _grade_issues(thesis)
     if price_run == "priced-in":
         assumptions = (
             "The price-run classification is priced-in, so the claim that this is still early does not hold."
@@ -468,6 +525,10 @@ def _praetorian(prompt):
     else:
         bad_sources = "The thesis does not cite an SEC filing, an ASX announcement, or a company release."
         issues += 1
+    if grade_issues:
+        issues += len(grade_issues)
+        listed = " ".join(grade_issues)
+        assumptions = (assumptions + " " + listed).strip()
     return {
         "assumptions_that_fail": assumptions,
         "bad_sources": bad_sources,

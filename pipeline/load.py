@@ -98,7 +98,7 @@ def load_latest_figures(conn):
                ranked.scout AS scout
         FROM figures AS f
         JOIN ranked ON ranked.run_id = f.run_id AND ranked.n = 1
-        ORDER BY f.ticker, f.figure_type, f.instrument, f.period, f.figure_id
+        ORDER BY COALESCE(f.announced_on, '') DESC, f.figure_id DESC
         """,
         scouts,
     ).fetchall()

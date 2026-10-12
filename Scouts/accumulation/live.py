@@ -25,10 +25,10 @@ for _entry in (str(_REPO), str(_HERE)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-import fetcher  # noqa: E402
-from filters import ScreenConfig  # noqa: E402
-from model import Document  # noqa: E402
-from pipeline import analyse, figures_from_report  # noqa: E402
+from Scouts.accumulation import fetcher  # noqa: E402
+from Scouts.accumulation.filters import ScreenConfig  # noqa: E402
+from Scouts.accumulation.model import Document  # noqa: E402
+from Scouts.accumulation.scout_pipeline import analyse, figures_from_report  # noqa: E402
 from shared.store import connect, save_run, utc_now  # noqa: E402
 
 DEFAULT_DB = Path("/tmp/cause-n-effect-accumulation.sqlite")

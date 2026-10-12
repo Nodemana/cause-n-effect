@@ -10,8 +10,8 @@ for _entry in (str(_REPO), str(_HERE)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from fetcher import FLOW_TAGS, span_label  # noqa: E402
-from money import first_amount  # noqa: E402
+from Scouts.capex.fetcher import FLOW_TAGS, span_label  # noqa: E402
+from Scouts.capex.money import first_amount  # noqa: E402
 from shared.store import connect, dedupe_figures, save_run  # noqa: E402
 
 

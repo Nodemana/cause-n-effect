@@ -23,8 +23,8 @@ for _entry in (str(_REPO), str(_HERE)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-import fetcher  # noqa: E402
-import pipeline  # noqa: E402
+from Scouts.orders_backlog import fetcher  # noqa: E402
+from Scouts.orders_backlog import scout_pipeline as pipeline  # noqa: E402
 from shared.store import connect, dedupe_figures, save_run, utc_now  # noqa: E402
 
 DEFAULT_DB = Path("/tmp/cause-n-effect-orders.sqlite")

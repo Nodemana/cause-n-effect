@@ -29,7 +29,8 @@ def criteria_for(conn, lead_types):
     for lead_type in lead_types:
         found = conn.execute(
             """
-            SELECT c.criterion_id, c.name, c.description, r.lead_type
+            SELECT c.criterion_id, c.name, c.description, c.threshold_value,
+                   c.threshold_unit, r.lead_type
             FROM rubric_criteria AS c
             JOIN rubrics AS r ON r.rubric_id = c.rubric_id
             WHERE r.lead_type = ? AND r.version = 1

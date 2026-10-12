@@ -18,10 +18,10 @@ REPO = SCOUT.parents[1]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(SCOUT))
 
-import fetcher  # noqa: E402
-import pipeline  # noqa: E402
-import report  # noqa: E402
-from score import (  # noqa: E402
+from Scouts.debt_raise import fetcher  # noqa: E402
+from Scouts.debt_raise import report  # noqa: E402
+from Scouts.debt_raise import scout_pipeline as pipeline  # noqa: E402
+from Scouts.debt_raise.score import (  # noqa: E402
     deal_amount,
     first_amount,
     histogram,

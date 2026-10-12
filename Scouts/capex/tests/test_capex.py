@@ -15,10 +15,10 @@ REPO = SCOUT.parents[1]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(SCOUT))
 
-import fetcher  # noqa: E402
-import live  # noqa: E402
-import pipeline  # noqa: E402
-from money import first_amount  # noqa: E402
+from Scouts.capex import fetcher  # noqa: E402
+from Scouts.capex import live  # noqa: E402
+from Scouts.capex import scout_pipeline as pipeline  # noqa: E402
+from Scouts.capex.money import first_amount  # noqa: E402
 
 FIX = SCOUT / "fixtures"
 AMZN = {"ticker": "AMZN", "name": "Amazon.com Inc", "cik": "0001018724"}

@@ -18,7 +18,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from model import record
+from Scouts.insider_buying.model import record
 
 _ON_MARKET = re.compile(r"(?<![a-z])on[-\s]?market", re.I)
 _OFF_MARKET = re.compile(r"(?<![a-z])off[-\s]?market", re.I)

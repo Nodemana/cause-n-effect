@@ -73,7 +73,7 @@ def build_parser():
         "--limit",
         type=int,
         default=None,
-        help="Use only the first N latest figures, in ticker, type, and period order",
+        help="Use only the first N latest figures, newest announced_on first",
     )
     run.add_argument(
         "--token-budget",

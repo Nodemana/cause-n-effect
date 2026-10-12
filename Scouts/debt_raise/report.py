@@ -12,7 +12,7 @@ for _entry in (str(_REPO), str(_HERE)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from score import BUCKETS, load_config
+from Scouts.debt_raise.score import BUCKETS, load_config
 
 RUNS_SQL = """
 SELECT r.run_id, r.started_at, d.threshold, d.filings_seen,

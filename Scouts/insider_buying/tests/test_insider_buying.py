@@ -16,10 +16,10 @@ REPO = SCOUT.parents[1]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(SCOUT))
 
-import fetcher  # noqa: E402
-import parser  # noqa: E402
-import pipeline  # noqa: E402
-from filters import ScreenConfig  # noqa: E402
+from Scouts.insider_buying import fetcher  # noqa: E402
+from Scouts.insider_buying import parser  # noqa: E402
+from Scouts.insider_buying import scout_pipeline as pipeline  # noqa: E402
+from Scouts.insider_buying.filters import ScreenConfig  # noqa: E402
 
 FIX = SCOUT / "fixtures"
 URL = "https://www.sec.gov/Archives/edgar/data/999001/form4.xml"

@@ -11,7 +11,7 @@ for _entry in (str(_REPO), str(_HERE)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from fetcher import (
+from Scouts.debt_raise.fetcher import (
     fetch_asx_text,
     fetch_phrase_text,
     fetch_primary_text,
@@ -19,7 +19,7 @@ from fetcher import (
     in_scope,
     summary_is_form_label,
 )
-from score import (
+from Scouts.debt_raise.score import (
     DEFAULT_MIN_DEAL_USD,
     figure_kind,
     histogram,
@@ -29,7 +29,7 @@ from score import (
     score_text,
 )
 from shared.nethttp import EndpointError, asx_client, sec_client
-from store import open_db, save_run, utc_now
+from Scouts.debt_raise.store import open_db, save_run, utc_now
 
 # An 8-K and the following 424B for the same notes land a few days apart.
 DEAL_REPEAT_DAYS = 7

@@ -8,8 +8,8 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from filters import ScreenConfig, screen
-from parser import parse_3y, parse_form4
+from Scouts.insider_buying.filters import ScreenConfig, screen
+from Scouts.insider_buying.parser import parse_3y, parse_form4
 
 
 def build_table(documents, config=None):

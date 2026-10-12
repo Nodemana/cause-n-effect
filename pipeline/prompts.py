@@ -30,6 +30,8 @@ def significance_prompt(candidate):
             f"INSTRUMENT: {_one_line(figure.instrument)}",
             f"PERIOD: {_one_line(figure.period)}",
             f"SOURCE_URL: {_one_line(figure.source_url)}",
+            f"EARLIER_SIMILAR: {'yes' if getattr(figure, 'earlier_similar', False) else 'no'}",
+            f"PERIOD_AGE_DAYS: {_age(figure)}",
             "Reply with one JSON object and no other text.",
             "Keys: magnitude, magnitude_rationale, novelty, novelty_rationale, "
             "attention, attention_rationale, timing, timing_rationale.",
@@ -57,10 +59,15 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
         f"PERIOD: {_one_line(figure.period)}",
         f"SOURCE_URL: {_one_line(figure.source_url)}",
         f"PRIOR_COMPARISON: {prior}",
+        f"MARKET_CAP: {_number(getattr(figure, 'market_cap', None))}",
         "CRITERIA_BEGIN",
     ]
     for criterion in criteria:
-        lines.append(f"- {criterion['name']} | {_one_line(criterion['description'])}")
+        threshold = criterion.get("threshold_value")
+        unit = criterion.get("threshold_unit") or ""
+        lines.append(
+            f"- {criterion['name']} | {_number(threshold)} | {unit} | {_one_line(criterion['description'])}"
+        )
     lines.append("CRITERIA_END")
     lines.append("RULES_BEGIN")
     seen = []
@@ -243,6 +250,13 @@ def _macro_from_file(path):
 
 def _one_line(value):
     return " ".join(str(value or "").split())
+
+
+def _age(figure):
+    age = getattr(figure, "period_age_days", None)
+    if age is None:
+        return ""
+    return str(int(age))
 
 
 def _number(value):

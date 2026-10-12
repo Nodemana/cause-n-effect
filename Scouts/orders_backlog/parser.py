@@ -15,9 +15,9 @@ for _entry in (str(_REPO), str(_ROOT)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from model import archive_index_url, record
+from Scouts.orders_backlog.model import archive_index_url, record
 from shared.store import log_duplicate, prefer_fact
-from tags import (
+from Scouts.orders_backlog.tags import (
     ACTIVE_BACKLOG_TAGS,
     ACTIVE_INTAKE_TAGS,
     PROXY_TAGS,

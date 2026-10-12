@@ -102,11 +102,22 @@ class PipelineFlowTests(unittest.TestCase):
                             "Amazon",
                             "PaymentsToAcquireProductiveAssets",
                             "quarter",
-                            "2025-01-01/2025-03-31",
+                            "2026-07-01/2026-09-30",
                             5_000_000_000,
                             "priced-in supplier: Globex Power",
                             AMZN_URL,
-                        )
+                        ),
+                        _figure(
+                            "AMZN",
+                            "Amazon",
+                            "PaymentsToAcquireProductiveAssets",
+                            "quarter",
+                            "2025-07-01/2025-09-30",
+                            1_000_000_000,
+                            "1000000000",
+                            AMZN_URL + "#prior",
+                        ),
+                        *_caps("AMZN", "GEV"),
                     ],
                 )
                 save_run(
@@ -121,9 +132,19 @@ class PipelineFlowTests(unittest.TestCase):
                             "Amazon",
                             "2026-10-01",
                             2_000_000_000,
-                            "2000000000",
+                            "2000000000 buyer: Amazon",
                             GEV_URL,
-                        )
+                        ),
+                        _figure(
+                            "GEV",
+                            "Globex Power",
+                            "supplier_order",
+                            "Amazon",
+                            "2026-07-03",
+                            500_000_000,
+                            "500000000",
+                            GEV_URL + "#prior",
+                        ),
                     ],
                 )
             finally:
@@ -182,11 +203,22 @@ class PipelineFlowTests(unittest.TestCase):
                             "Amazon",
                             "PaymentsToAcquireProductiveAssets",
                             "quarter",
-                            "2025-01-01/2025-03-31",
+                            "2026-07-01/2026-09-30",
                             5_000_000_000,
                             "5000000000 supplier: Globex Power",
                             AMZN_URL,
-                        )
+                        ),
+                        _figure(
+                            "AMZN",
+                            "Amazon",
+                            "PaymentsToAcquireProductiveAssets",
+                            "quarter",
+                            "2025-07-01/2025-09-30",
+                            1_000_000_000,
+                            "1000000000",
+                            AMZN_URL + "#prior",
+                        ),
+                        *_caps("AMZN", "GEV"),
                     ],
                 )
                 save_run(
@@ -201,9 +233,19 @@ class PipelineFlowTests(unittest.TestCase):
                             "Amazon",
                             "2026-10-01",
                             2_000_000_000,
-                            "2000000000",
+                            "2000000000 buyer: Amazon",
                             GEV_URL,
-                        )
+                        ),
+                        _figure(
+                            "GEV",
+                            "Globex Power",
+                            "supplier_order",
+                            "Amazon",
+                            "2026-07-03",
+                            500_000_000,
+                            "500000000",
+                            GEV_URL + "#prior",
+                        ),
                     ],
                 )
             finally:
@@ -301,7 +343,10 @@ class PipelineFlowTests(unittest.TestCase):
                     conn,
                     "insider-buying",
                     "2026-10-12T16:00:00Z",
-                    [_figure("MSFT", "Microsoft", "insider_purchase", "ceo", "2026-10-01|Ada", 250000, "250000 shares", MSFT_URL)],
+                    [
+                        _figure("MSFT", "Microsoft", "insider_purchase", "ceo", "2026-10-01|Ada", 250000, "250000 shares", MSFT_URL),
+                        *_caps("MSFT"),
+                    ],
                 )
             finally:
                 conn.close()
@@ -468,10 +513,27 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertIsNone(rows["UNV"]["significance_magnitude"])
         self.assertEqual(rows["NWT"]["significance_magnitude"], "small")
         self.assertEqual(rows["NWT"]["accession"], "0001234567-26-000009")
-        dupes = conn.execute(
-            "SELECT reason FROM lead_rejects WHERE ticker = 'AMZN' AND rejection_stage = 'deterministic'"
-        ).fetchall()
-        self.assertIn("duplicate in this run", [row["reason"] for row in dupes])
+        amzn_reasons = [
+            row["reason"]
+            for row in conn.execute(
+                "SELECT reason FROM lead_rejects WHERE ticker = 'AMZN' AND rejection_stage = 'deterministic'"
+            )
+        ]
+        self.assertTrue(any("older period kept for growth comparison" in reason for reason in amzn_reasons))
+        self.assertTrue(any("extra span" in reason for reason in amzn_reasons))
+        lead_periods = [
+            row["period"]
+            for row in conn.execute(
+                """
+                SELECT f.period
+                FROM leads AS l
+                JOIN lead_figures AS link ON link.lead_id = l.lead_id
+                JOIN figures AS f ON f.figure_id = link.figure_id
+                WHERE l.ticker = 'AMZN' AND l.source_scout = 'capex'
+                """
+            )
+        ]
+        self.assertEqual(lead_periods, ["2026-07-01/2026-09-30"])
 
     def _assert_leads_and_theses(self, conn, provider):
         pass_two = conn.execute("SELECT COUNT(*) FROM theses WHERE pass_number = 2").fetchone()[0]
@@ -565,10 +627,13 @@ def _seed(path):
             "capex",
             "2026-10-12T14:30:52Z",
             [
-                _figure("AMZN", "Amazon", "PaymentsToAcquireProductiveAssets", "quarter", "2025-01-01/2025-03-31", 5_000_000_000, "5000000000 supplier: Globex Power", AMZN_URL),
-                _figure("AMZN", "Amazon", "PaymentsToAcquireProductiveAssets", "quarter", "2025-04-01/2025-06-30", 1000, "1000 supplier: Globex Power", AMZN_URL),
+                _figure("AMZN", "Amazon", "PaymentsToAcquireProductiveAssets", "quarter", "2026-07-01/2026-09-30", 5_000_000_000, "5000000000 supplier: Globex Power", AMZN_URL),
+                _figure("AMZN", "Amazon", "PaymentsToAcquireProductiveAssets", "quarter", "2025-07-01/2025-09-30", 1_000_000_000, "1000000000", AMZN_URL),
+                _figure("AMZN", "Amazon", "PaymentsToAcquireProductiveAssets", "ttm", "2025-10-01/2026-09-30", 9_000_000_000, "9000000000", AMZN_URL),
                 _figure("UNV", "Unverified Co", "PaymentsToAcquireProductiveAssets", "quarter", "2025-01-01/2025-03-31", 3_000_000_000, "3000000000", "https://www.sec.gov/Archives/edgar/data/1/unv.htm", verified=0),
-                _figure("ORCL", "Oracle", "PaymentsToAcquireProductiveAssets", "quarter", "2025-01-01/2025-03-31", 2_000_000_000, "2000000000", ORCL_URL),
+                _figure("ORCL", "Oracle", "PaymentsToAcquireProductiveAssets", "quarter", "2026-07-01/2026-09-30", 2_000_000_000, "2000000000", ORCL_URL),
+                _figure("ORCL", "Oracle", "PaymentsToAcquireProductiveAssets", "quarter", "2025-07-01/2025-09-30", 500_000_000, "500000000", ORCL_PRIOR),
+                *_caps("AMZN", "ORCL", "GEV", "MSFT", "TINY"),
             ],
         )
         save_run(
@@ -576,8 +641,9 @@ def _seed(path):
             "orders-backlog",
             "2026-10-12T14:31:00Z",
             [
-                _figure("GEV", "Globex Power", "supplier_order", "Amazon", "2026-10-01", 2_000_000_000, "2000000000", GEV_URL),
-                _figure("ZZZ", "Small Supplier", "supplier_order", "Amazon", "2026-10-01", None, "", "https://www.sec.gov/Archives/edgar/data/9/zzz.htm"),
+                _figure("GEV", "Globex Power", "supplier_order", "Amazon", "2026-10-01", 2_000_000_000, "2000000000 buyer: Amazon", GEV_URL),
+                _figure("GEV", "Globex Power", "supplier_order", "Amazon", "2026-07-03", 500_000_000, "500000000", GEV_URL),
+                _figure("ZZZ", "Small Supplier", "supplier_order", "Amazon", "2026-10-01", None, "buyer: Amazon", "https://www.sec.gov/Archives/edgar/data/9/zzz.htm"),
             ],
         )
         save_run(
@@ -656,6 +722,36 @@ def _history(path):
 
     ensure_history(conn)
     return conn
+
+
+def _caps(*tickers):
+    rows = []
+    for ticker in tickers:
+        rows.append(
+            _figure(
+                ticker,
+                ticker,
+                "EntityCommonStockSharesOutstanding",
+                "shares",
+                "2026-10-01",
+                1_000_000_000,
+                "1000000000",
+                f"https://www.sec.gov/Archives/edgar/data/1/{ticker.lower()}-shares.htm",
+            )
+        )
+        rows.append(
+            _figure(
+                ticker,
+                ticker,
+                "share_price",
+                "close",
+                "2026-10-01",
+                10,
+                "10",
+                f"https://www.sec.gov/Archives/edgar/data/1/{ticker.lower()}-price.htm",
+            )
+        )
+    return rows
 
 
 def _figure(ticker, company, figure_type, instrument, period, value, value_text, source_url, verified=1, currency="USD"):
