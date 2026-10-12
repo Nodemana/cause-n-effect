@@ -12,6 +12,7 @@ priced-in, and includes macro text only when a macro cache is present.
 """
 
 import json
+import math
 
 from shared.pipeline_store import connect
 from shared.shares import cache_shares_outstanding, companies_from_figures
@@ -19,7 +20,7 @@ from shared.store import utc_now
 
 from pipeline.budget import TokenBudget
 from pipeline.llm import parse_json_object, resolve_provider
-from pipeline.load import load_latest_figures
+from pipeline.load import is_quarter_figure, load_latest_figures
 from pipeline.marketcap import UNVERIFIED
 from pipeline.names import normalise_name
 from pipeline.prefilter import (
@@ -43,6 +44,9 @@ from pipeline.prompts import (
 from pipeline import store
 
 SHORTLIST_MAX = 5
+# One surviving issue costs this many score points. Magnitude and growth
+# can still place a large backlog or a sharp capex print above a small stake.
+_ISSUE_PENALTY = 8.0
 _MAX_SIGNIFICANCE = 300
 _MAX_CENTURION = 800
 _MAX_PRAETORIAN = 500
@@ -187,25 +191,33 @@ def _rate(conn, provider, budget, candidates, rejects):
             )
             continue
         rating = Rating.from_model(data)
-        if not interesting(rating):
+        ignore_on_time = _quarter_timing(candidate)
+        if not interesting(rating, ignore_on_time=ignore_on_time):
             rejects.append(
                 PlannedReject(
                     candidate.figure,
                     candidate.lead_type,
                     "llm",
-                    failure_reason(rating),
+                    failure_reason(rating, ignore_on_time=ignore_on_time),
                     rating,
                     candidate.parties,
                 )
             )
             continue
         lead = _lead_from_candidate(candidate, rating)
-        lead.significance_issue = surviving_issue(rating)
+        lead.significance_issue = surviving_issue(rating, ignore_on_time=ignore_on_time)
         lead.synthetic_id = next_id
         next_id += 1
         lead.parent_position_id = store.open_position_id(conn, lead.ticker)
         leads.append(lead)
     return leads
+
+
+def _quarter_timing(candidate):
+    """Quarter-end capex and backlog do not treat on_time as an issue."""
+    if candidate.lead_type not in {"capex", "orders_backlog"}:
+        return False
+    return is_quarter_figure(candidate.figure, candidate.lead_type)
 
 
 def _lead_from_candidate(candidate, rating):
@@ -437,25 +449,80 @@ def _note_unverified_cap(lead, review):
 
 def _rank(final):
     reviewed = [lead for lead in final if lead.thesis is not None and lead.thesis.review is not None]
-    reviewed.sort(
-        key=lambda lead: (
-            lead.thesis.surviving_issues,
-            -float(lead.thesis.roi_pct or 0),
-            lead.thesis.timeframe_days if lead.thesis.timeframe_days is not None else 10**9,
-            lead.thesis.risk_count,
-            lead.synthetic_id,
-        )
-    )
-    for index, lead in enumerate(reviewed, start=1):
+    scored = [( _rank_score(lead), lead) for lead in reviewed]
+    scored.sort(key=lambda item: _rank_key(item[1], item[0]))
+    for index, (score, lead) in enumerate(scored, start=1):
         lead.rank = index
         lead.presented = index <= SHORTLIST_MAX
         lead.rank_rationale = (
-            f"Rank {index}: {lead.thesis.surviving_issues} surviving issues, "
-            f"ROI {lead.thesis.roi or lead.thesis.roi_pct}, "
+            f"Rank {index}: score {score:.1f} from ROI {lead.thesis.roi or lead.thesis.roi_pct}, "
+            f"growth and magnitude, minus {lead.thesis.surviving_issues} surviving issues; "
             f"timeframe {lead.thesis.timeframe_days} days, "
             f"{lead.thesis.risk_count} risks."
         )
-    return reviewed
+    return [lead for _score, lead in scored]
+
+
+def _rank_key(lead, score):
+    thesis = lead.thesis
+    return (
+        -score,
+        thesis.surviving_issues,
+        -float(thesis.roi_pct or 0),
+        thesis.timeframe_days if thesis.timeframe_days is not None else 10**9,
+        thesis.risk_count,
+        lead.synthetic_id,
+    )
+
+
+def _rank_score(lead):
+    """Expected return, plus growth and size, minus a penalty per surviving issue."""
+    roi = float(lead.thesis.roi_pct or 0)
+    growth = _best_growth(lead)
+    growth_pts = min(max(growth, 0.0), 300.0) / 10.0
+    return roi + growth_pts + _magnitude_points(lead) - (lead.thesis.surviving_issues or 0) * _ISSUE_PENALTY
+
+
+def _best_growth(lead):
+    best = 0.0
+    for _lead_type, figure in _rank_figures(lead):
+        raw = getattr(figure, "growth_pct", None)
+        if raw is None:
+            continue
+        try:
+            best = max(best, float(raw))
+        except (TypeError, ValueError):
+            continue
+    return best
+
+
+def _magnitude_points(lead):
+    best = 0.0
+    for lead_type, figure in _rank_figures(lead):
+        best = max(best, _one_magnitude(lead_type, figure))
+    return best
+
+
+def _one_magnitude(lead_type, figure):
+    try:
+        value = float(figure.value)
+    except (TypeError, ValueError):
+        return 0.0
+    if value <= 0:
+        return 0.0
+    if lead_type == "accumulation":
+        return min(value, 100.0) / 10.0
+    return math.log10(value)
+
+
+def _rank_figures(lead):
+    rows = []
+    if getattr(lead, "figure", None) is not None:
+        rows.append((lead.lead_type, lead.figure))
+    for member in getattr(lead, "members", ()) or ():
+        if getattr(member, "figure", None) is not None:
+            rows.append((member.lead_type, member.figure))
+    return rows
 
 
 def _persist(conn, started, budget, provider_name, rejects, leads, merged, ranked):
@@ -561,12 +628,29 @@ def _thesis_from_model(data, lead, criteria, pass_number, macro):
     thesis.roi = _text(data.get("roi"))
     thesis.roi_pct = _roi_pct(data)
     thesis.timeframe_days = _int_or_none(data.get("timeframe_days"))
+    data = _apply_growth_evidence(data, lead, thesis)
     if pass_number == 2:
         price_run = _text(data.get("price_run"))
         thesis.price_run = price_run if price_run in _PRICE_RUNS else None
         thesis.macro_context = macro or None
     thesis.markdown = _render(data, thesis, assumptions, risks)
     return thesis
+
+
+def _apply_growth_evidence(data, lead, thesis):
+    """Put the computed year-over-year or backlog comparison on the grade and the thesis."""
+    text = _text(getattr(getattr(lead, "figure", None), "growth_text", None))
+    if not text:
+        return data
+    for name in ("capex_growth_yoy", "backlog_qoq_growth"):
+        grade = thesis.grades_by_name.get(name)
+        if grade is not None and grade.get("passed"):
+            grade["evidence"] = text
+    body = _text(data.get("thesis"))
+    if text.casefold() not in body.casefold():
+        data = dict(data)
+        data["thesis"] = (body + " " + text).strip()
+    return data
 
 
 def _render(data, thesis, assumptions, risks):

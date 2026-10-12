@@ -273,6 +273,28 @@ def period_end(period):
         return None
 
 
+def is_quarter_figure(figure, lead_type=None):
+    """True for a single-quarter print or a quarter-end backlog balance.
+
+    Capex stores that print with instrument `quarter` or a span of about
+    ninety days. A backlog balance with no duration is the stock at a
+    period end. A one-day supplier order is not.
+    """
+    instrument = (getattr(figure, "instrument", "") or "").casefold()
+    if instrument == "quarter":
+        return True
+    period = getattr(figure, "period", "") or ""
+    span = period_span_days(period)
+    if span is not None and 80 <= span <= 115:
+        return True
+    kind = lead_type or classify(getattr(figure, "scout", ""), getattr(figure, "figure_type", ""))
+    figure_type = getattr(figure, "figure_type", "") or ""
+    if kind != "orders_backlog" or figure_type not in {"backlog", "customer_backlog"} or span is not None:
+        return False
+    end = period_end(period)
+    return end is not None and end.day >= 28
+
+
 def period_span_days(period):
     """Days covered by a start/end span.
 

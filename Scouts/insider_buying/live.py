@@ -27,6 +27,7 @@ for _entry in (str(_REPO), str(_HERE)):
 
 from Scouts.insider_buying import fetcher  # noqa: E402
 from Scouts.insider_buying import scout_pipeline as pipeline  # noqa: E402
+from shared.money import format_money  # noqa: E402
 from shared.store import connect, save_run, utc_now  # noqa: E402
 
 UNIVERSE = _HERE / "universe_asx.json"
@@ -57,7 +58,9 @@ def _unique_figures(figures):
             current["value"] = (current.get("value") or 0) + (item.get("value") or 0)
             count = current.get("_lots", 1) + 1
             current["_lots"] = count
-            current["value_text"] = f"{count} lots totalling {current['value']:g}"
+            current["value_text"] = (
+                f"{count} lots totalling {format_money(current['value'], current.get('currency'))}"
+            )
             continue
         row = dict(item)
         if key is not None:

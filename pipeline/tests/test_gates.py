@@ -686,8 +686,8 @@ class GateTests(unittest.TestCase):
         self.assertEqual(trade[0]["rejection_stage"], "llm")
         self.assertEqual(on_time, [])
         self.assertEqual(kept["significance_timing"], "on_time")
-        self.assertIn("timing on_time", kept["assumptions_that_fail"])
-        self.assertGreaterEqual(kept["surviving_issues"], 1)
+        self.assertNotIn("timing on_time", kept["assumptions_that_fail"])
+        self.assertEqual(kept["surviving_issues"], 0)
 
     def test_counterparty_search_is_a_token_prefix_and_holders_are_not_buyers(self):
         holder = _figure(
@@ -1227,7 +1227,7 @@ class GateTests(unittest.TestCase):
             )
             return json.loads(provider.complete(prompt, max_tokens=400).text)
 
-        def centurion(lead_type, value, pass_number="1", constituents=None):
+        def centurion(lead_type, value, pass_number="1", constituents=None, extra=None, market_cap="10000000000"):
             lines = [
                 "TASK: centurion",
                 f"PASS: {pass_number}",
@@ -1236,8 +1236,10 @@ class GateTests(unittest.TestCase):
                 f"VALUE: {value}",
                 "VALUE_TEXT: stored",
                 "PRIOR_COMPARISON: yes",
-                "MARKET_CAP: 10000000000",
+                f"MARKET_CAP: {market_cap}",
             ]
+            if extra:
+                lines.extend(extra)
             if constituents:
                 lines.append("CONSTITUENTS_BEGIN")
                 lines.extend(constituents)
@@ -1257,6 +1259,76 @@ class GateTests(unittest.TestCase):
         self.assertEqual(centurion("orders_backlog", "2000000000")["roi_pct"], 24)
         self.assertEqual(centurion("capex", "200000000")["roi_pct"], 12)
         self.assertEqual(centurion("capex", "50000000")["roi_pct"], 6)
+        sharp = significance("yes", "104", lead_type="capex")
+        sharp_prompt = json.loads(
+            provider.complete(
+                "\n".join(
+                    [
+                        "TASK: significance",
+                        "LEAD_TYPE: capex",
+                        "VALUE: 16800000000",
+                        "VALUE_TEXT: stored",
+                        "EARLIER_FIGURE: yes",
+                        "EARLIER_SIMILAR: no",
+                        "GROWTH_PCT: 68",
+                        "QUARTER_FIGURE: yes",
+                        "PERIOD_AGE_DAYS: 104",
+                    ]
+                ),
+                max_tokens=400,
+            ).text
+        )
+        self.assertEqual(sharp_prompt["novelty"], "first")
+        self.assertIn("68", sharp_prompt["novelty_rationale"])
+        self.assertEqual(sharp_prompt["timing"], "on_time")
+        modest = json.loads(
+            provider.complete(
+                "\n".join(
+                    [
+                        "TASK: significance",
+                        "LEAD_TYPE: capex",
+                        "VALUE: 11200000000",
+                        "VALUE_TEXT: stored",
+                        "EARLIER_FIGURE: yes",
+                        "GROWTH_PCT: 12",
+                        "QUARTER_FIGURE: yes",
+                        "PERIOD_AGE_DAYS: 104",
+                    ]
+                ),
+                max_tokens=400,
+            ).text
+        )
+        self.assertEqual(modest["novelty"], "routine")
+        self.assertIn("12", modest["novelty_rationale"])
+        self.assertEqual(sharp["novelty"], "routine")
+        quoted = centurion(
+            "capex",
+            "28500000000",
+            extra=[
+                "PRIOR_COMPARISON: yes",
+                "GROWTH_TEXT: Jun-Aug 2026 $28.5B vs Jun-Aug 2025 $8.5B, +235%",
+                "CRITERIA_BEGIN",
+                "- capex_growth_yoy | 10 | percent | year over year",
+                "CRITERIA_END",
+            ],
+        )
+        self.assertIn("Jun-Aug 2026 $28.5B vs Jun-Aug 2025 $8.5B, +235%", quoted["thesis"])
+        growth_grade = next(item for item in quoted["grades"] if item["name"] == "capex_growth_yoy")
+        self.assertTrue(growth_grade["passed"])
+        self.assertEqual(growth_grade["evidence"], "Jun-Aug 2026 $28.5B vs Jun-Aug 2025 $8.5B, +235%")
+        unknown_cap = centurion(
+            "debt_raise",
+            "400000000",
+            extra=[
+                "CRITERIA_BEGIN",
+                "- raise_vs_company | 5 | percent | raise versus the company",
+                "CRITERIA_END",
+            ],
+            market_cap="",
+        )
+        raise_grade = next(item for item in unknown_cap["grades"] if item["name"] == "raise_vs_company")
+        self.assertFalse(raise_grade["passed"])
+        self.assertEqual(raise_grade["evidence"], "market cap unverified")
         merged = centurion(
             "capex",
             "5000000000",
@@ -1313,6 +1385,13 @@ class GateTests(unittest.TestCase):
         self.assertIn("timing late", failure_reason(late))
         self.assertFalse(interesting(late))
         self.assertIsNone(surviving_issue(late))
+        self.assertIsNone(failure_reason(on_time, ignore_on_time=True))
+        self.assertIsNone(surviving_issue(on_time, ignore_on_time=True))
+        self.assertTrue(interesting(both, ignore_on_time=True))
+        self.assertIsNone(failure_reason(both, ignore_on_time=True))
+        self.assertIn("novelty routine", surviving_issue(both, ignore_on_time=True))
+        self.assertNotIn("timing on_time", surviving_issue(both, ignore_on_time=True))
+        self.assertFalse(interesting(late, ignore_on_time=True))
 
     def test_quarterly_backlog_on_time_survives_and_late_does_not(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1419,9 +1498,9 @@ class GateTests(unittest.TestCase):
                     "insider-buying",
                     "2026-10-12T14:32:00Z",
                     [
-                        _insider("MIN.AX", "2026-09-15|Ada North", 100_000, "2026-09-20"),
-                        _insider("MIN.AX", "2026-09-15|Ada North|2", 50_000, "2026-09-20"),
-                        _insider("MIN.AX", "2026-09-15|Ada North|3", 25_000, "2026-09-20"),
+                        _insider("MIN.AX", "2026-09-15|Ada North", 100_000, "2026-09-20", currency="AUD"),
+                        _insider("MIN.AX", "2026-09-15|Ada North|2", 50_000, "2026-09-20", currency="AUD"),
+                        _insider("MIN.AX", "2026-09-15|Ada North|3", 25_000, "2026-09-20", currency="AUD"),
                         _insider("ZZZ.AX", "2026-09-15|Ada North", 80_000, "2026-09-20"),
                         _insider("ZZZ.AX", "2026-09-15|Ada North|2", 40_000, "2026-09-20"),
                         _insider("ZZZ.AX", "2026-09-15|Bo West", 120_000, "2026-09-20"),
@@ -1456,18 +1535,191 @@ class GateTests(unittest.TestCase):
         zzz = [row for row in leads if row["ticker"] == "ZZZ.AX"]
         self.assertEqual(len(mina), 1)
         self.assertEqual(mina[0]["significance_novelty"], "first")
-        self.assertIn("175000", mina[0]["summary"])
+        self.assertIn("A$175,000", mina[0]["summary"])
         self.assertEqual(mina[0]["figures"], 3)
         self.assertNotIn("MIN.AX", routine)
         self.assertEqual(len(zzz), 2)
         summed = [row for row in zzz if "lots totalling" in (row["summary"] or "")]
         other = [row for row in zzz if "lots totalling" not in (row["summary"] or "")]
         self.assertEqual(len(summed), 1)
-        self.assertIn("120000", summed[0]["summary"])
+        self.assertIn("$120,000", summed[0]["summary"])
         self.assertEqual(summed[0]["figures"], 2)
         self.assertEqual(other[0]["figures"], 1)
         self.assertIn("Bo West", other[0]["summary"])
         self.assertTrue(all(row["significance_novelty"] == "routine" for row in zzz))
+
+    def test_growth_numbers_are_quoted_and_outrank_a_small_stake(self):
+        phrase = "Jun-Aug 2026 $28.5B vs Jun-Aug 2025 $8.5B, +235%"
+        backlog = "Apr-Jun 2026 $176B vs Jan-Mar 2026 $80B, +120%"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "capex",
+                    "2026-10-12T14:30:52Z",
+                    [
+                        _figure("ORCL", "Oracle", "quarter", "2026-06-01/2026-08-31", 28_500_000_000),
+                        _figure("ORCL", "Oracle", "quarter", "2025-06-01/2025-08-31", 8_500_000_000),
+                        *_caps("ORCL", "PET"),
+                    ],
+                )
+                save_run(
+                    conn,
+                    "orders-backlog",
+                    "2026-10-12T14:31:00Z",
+                    [
+                        _orders("BIG", "quarter", "2026-04-01/2026-06-30", 176_000_000_000),
+                        _orders("BIG", "quarter", "2026-01-01/2026-03-31", 80_000_000_000),
+                    ],
+                )
+                save_run(
+                    conn,
+                    "accumulation",
+                    "2026-10-12T14:34:00Z",
+                    [
+                        _stake("PET", 6.4),
+                    ],
+                )
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            conn = connect(path)
+            try:
+                ranks = {
+                    row["ticker"]: row["rank"]
+                    for row in conn.execute(
+                        """
+                        SELECT l.ticker, k.rank, k.rationale
+                        FROM rankings AS k
+                        JOIN leads AS l ON l.lead_id = k.lead_id
+                        """
+                    )
+                }
+                evidence = {
+                    (row["ticker"], row["name"]): row["evidence"]
+                    for row in conn.execute(
+                        """
+                        SELECT l.ticker, c.name, r.evidence
+                        FROM lead_criteria_results AS r
+                        JOIN rubric_criteria AS c ON c.criterion_id = r.criterion_id
+                        JOIN leads AS l ON l.lead_id = r.lead_id
+                        """
+                    )
+                }
+                theses = {
+                    row["ticker"]: row["thesis_text"]
+                    for row in conn.execute(
+                        """
+                        SELECT l.ticker, t.thesis_text
+                        FROM leads AS l
+                        JOIN theses AS t ON t.lead_id = l.lead_id
+                        """
+                    )
+                }
+            finally:
+                conn.close()
+        self.assertEqual(evidence[("ORCL", "capex_growth_yoy")], phrase)
+        self.assertIn(phrase, theses["ORCL"])
+        self.assertEqual(evidence[("BIG", "backlog_qoq_growth")], backlog)
+        self.assertIn(backlog, theses["BIG"])
+        self.assertLess(ranks["ORCL"], ranks["PET"])
+        self.assertLess(ranks["BIG"], ranks["PET"])
+
+    def test_quarter_growth_sets_novelty_and_on_time_is_not_an_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "capex",
+                    "2026-10-12T14:30:52Z",
+                    [
+                        _figure("FAST", "Fast Co", "quarter", "2026-04-01/2026-06-30", 16_800_000_000),
+                        _figure("FAST", "Fast Co", "quarter", "2025-04-01/2025-06-30", 10_000_000_000),
+                        _figure("SLOW", "Slow Co", "quarter", "2026-04-01/2026-06-30", 11_200_000_000),
+                        _figure("SLOW", "Slow Co", "quarter", "2025-04-01/2025-06-30", 10_000_000_000),
+                        *_caps("FAST", "SLOW"),
+                    ],
+                )
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            conn = connect(path)
+            try:
+                leads = {
+                    row["ticker"]: row
+                    for row in conn.execute(
+                        """
+                        SELECT l.ticker, l.significance_novelty, l.significance_timing,
+                               r.assumptions_that_fail
+                        FROM leads AS l
+                        JOIN theses AS t ON t.lead_id = l.lead_id
+                        JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
+                        """
+                    )
+                }
+                rejected = {
+                    row["ticker"]
+                    for row in conn.execute(
+                        """
+                        SELECT ticker FROM lead_rejects
+                        WHERE rejection_stage = 'llm'
+                          AND (reason LIKE '%novelty routine%' OR reason LIKE '%timing on_time%')
+                        """
+                    )
+                }
+            finally:
+                conn.close()
+        self.assertEqual(leads["FAST"]["significance_novelty"], "first")
+        self.assertEqual(leads["FAST"]["significance_timing"], "on_time")
+        self.assertNotIn("novelty routine", leads["FAST"]["assumptions_that_fail"])
+        self.assertNotIn("timing on_time", leads["FAST"]["assumptions_that_fail"])
+        self.assertEqual(leads["SLOW"]["significance_novelty"], "routine")
+        self.assertEqual(leads["SLOW"]["significance_timing"], "on_time")
+        self.assertIn("novelty routine", leads["SLOW"]["assumptions_that_fail"])
+        self.assertNotIn("timing on_time", leads["SLOW"]["assumptions_that_fail"])
+        self.assertNotIn("FAST", rejected)
+        self.assertNotIn("SLOW", rejected)
+
+    def test_unknown_market_cap_does_not_pass_raise_vs_company(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "debt-raise",
+                    "2026-10-12T14:33:00Z",
+                    [_debt("DEBT", "bond", 400_000_000)],
+                )
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            conn = connect(path)
+            try:
+                grade = conn.execute(
+                    """
+                    SELECT r.passed, r.evidence, t.thesis_text, v.assumptions_that_fail, v.surviving_issues
+                    FROM leads AS l
+                    JOIN lead_criteria_results AS r ON r.lead_id = l.lead_id
+                    JOIN rubric_criteria AS c ON c.criterion_id = r.criterion_id
+                    JOIN theses AS t ON t.lead_id = l.lead_id
+                    JOIN praetorian_reviews AS v ON v.thesis_id = t.thesis_id
+                    WHERE l.ticker = 'DEBT' AND c.name = 'raise_vs_company'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+        self.assertIsNotNone(grade)
+        self.assertEqual(grade["passed"], 0)
+        self.assertEqual(grade["evidence"], "market cap unverified")
+        self.assertIn("raise_vs_company: fail. market cap unverified", grade["thesis_text"])
+        self.assertNotIn("raise_vs_company: pass", grade["thesis_text"])
+        self.assertIn("market cap unverified", grade["assumptions_that_fail"])
+        self.assertGreaterEqual(grade["surviving_issues"], 1)
 
 
 class _FailMarketCap(StubProvider):
@@ -1570,7 +1822,7 @@ def _price(
     }
 
 
-def _insider(ticker, period, value, announced_on, seen_at=None):
+def _insider(ticker, period, value, announced_on, seen_at=None, currency="USD"):
     row = _figure(
         ticker,
         ticker,
@@ -1581,6 +1833,20 @@ def _insider(ticker, period, value, announced_on, seen_at=None):
         seen_at=seen_at or announced_on,
     )
     row["figure_type"] = "insider_purchase"
+    row["currency"] = currency
+    return row
+
+
+def _stake(ticker, value):
+    row = _figure(
+        ticker,
+        ticker,
+        "SC 13D",
+        "2026-10-01|0001234567-26-000009|Northwind Capital",
+        value,
+        value_text=f"{value:g}%",
+    )
+    row["figure_type"] = "substantial_holding"
     return row
 
 

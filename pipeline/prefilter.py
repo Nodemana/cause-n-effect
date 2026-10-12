@@ -17,6 +17,7 @@ from pipeline.load import (
 )
 from pipeline.marketcap import criterion_threshold, resolve_market_cap
 from pipeline.names import normalise_name
+from shared.money import format_money
 
 # Rubric and scout defaults the figures can support without a market-cap feed.
 # Debt uses the scout's minimum deal size. Insider dollars, stake percent,
@@ -210,39 +211,41 @@ def prefilter(conn, figures, limit=None, now=None):
     return kept, rejects, used
 
 
-def interesting(rating):
+def interesting(rating, *, ignore_on_time=False):
     """A lead is emitted when the rating is not rejected.
 
     One routine novelty, or one on_time timing, still emits the lead.
     Two failed ratings reject it, and so does a hard failure on its own.
+    Quarter-end capex and backlog pass ignore_on_time, so that band is not a failure.
     """
-    return failure_reason(rating) is None
+    return failure_reason(rating, ignore_on_time=ignore_on_time) is None
 
 
-def failure_reason(rating):
+def failure_reason(rating, *, ignore_on_time=False):
     """Why the rating is rejected, or None when the lead survives.
 
     magnitude small, attention noticed, and timing late reject on their own.
     novelty routine and timing on_time are surviving issues when exactly one
     rating fails. Two or more failed ratings reject, including routine together
-    with on_time.
+    with on_time. For a quarter-end capex or backlog figure, on_time is not
+    an issue at all.
     """
-    hard, soft = _split_rating(rating)
+    hard, soft = _split_rating(rating, ignore_on_time=ignore_on_time)
     failed = hard + soft
     if hard or len(failed) >= 2:
         return "; ".join(failed)
     return None
 
 
-def surviving_issue(rating):
+def surviving_issue(rating, *, ignore_on_time=False):
     """The one soft failure that stays on the lead, or None when nothing does."""
-    hard, soft = _split_rating(rating)
+    hard, soft = _split_rating(rating, ignore_on_time=ignore_on_time)
     if hard or len(soft) != 1:
         return None
     return soft[0]
 
 
-def _split_rating(rating):
+def _split_rating(rating, ignore_on_time=False):
     if rating is None or not rating.complete():
         return ["significance response was incomplete"], []
     hard = []
@@ -256,7 +259,8 @@ def _split_rating(rating):
     if rating.attention != "unnoticed":
         hard.append(_rating_problem("attention", rating.attention, rating.attention_rationale))
     if rating.timing == "on_time":
-        soft.append(_rating_problem("timing", rating.timing, rating.timing_rationale))
+        if not ignore_on_time:
+            soft.append(_rating_problem("timing", rating.timing, rating.timing_rationale))
     elif rating.timing != "early":
         hard.append(_rating_problem("timing", rating.timing, rating.timing_rationale))
     return hard, soft
@@ -596,17 +600,69 @@ def _growth_reason(conn, figure, lead_type):
     if best is None and lead_type == "capex":
         pair = _trailing_yoy(rows, end)
         if pair is not None:
-            current, prior = pair
-            growth = 100.0 * (current - prior) / abs(prior)
+            current_value, current_period, prior_value, prior_period = pair
+            growth = 100.0 * (current_value - prior_value) / abs(prior_value)
+            _remember_growth(figure, current_period, current_value, prior_period, prior_value, growth)
             if growth < need:
                 return f"below {label} threshold {need:g} percent", True
             return None, True
     if best is None:
         return None, False
-    growth = 100.0 * (figure.value - best) / abs(best)
+    prior_value, prior_period = best
+    growth = 100.0 * (figure.value - prior_value) / abs(prior_value)
+    _remember_growth(figure, figure.period, figure.value, prior_period, prior_value, growth)
     if growth < need:
         return f"below {label} threshold {need:g} percent", True
     return None, True
+
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_PERIOD_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _remember_growth(figure, current_period, current_value, prior_period, prior_value, growth):
+    """Keep the comparison the criteria line and the thesis both quote."""
+    figure.growth_pct = growth
+    figure.growth_text = _growth_sentence(
+        current_period,
+        current_value,
+        prior_period,
+        prior_value,
+        growth,
+        figure.currency,
+    )
+
+
+def _growth_sentence(current_period, current_value, prior_period, prior_value, growth, currency):
+    pct = int(round(growth))
+    sign = "+" if pct > 0 else ""
+    return (
+        f"{_period_label(current_period)} {format_money(current_value, currency)} vs "
+        f"{_period_label(prior_period)} {format_money(prior_value, currency)}, {sign}{pct}%"
+    )
+
+
+def _period_label(period):
+    """Jun-Aug 2026 for a same-year span. A single end date is Jun 2026."""
+    text = period or ""
+    found = _PERIOD_DATE.findall(text)
+    if "|" in text and "/" not in text:
+        found = found[:1]
+    if not found:
+        return text or "period"
+    try:
+        dates = [date.fromisoformat(item) for item in found]
+    except ValueError:
+        return text
+    if len(dates) >= 2:
+        start, end = dates[0], dates[-1]
+        if start.year == end.year and start.month != end.month:
+            return f"{_MONTHS[start.month - 1]}-{_MONTHS[end.month - 1]} {end.year}"
+        if start.year != end.year:
+            return f"{_MONTHS[start.month - 1]} {start.year}-{_MONTHS[end.month - 1]} {end.year}"
+        return f"{_MONTHS[end.month - 1]} {end.year}"
+    end = dates[-1]
+    return f"{_MONTHS[end.month - 1]} {end.year}"
 
 
 def _pick_prior(rows, lead_type, end, span, windows, require_span):
@@ -630,10 +686,10 @@ def _pick_prior(rows, lead_type, end, span, windows, require_span):
             # A prior quarter outranks a year-ago row when both exist.
             rank = (0 if target < 200 else 1, abs(days - target))
             if best is None or rank < best[0]:
-                best = (rank, row["value"])
+                best = (rank, row["value"], row["period"])
     if best is None:
         return None
-    return best[1]
+    return best[1], best[2]
 
 
 def _growth_family(row, lead_type):
@@ -659,30 +715,30 @@ def _trailing_yoy(rows, end):
         prior_end = period_end(row["period"])
         if prior_end is None or row["value"] in (None, 0):
             continue
-        totals.append((prior_end, row["value"]))
+        totals.append((prior_end, row["value"], row["period"]))
     current = None
-    for prior_end, value in totals:
+    for prior_end, value, period in totals:
         gap = (end - prior_end).days
         if not (-15 <= gap <= 45):
             continue
         rank = abs(gap)
         if current is None or rank < current[0]:
-            current = (rank, prior_end, value)
+            current = (rank, prior_end, value, period)
     if current is None:
         return None
-    _, current_end, current_value = current
+    _, current_end, current_value, current_period = current
     prior = None
     low, high, target = YOY_WINDOW
-    for prior_end, value in totals:
+    for prior_end, value, period in totals:
         days = (current_end - prior_end).days
         if not (low <= days <= high):
             continue
         rank = abs(days - target)
         if prior is None or rank < prior[0]:
-            prior = (rank, value)
+            prior = (rank, value, period)
     if prior is None:
         return None
-    return current_value, prior[1]
+    return current_value, current_period, prior[1], prior[2]
 
 
 def _is_trailing_twelve(row):
@@ -749,7 +805,7 @@ def _aggregate_insider_lots(classified):
         primary = min(lots, key=_lot_keep_rank)
         total = sum(lot.value or 0 for lot in lots)
         primary.value = total
-        primary.value_text = f"{len(lots)} lots totalling {total:g}"
+        primary.value_text = f"{len(lots)} lots totalling {format_money(total, primary.currency)}"
         primary.aggregated_ids = [lot.figure_id for lot in lots if lot.figure_id != primary.figure_id]
         kept.append((primary, "insider_buying"))
     return kept
