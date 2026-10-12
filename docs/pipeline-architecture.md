@@ -10,7 +10,7 @@ Today `shared/schema.sql` stores `runs` and `figures`, plus a small `leads` tabl
 
 ## Flow
 
-Scouts are the cheap filter. Centurions are the expensive research. A scout's existing code pulls and parses, deterministic thresholds and a dedupe run first, and a small per-run token budget then judges the shortlist. Only a lead that survives is lodged. Scouts do not merge. Each surviving lead goes to one Centurion, which writes one thesis. The Legate then merges theses the research shows are linked, and each merge goes back to one Centurion as a single new lead for a fresh pass. Praetorians critique the final theses. The Legate ranks that set. The ranked list is what reaches the Imperator.
+Scouts are the cheap filter. Centurions are the expensive research. A scout's existing code pulls and parses, deterministic thresholds and a dedupe run first, and a small per-run token budget then judges the shortlist. Only a lead that survives is lodged. Scouts do not merge. Each surviving lead goes to one Centurion, which writes one thesis. After those individual theses exist, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis. The Legate ranks that set. The ranked list is what reaches the Imperator.
 
 ```mermaid
 flowchart TD
@@ -25,8 +25,8 @@ flowchart TD
   ASSIGN[Legate: filter and assign, one lead each]
   CEN1[Centurions: one thesis per lead]
   MERGE[Legate: merge theses on research evidence]
-  CEN2[Centurion: fresh pass on the merged lead]
-  PRA[Praetorians: critique final theses]
+  CEN2[Centurion: second, fresh full pass]
+  PRA[Praetorians: critique]
   RANK[Legate: rank]
   IMP[Imperator]
 
@@ -39,9 +39,9 @@ flowchart TD
   ASSIGN -->|one lead each| CEN1
   CEN1 -->|individual thesis| DB
   DB --> MERGE
-  MERGE -->|one new lead| CEN2
-  MERGE -->|unmerged theses| PRA
-  CEN2 -->|merged-lead thesis| PRA
+  MERGE -->|merged only| CEN2
+  MERGE -->|not merged| PRA
+  CEN2 -->|second-pass thesis| PRA
   PRA -->|critique| DB
   DB --> RANK
   RANK -->|ranked list| IMP
@@ -49,7 +49,7 @@ flowchart TD
   DB -->|later scout hit near a position| ASSIGN
 ```
 
-Research, the return pass, the critiques, and the ranking stay inside the run. The Imperator sees the ranked list, then records an action. A later scout hit near a position the Imperator already took comes back as an update on that position. It is a new lead, not a merge into the open position.
+Research, the second pass, the critiques, and the ranking stay inside the run. The Imperator sees the ranked list, then records an action. A later scout hit near a position the Imperator already took comes back as an update on that position. It is a new lead, not a merge into the open position.
 
 ## Scouts
 
@@ -92,6 +92,8 @@ Adding `lead_rejects`, `lead_reject_counterparties`, and the eight significance 
 
 A new row starts at status `fresh`. The scout does not merge it with another lead, does not rank it against other lead types, and does not write a thesis.
 
+A lead that is stored goes to one Centurion, which writes one individual thesis. After the Centurions write those theses, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis.
+
 ## Assign
 
 The Legate is the Portfolio Manager agent. After the scouts finish, it assigns fresh leads. This step does not merge.
@@ -119,11 +121,11 @@ The merge to prioritise is cross-company capex-to-backlog. A capex thesis that s
 
 A merge rests on the Centurions' researched findings, not on the raw scout rows. It needs traceable official-source evidence that links the two: the buyer's capex filing names the supplier, the supplier's filing names the customer or contract, or another official-source link the research cites. A sector match is not enough. That evidence is stored in `legate_merges.rationale`. `survivor_lead_id` is the combined lead. Constituent ids are rows in `legate_merge_leads`.
 
-Each merged finding goes back to one Centurion as a single new lead. That Centurion runs a fresh full pass: grade, thesis, potential ROI, risks, timeframe, and stated assumptions. The rules files for the constituent types are the grading criteria. The output is one thesis. Leads that were not merged keep the thesis from the first pass. Those unmerged theses, plus the new merged-lead theses, are the final set.
+Only a merged finding goes back to one Centurion as a single new lead. That Centurion runs a second, fresh full thesis pass: grade, thesis, potential ROI, risks, timeframe, and stated assumptions. The rules files for the constituent types are the grading criteria. The output is one thesis. A lead that was not merged gets no second pass and keeps the thesis from the first pass. That unmerged thesis goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after its second-pass thesis.
 
 ## Praetorians
 
-Praetorians are ephemeral agents. Their only job is critique. They read each final thesis: an individual thesis the Legate did not merge, or the new thesis from the return pass. They attack the stated assumptions, weak or non-official sources, and conclusions, with counter-evidence. They do not write an assumptions list of their own, and they do not merge or rank.
+Praetorians are ephemeral agents. Their only job is critique. A thesis the Legate does not merge gets no second pass and comes straight from the first thesis. A merged finding comes only after its second-pass thesis. They attack the stated assumptions, weak or non-official sources, and conclusions, with counter-evidence. They do not write an assumptions list of their own, and they do not merge or rank.
 
 Each pass is a row in `critiques`. The thesis that leaves this step is one the Legate may rank.
 
@@ -133,7 +135,7 @@ After the critiques, the Legate ranks the final theses. Rank 1 has the fewest su
 
 ## Outcome
 
-`outcome` is a separate column on `leads`. It stays empty through research, the return pass, critique, and ranking. The Imperator fills it only after acting on a lead. Monitoring then writes the later comparison of live brokerage performance against the thesis into that same field. A high quality score and a later outcome are different facts: one was true when the thesis was written, the other records what happened after he acted.
+`outcome` is a separate column on `leads`. It stays empty through research, the second pass, critique, and ranking. The Imperator fills it only after acting on a lead. Monitoring then writes the later comparison of live brokerage performance against the thesis into that same field. A high quality score and a later outcome are different facts: one was true when the thesis was written, the other records what happened after he acted.
 
 Acting on a lead means the Imperator has taken a position in his brokerage account. The Legate reads that portfolio and does not place orders. No account identifiers are stored in this repo. Pending stays `presented` until he answers. Acted on becomes `acted`, and stays `position` while the holding is open. Not acted on becomes `rejected`. A later lead about an open holding sets `parent_position_id` to that `acted` or `position` row. When the holding is no longer open, status moves to `closed`.
 
@@ -280,5 +282,5 @@ Beyond the sketch:
 - `lead_criteria_results` stores `passed`, `evidence`, `source_url`, and `assessed_by` (a `runs.run_id`).
 - `theses` stores the Centurion `run_id`, `thesis_text`, `risks`, and `quality_score`. One row is one lead's thesis.
 - `critiques` stores the Praetorian `run_id`, `critique`, `verdict` (`revise`, `accept`, or `reject`), and `round`.
-- `legate_merges` stores the rationale, `priority_rank`, and `bias_audit`. `rationale` is the official-source evidence from the Centurions' research that links the two theses. The row is written when the Legate merges, after the individual theses and before Praetorian critique. Constituent lead ids are rows in `legate_merge_leads`.
+- `legate_merges` stores the rationale, `priority_rank`, and `bias_audit`. `rationale` is the official-source evidence from the Centurions' research that links the two theses. The row is written when the Legate merges, after the individual theses and before Praetorian critique. Only that merged finding goes back to a Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians. The merged finding goes to the Praetorians after its second-pass thesis. Constituent lead ids are rows in `legate_merge_leads`.
 - Significance on `leads`, plus `lead_rejects` and `lead_reject_counterparties`, is specified above and is not applied yet. A later migration adds the eight significance columns and the two reject tables, including the ticker and counterparty indexes.

@@ -1,6 +1,6 @@
 # Praetorians
 
-Praetorians critique the final theses, and that is their only job. Those theses are the individual theses the Legate did not merge, plus the new thesis a Centurion wrote on the return pass for a merged lead. Critique comes after that return pass and before the Legate ranks.
+Praetorians critique theses, and that is their only job. After the Centurions write individual theses, the Legate merges linked theses. A thesis the Legate does not merge gets no second pass and comes straight here from that first thesis. A merged finding comes here only after a Centurion writes a second, fresh full thesis on that merged lead. Critique comes before the Legate ranks.
 
 They receive the Centurion's output: the recommendation (where to put the money, the expected return, the risks, and the timeframe) and the stated assumptions. They have no assumptions section. The assumptions under attack are the Centurion's.
 

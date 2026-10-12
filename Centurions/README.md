@@ -30,19 +30,19 @@ Path: `Centurions/rules/<lead_type>.md` (for example `Centurions/rules/capex.md`
 4. Instructions to estimate the timeframe: how long the thesis should take to play out.
 5. Instructions to set out the risks.
 6. Instructions to close with one recommendation and a full list of assumptions.
-7. Instructions for a return pass: if this lead is the single new lead the Legate formed from a merge, still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list.
+7. Instructions for a second pass: if this lead is the single new lead the Legate formed from a merge, still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged is not sent back.
 
 Figures come only from official sources: SEC filings, ASX announcements, and company releases.
 
-## Return pass
+## Second pass
 
 Merging happens only at the Legate, after the individual theses exist, and only when the research shows a link. The merge to prioritise is cross-company capex-to-backlog: the buyer's capex thesis with a different company's orders_backlog thesis. Same-company merges of supportive theses are allowed. The link has to be traceable official-source evidence from that research, stored in `legate_merges.rationale`. A sector match is not enough. The Centurion does not make that merge.
 
-The Legate then sends each merged finding back as one new lead. One Centurion runs a fresh full pass on that lead alone: grade, thesis, potential ROI, risks, timeframe, and stated assumptions. The rules files for the constituent lead types are the grading criteria for that one lead. The output is still one thesis.
+Only a merged finding comes back, as one new lead, for a second, fresh full thesis pass: grade, thesis, potential ROI, risks, timeframe, and stated assumptions. The rules files for the constituent lead types are the grading criteria for that one lead. The output is still one thesis. A lead the Legate does not merge gets no second pass and goes straight to the Praetorians for critique. The merged finding goes to the Praetorians after this second-pass thesis.
 
 ## Job
 
-1. Grade this lead against the criteria in its rules file. On a return pass, grade each constituent type's criteria once.
+1. Grade this lead against the criteria in its rules file. On a second pass, grade each constituent type's criteria once.
 2. Research and write the investment thesis, including the potential ROI.
 3. Estimate the timeframe.
 4. Set out the risks.
@@ -58,7 +58,7 @@ The recommendation is the conclusion. It answers:
 - the risks
 - how long it will take
 
-It is a recommendation for the Imperator. He places the trades himself. The final thesis, recommendation plus assumptions, goes to the Praetorians. They critique unmerged individual theses and the new theses from the return pass. The Legate ranks after that critique.
+It is a recommendation for the Imperator. He places the trades himself. The final thesis, recommendation plus assumptions, goes to the Praetorians. An unmerged thesis goes straight there after the first pass and gets no second pass. A merged finding goes there after this second-pass thesis. The Legate ranks after that critique.
 
 ## Assumptions
 
@@ -102,7 +102,7 @@ List every assumption made while researching and forming the thesis.
 
 Figures only from SEC filings, ASX announcements, and company releases.
 
-If this lead is the single new lead from a Legate merge, still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list.
+If this lead is the single new lead from a Legate merge, this is the second, fresh full pass: still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged does not reach this pass.
 ```
 
 ## Expected output

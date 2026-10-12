@@ -29,6 +29,8 @@ Each emitted lead stores a short label and a one-line reason on four dimensions.
 
 A candidate that fails is not a lead. It is a row in `lead_rejects`: scout `debt_raise`, ticker, CIK when known, filing date, source URL, accession, `rejection_stage` (`deterministic` or `llm`), and the reason. A named vendor the proceeds pay is a child row in `lead_reject_counterparties` with role `supplier`, a normalised name, and a ticker where it resolves. Search by the issuer ticker, or by that counterparty, is the look-back when a name was dropped. Adding `lead_rejects`, `lead_reject_counterparties`, and the significance columns on `leads` is a follow-up migration.
 
+A lead that is stored goes to one Centurion, which writes one individual thesis. After the Centurions write those theses, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis.
+
 ## Constraints and limitations
 
 Raising the threshold leaves mid-band scores on the cheap filter, so those raises are never read in full. The ASX feed is undocumented, returns only the latest five announcements per company (enough for a weekly run), and is health-checked. This is a spotter for specific uses of proceeds, not a list of every borrowing. Earnings-call transcripts are not a source.

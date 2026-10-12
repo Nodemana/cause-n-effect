@@ -29,6 +29,8 @@ Each emitted lead stores a short label and a one-line reason on four dimensions.
 
 A candidate that fails is not a lead. It is a row in `lead_rejects`: scout `orders_backlog`, ticker, CIK when known, filing date, source URL, accession, `rejection_stage` (`deterministic` or `llm`), and the reason. A named customer on a backlog row is role `customer`. A named buyer on a supplier order is role `buyer`. Both go to `lead_reject_counterparties` with a normalised name and a ticker where it resolves. A search for buyer `AMZN` is the look-back when a supplier's stock later jumps on that spend. Adding `lead_rejects`, `lead_reject_counterparties`, and the significance columns on `leads` is a follow-up migration.
 
+A lead that is stored goes to one Centurion, which writes one individual thesis. After the Centurions write those theses, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis.
+
 ## Constraints and limitations
 
 SEC XBRL tagged numbers cover reported actuals only. They miss untagged figures and guidance, so full-text search and release text are needed. Supplier order books are rarely public in full, so this is a spotter's signal, not a ledger. The backlog side only covers defence, industrials, and chip equipment. The ASX feed is undocumented, returns only the latest five announcements per company (enough for a weekly run), and is health-checked.

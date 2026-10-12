@@ -29,6 +29,8 @@ Each emitted lead stores a short label and a one-line reason on four dimensions.
 
 A candidate that fails is not a lead. It is a row in `lead_rejects`: scout `capex`, ticker, CIK when known, filing date, source URL, accession, `rejection_stage` (`deterministic` or `llm`), and the reason. Suppliers named in the source are child rows in `lead_reject_counterparties` with role `supplier`, a normalised name, and a ticker where it resolves. That is how a later search finds a reject that named a supplier, or finds every reject whose counterparty is a given buyer. Adding `lead_rejects`, `lead_reject_counterparties`, and the significance columns on `leads` is a follow-up migration.
 
+A lead that is stored goes to one Centurion, which writes one individual thesis. After the Centurions write those theses, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis.
+
 ## Constraints and limitations
 
 SEC XBRL tagged numbers cover reported actuals only and miss untagged figures and guidance, so full-text search and release text are needed. Cash-flow tags are often year-to-date, and a single quarter is derived only when the prior span in that year is present. Tags change over time. The ASX feed is undocumented, returns only the latest five announcements per company (enough for a weekly run), and is health-checked. Supplier order books are not read here.
