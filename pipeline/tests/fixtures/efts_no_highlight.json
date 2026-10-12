@@ -1,0 +1,36 @@
+{
+  "took": 18,
+  "timed_out": false,
+  "_shards": {"total": 50, "successful": 50, "skipped": 0, "failed": 0},
+  "hits": {
+    "total": {"value": 1, "relation": "eq"},
+    "max_score": 6.2,
+    "hits": [
+      {
+        "_index": "edgar_file",
+        "_id": "0000999001-26-000031:dana-8k.htm",
+        "_score": 6.2,
+        "_source": {
+          "ciks": ["0000999001"],
+          "period_ending": "2026-06-30",
+          "file_num": ["001-35992"],
+          "display_names": ["ORACLE CORP  (ORCL)  (CIK 0000999001)"],
+          "xsl": null,
+          "sequence": 1,
+          "root_forms": ["8-K"],
+          "file_date": "2026-08-20",
+          "biz_states": ["TX"],
+          "sics": ["7372"],
+          "form": "8-K",
+          "adsh": "0000999001-26-000031",
+          "film_num": ["26111111"],
+          "biz_locations": ["Austin, TX"],
+          "file_type": "8-K",
+          "file_description": "8-K",
+          "inc_states": ["DE"],
+          "items": ["1.01"]
+        }
+      }
+    ]
+  }
+}

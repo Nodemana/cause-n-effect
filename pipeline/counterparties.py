@@ -8,17 +8,25 @@ and the other way around.
 
 A name is kept only when it matches a known SEC registrant in
 company_tickers.json or it ends in a company suffix, and it is not a
-heading or a common word. A match is stored under the registrant's title
+heading or a common word. Incorporated, Corporation, Company, and Limited
+fold to Inc, Corp, Co, and Ltd before that match, so "Dana Incorporated"
+hits the title "DANA INC". A match is stored under the registrant's title
 and ticker. The caller passes a sec_client(); the User-Agent is that
 client's, built from SEC_CONTACT_EMAIL. This module never logs the
-address. company_tickers.json is fetched once per enrich_leads call. A
-submissions, full-text, index, or document error drops every party for
-that company.
+address. company_tickers.json is fetched once per enrich_leads call.
+
+Full-text hits carry _source metadata and no highlight. Each hit's
+document is fetched from _id "adsh:filename" and read as filing text.
+Those fetches share one per-sweep cap and stay at or under 10 requests
+per second. A cross-reference hit is the link by itself: the matched
+company is recorded without parsing that hit's prose. A submissions,
+full-text, index, or document error drops every party for that company.
 """
 
 import html
 import logging
 import re
+import time
 import urllib.parse
 from datetime import date, timedelta
 
@@ -36,6 +44,10 @@ LOOKBACK_DAYS = 540
 _PARTY_CAP = 8
 _EIGHT_K_LIMIT = 3
 _EX10_LIMIT = 4
+# Full-text hits have no highlight, so each one becomes a document fetch.
+# The cap is for the whole enrich_leads call. 0.1s is SEC's 10 requests/second.
+FTS_DOCUMENT_CAP = 24
+FTS_MIN_INTERVAL = 0.1
 
 CAPEX_8K_ITEMS = frozenset({"1.01", "8.01"})
 BACKLOG_8K_ITEMS = frozenset({"1.01", "8.01"})
@@ -51,21 +63,30 @@ _EX10 = re.compile(r"(?i)(?:ex[-_]?10|exhibit[-_]?10)")
 _WORD = r"(?:N\.V\.|S\.A\.|[A-Z][A-Za-z0-9&'’–-]*)"
 _NAME_CORE = rf"{_WORD}(?:[ \t]+{_WORD}){{0,5}}"
 _NAME = rf"({_NAME_CORE})"
+_COMPANY_AND = r"(?:(?i:the\s+company\s+and\s+))?"
+_AND_NAME = r"(?:(?i:\s+and\s+)" + _NAME + r")?"
 _AGREEMENT = re.compile(r"(?i:\bagreement\s+with\s+)" + _NAME)
 _CONTRACT = re.compile(r"(?i:\bcontract\s+with\s+)" + _NAME)
-_BETWEEN = re.compile(
-    r"(?i:\bby\s+and\s+between\s+)" + _NAME + r"(?i:\s+and\s+)" + _NAME
-)
-_ACCOUNTED = re.compile(
-    _NAME + r"(?i:\s+accounted\s+for\s+\d+(?:\.\d+)?\s*(?:%|percent)\s+of\b)"
-)
+_BETWEEN = re.compile(r"(?i:\bby\s+and\s+between\s+)" + _COMPANY_AND + _NAME + _AND_NAME)
+_APPROX = r"(?:(?:approximately|about|more\s+than|over|nearly|at\s+least)\s+)?"
+_PCT = _APPROX + r"\d+(?:\.\d+)?\s*(?:%|percent)"
+_PAREN = r"(?:\s+\([^)]{0,80}\))?"
+_AGREEMENT_BETWEEN = re.compile(r"(?i:\bagreement\s+between\s+)" + _COMPANY_AND + _NAME + _AND_NAME)
+_AMONG = re.compile(r"(?i:\bby\s+and\s+among\s+)" + _COMPANY_AND + _NAME + _AND_NAME + _AND_NAME)
+_ACCOUNTED = re.compile(_NAME + _PAREN + r"(?i:\s+accounted\s+for\s+)" + _PCT + r"(?i:\s+of\b)")
+_REPRESENTED = re.compile(_NAME + _PAREN + r"(?i:\s+represented\s+)" + _PCT + r"(?i:\s+of\b)")
+_SALES_TO = re.compile(r"(?i:\b(?:net\s+)?(?:sales|revenues?)\s+(?:to|from)\s+)" + _NAME)
 _LARGEST_AFTER = re.compile(
     r"(?i:\blargest\s+customer\b(?:\s*,)?(?:\s+(?:was|is|were))?\s+)" + _NAME
 )
 _LARGEST_BEFORE = re.compile(_NAME + r"(?i:,\s+(?:our|its|the)\s+largest\s+customer\b)")
+_LARGEST_INCLUDE = re.compile(
+    r"(?i:\blargest\s+customers?\s+(?:include|includes|included|are|were)\s+)" + _NAME
+)
 
 _SUFFIXES = {
     "inc",
+    "incorporated",
     "corp",
     "corporation",
     "ltd",
@@ -74,6 +95,17 @@ _SUFFIXES = {
     "plc",
     "ag",
     "co",
+    "company",
+}
+_SUFFIX_CANON = {
+    "incorporated": "inc",
+    "inc": "inc",
+    "corporation": "corp",
+    "corp": "corp",
+    "company": "co",
+    "co": "co",
+    "limited": "ltd",
+    "ltd": "ltd",
 }
 _DOTTED_SUFFIXES = {"nv", "sa"}
 _LEADING = {
@@ -267,6 +299,9 @@ def registrant_index(payload):
         full = normalise_name(title)
         if full and full not in by_name:
             by_name[full] = record
+        canon = _canon_key(title)
+        if canon and canon not in by_name:
+            by_name[canon] = record
         stripped = normalise_name(" ".join(_stem_tokens(title)))
         if stripped and stripped not in by_name:
             by_name[stripped] = record
@@ -368,6 +403,8 @@ def enrich_leads(leads, *, client=None, names=None, as_of=None):
         for group in groups.values():
             _log_closed(group)
         return
+    budget = _RequestBudget()
+    cache = {}
     for cik, group in groups.items():
         suppliers = any(lead.lead_type == "capex" for lead in group)
         customers = any(lead.lead_type == "orders_backlog" for lead in group)
@@ -383,6 +420,8 @@ def enrich_leads(leads, *, client=None, names=None, as_of=None):
                 registrants,
                 peers,
                 group,
+                budget,
+                cache,
             )
         except EndpointError:
             _log_closed(group)
@@ -462,7 +501,7 @@ def select_filings(payload, *, suppliers, customers, start, end):
     return chosen
 
 
-def _company_parties(client, cik, suppliers, customers, as_of, names, registrants, peers, group):
+def _company_parties(client, cik, suppliers, customers, as_of, names, registrants, peers, group, budget, cache):
     start, end = search_window(as_of)
     sub_url = submissions_url(cik)
     _require_sec(sub_url)
@@ -478,19 +517,21 @@ def _company_parties(client, cik, suppliers, customers, as_of, names, registrant
         else:
             mode = "contract"
         url = archive_document_url(cik, filing["accession"], filing["primary_document"])
-        _require_sec(url)
-        body, _content_type = client.get(url, accept="text/html,text/plain")
-        texts.append((url, _plain(body), mode))
+        texts.append((url, _cached_text(client, url, cache), mode))
         if "1.01" in filing["items"]:
             for exhibit in _exhibit_names(client, cik, filing["accession"], filing["primary_document"]):
                 exhibit_url = archive_document_url(cik, filing["accession"], exhibit)
-                _require_sec(exhibit_url)
-                exhibit_body, _content_type = client.get(exhibit_url, accept="text/html,text/plain")
-                texts.append((exhibit_url, _plain(exhibit_body), "contract"))
+                texts.append((exhibit_url, _cached_text(client, exhibit_url, cache), "contract"))
     if suppliers:
-        texts.extend((url, text, "contract") for url, text in _query_snippets(client, cik, CAPEX_QUERY, start, end))
+        texts.extend(
+            (url, text, "contract")
+            for url, text in _query_documents(client, cik, CAPEX_QUERY, start, end, cache, budget)
+        )
     if customers:
-        texts.extend((url, text, "both") for url, text in _query_snippets(client, cik, BACKLOG_QUERY, start, end))
+        texts.extend(
+            (url, text, "both")
+            for url, text in _query_documents(client, cik, BACKLOG_QUERY, start, end, cache, budget)
+        )
     found = _collect(texts, suppliers, customers, names, registrants, group)
     _add_cross_hits(client, cik, peers, suppliers, customers, start, end, names, registrants, group, found)
     return found["rows"]
@@ -536,6 +577,7 @@ def _add_cross_hits(client, cik, peers, suppliers, customers, start, end, names,
         else:
             continue
         page = _search_page(client, cik, _quoted(peer["query"]), start, end)
+        # The hit itself is the link. Do not download or parse the filing.
         url = _first_hit_url(cik, page)
         if not url:
             continue
@@ -574,8 +616,35 @@ def _add(found, role, party, url):
     )
 
 
-def _query_snippets(client, cik, query, start, end):
-    return _snippets(cik, _search_page(client, cik, query, start, end))
+def _query_documents(client, cik, query, start, end, cache, budget):
+    """Download each full-text hit. Hits have metadata only, no highlight."""
+    page = _search_page(client, cik, query, start, end)
+    hits = ((page.get("hits") or {}).get("hits")) or []
+    found = []
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        url = _hit_url(cik, hit)
+        if not url:
+            continue
+        if url not in cache and not budget.take():
+            break
+        text = _cached_text(client, url, cache, budget=None)
+        if text:
+            found.append((url, text))
+    return found
+
+
+def _cached_text(client, url, cache, budget=None):
+    if url in cache:
+        return cache[url]
+    if budget is not None and not budget.take():
+        return ""
+    _require_sec(url)
+    body, _content_type = client.get(url, accept="text/html,text/plain")
+    text = _plain(body)
+    cache[url] = text
+    return text
 
 
 def _search_page(client, cik, query, start, end):
@@ -598,44 +667,24 @@ def _raw_names(text, mode):
 
 def _contract_names(text):
     found = []
-    for pattern in (_AGREEMENT, _CONTRACT):
-        for match in pattern.finditer(text):
-            found.append(match.group(1))
-    for match in _BETWEEN.finditer(text):
-        found.append(match.group(1))
-        found.append(match.group(2))
+    for pattern in (_AGREEMENT, _CONTRACT, _AGREEMENT_BETWEEN, _BETWEEN, _AMONG):
+        found.extend(_groups(pattern, text))
     return found
 
 
 def _concentration_names(text):
     found = []
-    for pattern in (_ACCOUNTED, _LARGEST_AFTER, _LARGEST_BEFORE):
-        for match in pattern.finditer(text):
-            found.append(match.group(1))
+    for pattern in (_ACCOUNTED, _REPRESENTED, _SALES_TO, _LARGEST_AFTER, _LARGEST_BEFORE, _LARGEST_INCLUDE):
+        found.extend(_groups(pattern, text))
     return found
 
 
-def _snippets(cik, page):
-    hits = ((page.get("hits") or {}).get("hits")) or []
+def _groups(pattern, text):
     found = []
-    for hit in hits:
-        if not isinstance(hit, dict):
-            continue
-        url = _hit_url(cik, hit)
-        if not url:
-            continue
-        _require_sec(url)
-        chunks = []
-        highlight = hit.get("highlight") or {}
-        if isinstance(highlight, dict):
-            for value in highlight.values():
-                if isinstance(value, list):
-                    chunks.extend(str(item) for item in value)
-                elif isinstance(value, str):
-                    chunks.append(value)
-        text = _plain(" ".join(chunks))
-        if text:
-            found.append((url, text))
+    for match in pattern.finditer(text):
+        for group in match.groups():
+            if group:
+                found.append(group)
     return found
 
 
@@ -750,6 +799,9 @@ def _lookup_registrant(name, registrants):
     if not registrants:
         return None
     by_name = registrants.get("by_name") or {}
+    canon = _canon_key(name)
+    if canon and canon in by_name:
+        return by_name[canon]
     key = normalise_name(_core_text(name) or name)
     if key in by_name:
         return by_name[key]
@@ -831,6 +883,17 @@ def _stem_is_common(raw):
     return all(_fold_token(token) in _COMMON for token in tokens)
 
 
+def _canon_key(raw):
+    """Fold legal suffixes so 'Dana Incorporated' matches the title 'DANA INC'."""
+    parts = []
+    for token in (_core_text(raw) or "").split():
+        folded = _fold_token(token)
+        if not folded:
+            continue
+        parts.append(_SUFFIX_CANON.get(folded, folded))
+    return normalise_name(" ".join(parts))
+
+
 def _has_suffix(raw):
     tokens = (_core_text(raw) or "").split()
     return bool(tokens) and _is_suffix_token(tokens[-1])
@@ -883,6 +946,35 @@ def _at(recent, key, index):
 
 def _cik10(cik):
     return str(int(str(cik))).zfill(10)
+
+
+class _RequestBudget:
+    """Cap and pace full-text document fetches for one enrich_leads call.
+
+    SEC fair access is 10 requests per second. The first fetch in a sweep
+    is immediate. Each later fetch waits until 0.1s after the previous one.
+    """
+
+    def __init__(self, cap=None, interval=None, sleep=None, clock=None):
+        self.cap = FTS_DOCUMENT_CAP if cap is None else cap
+        self.interval = FTS_MIN_INTERVAL if interval is None else interval
+        self.used = 0
+        self._last = None
+        self._sleep = time.sleep if sleep is None else sleep
+        self._clock = time.monotonic if clock is None else clock
+
+    def take(self):
+        if self.used >= self.cap:
+            return False
+        now = self._clock()
+        if self._last is not None:
+            wait = self.interval - (now - self._last)
+            if wait > 0:
+                self._sleep(wait)
+                now = self._clock()
+        self._last = now
+        self.used += 1
+        return True
 
 
 def _require_sec(url):
