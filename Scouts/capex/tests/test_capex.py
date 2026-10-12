@@ -82,6 +82,79 @@ class CapexTests(unittest.TestCase):
         with self.assertRaises(fetcher.EndpointError):
             fetcher._require_sec("https://example.com/companyfacts")
 
+    def test_quarter_window_keeps_single_quarters_ahead_of_ytd_and_ttm(self):
+        """n=4 used to keep the latest ytd and ttm and drop the year-ago quarter."""
+        def row(start, end, value, form, fp):
+            return {
+                "start": start,
+                "end": end,
+                "val": value,
+                "accn": "0001018724-26-000001",
+                "fp": fp,
+                "form": form,
+                "filed": "2026-08-01",
+            }
+
+        payload = {
+            "facts": {
+                "us-gaap": {
+                    "PaymentsToAcquireProductiveAssets": {
+                        "units": {
+                            "USD": [
+                                row("2019-01-01", "2019-03-31", 1, "10-Q", "Q1"),
+                                row("2025-01-01", "2025-03-31", 10, "10-Q", "Q1"),
+                                row("2025-01-01", "2025-06-30", 25, "10-Q", "Q2"),
+                                row("2025-01-01", "2025-09-30", 40, "10-Q", "Q3"),
+                                row("2025-01-01", "2025-12-31", 60, "10-K", "FY"),
+                                row("2026-01-01", "2026-03-31", 12, "10-Q", "Q1"),
+                                row("2026-01-01", "2026-06-30", 30, "10-Q", "Q2"),
+                                row("2025-07-01", "2026-06-30", 80, "10-Q", "Q2"),
+                            ]
+                        }
+                    },
+                    "PropertyPlantAndEquipmentNet": {
+                        "units": {
+                            "USD": [
+                                {"end": "2025-12-31", "val": 1, "form": "10-K", "fp": "FY", "filed": "2026-02-01", "accn": "0001018724-26-000002"},
+                                {"end": "2026-03-31", "val": 2, "form": "10-Q", "fp": "Q1", "filed": "2026-05-01", "accn": "0001018724-26-000003"},
+                                {"end": "2026-06-30", "val": 3, "form": "10-Q", "fp": "Q2", "filed": "2026-08-01", "accn": "0001018724-26-000004"},
+                            ]
+                        }
+                    },
+                }
+            }
+        }
+        facts = fetcher.select_facts(payload, n=1, quarters=8, as_of=date(2026, 10, 12), ticker="AMZN")
+        ends = {item["row"]["end"] for item in facts if item["tag"] == "PaymentsToAcquireProductiveAssets"}
+        self.assertNotIn("2019-03-31", ends)
+        self.assertIn("2025-06-30", ends)
+        self.assertIn("2026-06-30", ends)
+        labels = {
+            (item["row"]["start"], item["row"]["end"]): item["period_label"]
+            for item in facts
+            if item["tag"] == "PaymentsToAcquireProductiveAssets"
+        }
+        self.assertEqual(labels[("2025-07-01", "2026-06-30")], "ttm")
+        self.assertEqual(labels[("2026-01-01", "2026-06-30")], "ytd")
+        ppe = [item for item in facts if item["tag"] == "PropertyPlantAndEquipmentNet"]
+        self.assertEqual([item["row"]["end"] for item in ppe], ["2026-06-30"])
+        figures = pipeline.figures_from_facts(
+            [{"ticker": "AMZN", "cik": "0001018724", "company": "AMAZON COM INC", "facts": facts}],
+            "2026-10-12",
+        )
+        quarters = {
+            row["period"]: row["value"]
+            for row in figures
+            if row["instrument"] == "quarter" and row["figure_type"] == "PaymentsToAcquireProductiveAssets"
+        }
+        self.assertGreaterEqual(len(quarters), 5)
+        self.assertEqual(quarters["2025-01-01/2025-03-31"], 10)
+        self.assertEqual(quarters["2025-04-01/2025-06-30"], 15)
+        self.assertEqual(quarters["2025-07-01/2025-09-30"], 15)
+        self.assertEqual(quarters["2025-10-01/2025-12-31"], 20)
+        self.assertEqual(quarters["2026-01-01/2026-03-31"], 12)
+        self.assertEqual(quarters["2026-04-01/2026-06-30"], 18)
+
     def test_stale_periods_are_dropped_and_quarters_are_derived(self):
         payload = json.loads((FIX / "companyfacts_amzn.json").read_text(encoding="utf-8"))
         rows = payload["facts"]["us-gaap"]["PaymentsToAcquireProductiveAssets"]["units"]["USD"]

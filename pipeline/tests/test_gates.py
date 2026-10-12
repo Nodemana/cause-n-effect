@@ -20,7 +20,14 @@ from pipeline.flow import run_pipeline  # noqa: E402
 from pipeline.llm import Completion, StubProvider  # noqa: E402
 from pipeline.load import _collapse_identical, event_date, load_latest_figures, period_span_days  # noqa: E402
 from pipeline.marketcap import resolve_market_cap  # noqa: E402
-from pipeline.prefilter import _period_age_days, extract_parties  # noqa: E402
+from pipeline.prefilter import (  # noqa: E402
+    Rating,
+    _period_age_days,
+    extract_parties,
+    failure_reason,
+    interesting,
+    surviving_issue,
+)
 from pipeline.prompts import praetorian_prompt  # noqa: E402
 from pipeline.store import search_rejects  # noqa: E402
 from shared.pipeline_store import connect  # noqa: E402
@@ -301,11 +308,29 @@ class GateTests(unittest.TestCase):
                         "SELECT ticker, rejection_stage, reason, significance_novelty, significance_timing FROM lead_rejects"
                     )
                 }
+                sim_llm = conn.execute(
+                    """
+                    SELECT reason FROM lead_rejects
+                    WHERE ticker = 'SIM' AND rejection_stage = 'llm'
+                    """
+                ).fetchall()
+                sim = conn.execute(
+                    """
+                    SELECT l.significance_novelty, l.significance_timing,
+                           r.assumptions_that_fail, r.surviving_issues
+                    FROM leads AS l
+                    JOIN theses AS t ON t.lead_id = l.lead_id
+                    JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
+                    WHERE l.ticker = 'SIM'
+                    """
+                ).fetchone()
             finally:
                 conn.close()
-        self.assertEqual(rows["SIM"]["rejection_stage"], "llm")
-        self.assertEqual(rows["SIM"]["significance_novelty"], "routine")
-        self.assertIn("novelty routine", rows["SIM"]["reason"])
+        self.assertEqual(sim_llm, [])
+        self.assertEqual(sim["significance_novelty"], "routine")
+        self.assertEqual(sim["significance_timing"], "early")
+        self.assertIn("novelty routine", sim["assumptions_that_fail"])
+        self.assertGreaterEqual(sim["surviving_issues"], 1)
         self.assertEqual(rows["OLD"]["rejection_stage"], "llm")
         self.assertEqual(rows["OLD"]["significance_timing"], "late")
         self.assertIn("timing late", rows["OLD"]["reason"])
@@ -636,6 +661,15 @@ class GateTests(unittest.TestCase):
                     """
                 ).fetchall()
                 leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
+                kept = conn.execute(
+                    """
+                    SELECT l.significance_timing, r.assumptions_that_fail, r.surviving_issues
+                    FROM leads AS l
+                    JOIN theses AS t ON t.lead_id = l.lead_id
+                    JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
+                    WHERE l.ticker = 'ONTIME'
+                    """
+                ).fetchone()
             finally:
                 conn.close()
         seen = [row for row in rejects if row["ticker"] == "SEEN" and "timing late" in (row["reason"] or "")]
@@ -643,16 +677,17 @@ class GateTests(unittest.TestCase):
         on_time = [row for row in rejects if row["ticker"] == "ONTIME" and "timing on_time" in (row["reason"] or "")]
         self.assertNotIn("SEEN", leads)
         self.assertNotIn("TRADE", leads)
-        self.assertNotIn("ONTIME", leads)
+        self.assertIn("ONTIME", leads)
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0]["significance_timing"], "late")
         self.assertEqual(len(trade), 1)
         self.assertEqual(trade[0]["significance_timing"], "late")
         self.assertIn("timing late", trade[0]["reason"])
         self.assertEqual(trade[0]["rejection_stage"], "llm")
-        self.assertEqual(len(on_time), 1)
-        self.assertEqual(on_time[0]["significance_timing"], "on_time")
-        self.assertEqual(on_time[0]["rejection_stage"], "llm")
+        self.assertEqual(on_time, [])
+        self.assertEqual(kept["significance_timing"], "on_time")
+        self.assertIn("timing on_time", kept["assumptions_that_fail"])
+        self.assertGreaterEqual(kept["surviving_issues"], 1)
 
     def test_counterparty_search_is_a_token_prefix_and_holders_are_not_buyers(self):
         holder = _figure(
@@ -1232,6 +1267,207 @@ class GateTests(unittest.TestCase):
             ],
         )
         self.assertEqual(merged["roi_pct"], 27)
+
+    def test_one_soft_rating_survives_and_two_ratings_reject(self):
+        def rated(**overrides):
+            fields = {
+                "magnitude": "large",
+                "magnitude_rationale": "The stored figure clears the large bar.",
+                "novelty": "first",
+                "novelty_rationale": "No earlier figure of this type is stored for the ticker.",
+                "attention": "unnoticed",
+                "attention_rationale": "No media note is stored on the figure.",
+                "timing": "early",
+                "timing_rationale": "The event is 10 days before the sweep.",
+            }
+            fields.update(overrides)
+            return Rating(**fields)
+
+        on_time = rated(
+            timing="on_time",
+            timing_rationale="The event is 104 days before the sweep, inside the 46 to 120 day band.",
+        )
+        routine = rated(
+            novelty="routine",
+            novelty_rationale="An earlier period stores a similar value, so this print is routine.",
+        )
+        both = rated(
+            novelty="routine",
+            novelty_rationale="An earlier figure of this type is already stored for the ticker.",
+            timing="on_time",
+            timing_rationale="The event is 104 days before the sweep, inside the 46 to 120 day band.",
+        )
+        late = rated(timing="late", timing_rationale="The event is 150 days before the sweep.")
+        self.assertTrue(interesting(on_time))
+        self.assertIsNone(failure_reason(on_time))
+        self.assertIn("timing on_time", surviving_issue(on_time))
+        self.assertIn("104 days", surviving_issue(on_time))
+        self.assertTrue(interesting(routine))
+        self.assertIsNone(failure_reason(routine))
+        self.assertIn("novelty routine", surviving_issue(routine))
+        reason = failure_reason(both)
+        self.assertIn("novelty routine", reason)
+        self.assertIn("timing on_time", reason)
+        self.assertFalse(interesting(both))
+        self.assertIsNone(surviving_issue(both))
+        self.assertIn("timing late", failure_reason(late))
+        self.assertFalse(interesting(late))
+        self.assertIsNone(surviving_issue(late))
+
+    def test_quarterly_backlog_on_time_survives_and_late_does_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "orders-backlog",
+                    "2026-10-12T14:31:00Z",
+                    [
+                        _orders("ETN", "segment", "2026-04-01/2026-06-30", 500_000_000, figure_type="backlog"),
+                        _orders(
+                            "ETN",
+                            "segment",
+                            "2026-01-01/2026-03-31",
+                            200_000_000,
+                            figure_type="customer_backlog",
+                        ),
+                        _orders("GEV", "segment", "2026-01-01/2026-03-31", 500_000_000, figure_type="backlog"),
+                        _orders(
+                            "GEV",
+                            "segment",
+                            "2025-10-01/2025-12-31",
+                            200_000_000,
+                            figure_type="customer_backlog",
+                        ),
+                        *_caps("ETN", "GEV"),
+                    ],
+                )
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            conn = connect(path)
+            try:
+                leads = {
+                    row["ticker"]: row
+                    for row in conn.execute(
+                        "SELECT ticker, significance_timing, significance_novelty FROM leads"
+                    )
+                }
+                reasons = [
+                    row["reason"] or ""
+                    for row in conn.execute(
+                        "SELECT ticker, reason FROM lead_rejects WHERE rejection_stage = 'llm'"
+                    )
+                ]
+            finally:
+                conn.close()
+        self.assertEqual(leads["ETN"]["significance_timing"], "on_time")
+        self.assertEqual(leads["ETN"]["significance_novelty"], "first")
+        self.assertFalse(any("timing on_time" in reason for reason in reasons))
+        self.assertTrue(any("timing late" in reason for reason in reasons))
+
+    def test_capex_yoy_uses_trailing_twelve_month_totals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "capex",
+                    "2026-10-12T14:30:52Z",
+                    [
+                        _figure("TTM", "Trail Co", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
+                        _other_capex(_figure("TTM", "Trail Co", "ttm", "2025-10-01/2026-09-30", 20_000_000_000)),
+                        _other_capex(_figure("TTM", "Trail Co", "ttm", "2024-10-01/2025-09-30", 10_000_000_000)),
+                        _figure("FLAT", "Flat Trail", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
+                        _other_capex(_figure("FLAT", "Flat Trail", "ttm", "2025-10-01/2026-09-30", 10_500_000_000)),
+                        _other_capex(_figure("FLAT", "Flat Trail", "ttm", "2024-10-01/2025-09-30", 10_000_000_000)),
+                        _figure("NONE", "No Trail", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
+                        *_caps("TTM", "FLAT", "NONE"),
+                    ],
+                )
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            conn = connect(path)
+            try:
+                leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
+                reasons = {}
+                for row in conn.execute(
+                    """
+                    SELECT ticker, reason FROM lead_rejects
+                    WHERE rejection_stage = 'deterministic'
+                    """
+                ):
+                    reasons.setdefault(row["ticker"], []).append(row["reason"] or "")
+            finally:
+                conn.close()
+        self.assertIn("TTM", leads)
+        self.assertNotIn("FLAT", leads)
+        self.assertNotIn("NONE", leads)
+        self.assertTrue(any("capex_growth_yoy" in reason and "below" in reason for reason in reasons["FLAT"]))
+        self.assertTrue(any("no prior comparison" in reason for reason in reasons["NONE"]))
+
+    def test_same_day_insider_lots_are_one_lead(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "insider-buying",
+                    "2026-10-12T14:32:00Z",
+                    [
+                        _insider("MIN.AX", "2026-09-15|Ada North", 100_000, "2026-09-20"),
+                        _insider("MIN.AX", "2026-09-15|Ada North|2", 50_000, "2026-09-20"),
+                        _insider("MIN.AX", "2026-09-15|Ada North|3", 25_000, "2026-09-20"),
+                        _insider("ZZZ.AX", "2026-09-15|Ada North", 80_000, "2026-09-20"),
+                        _insider("ZZZ.AX", "2026-09-15|Ada North|2", 40_000, "2026-09-20"),
+                        _insider("ZZZ.AX", "2026-09-15|Bo West", 120_000, "2026-09-20"),
+                        *_caps("MIN.AX", "ZZZ.AX"),
+                    ],
+                )
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            conn = connect(path)
+            try:
+                leads = conn.execute(
+                    """
+                    SELECT l.ticker, l.summary, l.significance_novelty, COUNT(link.figure_id) AS figures
+                    FROM leads AS l
+                    JOIN lead_figures AS link ON link.lead_id = l.lead_id
+                    GROUP BY l.lead_id
+                    """
+                ).fetchall()
+                routine = [
+                    row["ticker"]
+                    for row in conn.execute(
+                        """
+                        SELECT ticker FROM lead_rejects
+                        WHERE reason LIKE '%novelty routine%'
+                        """
+                    )
+                ]
+            finally:
+                conn.close()
+        mina = [row for row in leads if row["ticker"] == "MIN.AX"]
+        zzz = [row for row in leads if row["ticker"] == "ZZZ.AX"]
+        self.assertEqual(len(mina), 1)
+        self.assertEqual(mina[0]["significance_novelty"], "first")
+        self.assertIn("175000", mina[0]["summary"])
+        self.assertEqual(mina[0]["figures"], 3)
+        self.assertNotIn("MIN.AX", routine)
+        self.assertEqual(len(zzz), 2)
+        summed = [row for row in zzz if "lots totalling" in (row["summary"] or "")]
+        other = [row for row in zzz if "lots totalling" not in (row["summary"] or "")]
+        self.assertEqual(len(summed), 1)
+        self.assertIn("120000", summed[0]["summary"])
+        self.assertEqual(summed[0]["figures"], 2)
+        self.assertEqual(other[0]["figures"], 1)
+        self.assertIn("Bo West", other[0]["summary"])
+        self.assertTrue(all(row["significance_novelty"] == "routine" for row in zzz))
 
 
 class _FailMarketCap(StubProvider):

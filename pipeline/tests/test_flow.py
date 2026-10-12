@@ -68,8 +68,8 @@ class PipelineFlowTests(unittest.TestCase):
             self.assertEqual(result["macro"], "skipped")
             self.assertFalse(result["dry_run"])
             self.assertEqual(result["merges"], 1)
-            self.assertEqual(result["decisions"], 2)
-            self.assertEqual(result["rankings"], 2)
+            self.assertEqual(result["decisions"], 3)
+            self.assertEqual(result["rankings"], 3)
 
             conn = connect(path)
             try:
@@ -728,11 +728,20 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertIn("50000000", rows["SCG"]["reason"])
         self.assertEqual(rows["SCG"]["significance_magnitude"], "small")
         self.assertIsNone(rows["SCG"]["significance_novelty"])
-        self.assertEqual(rows["TINY"]["rejection_stage"], "llm")
-        self.assertEqual(rows["TINY"]["significance_novelty"], "routine")
-        self.assertEqual(rows["TINY"]["significance_attention"], "unnoticed")
-        self.assertEqual(rows["TINY"]["significance_timing"], "early")
-        self.assertTrue(rows["TINY"]["significance_magnitude_rationale"])
+        self.assertNotIn("TINY", rows)
+        tiny = conn.execute(
+            """
+            SELECT l.significance_novelty, l.significance_timing, r.assumptions_that_fail, r.surviving_issues
+            FROM leads AS l
+            JOIN theses AS t ON t.lead_id = l.lead_id
+            JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
+            WHERE l.ticker = 'TINY'
+            """
+        ).fetchone()
+        self.assertEqual(tiny["significance_novelty"], "routine")
+        self.assertEqual(tiny["significance_timing"], "early")
+        self.assertIn("novelty routine", tiny["assumptions_that_fail"])
+        self.assertGreaterEqual(tiny["surviving_issues"], 1)
         self.assertEqual(rows["UNV"]["reason"], "unverified figure")
         self.assertIsNone(rows["UNV"]["significance_magnitude"])
         self.assertEqual(rows["NWT"]["significance_magnitude"], "small")
@@ -828,7 +837,7 @@ class PipelineFlowTests(unittest.TestCase):
             conn.execute("SELECT assumptions FROM theses WHERE lead_id = ?", (merge["survivor_lead_id"],)).fetchone()["assumptions"],
         )
         decisions = conn.execute("SELECT status FROM decisions").fetchall()
-        self.assertEqual([row["status"] for row in decisions], ["pending", "pending"])
+        self.assertEqual([row["status"] for row in decisions], ["pending", "pending", "pending"])
         rank = conn.execute(
             """
             SELECT l.source_scout FROM rankings AS k

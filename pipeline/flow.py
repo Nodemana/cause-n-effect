@@ -30,6 +30,7 @@ from pipeline.prefilter import (
     interesting,
     party_index,
     prefilter,
+    surviving_issue,
 )
 from pipeline.prompts import (
     centurion_prompt,
@@ -199,6 +200,7 @@ def _rate(conn, provider, budget, candidates, rejects):
             )
             continue
         lead = _lead_from_candidate(candidate, rating)
+        lead.significance_issue = surviving_issue(rating)
         lead.synthetic_id = next_id
         next_id += 1
         lead.parent_position_id = store.open_position_id(conn, lead.ticker)
@@ -219,6 +221,9 @@ def _lead_from_candidate(candidate, rating):
         part for part in (figure.figure_type, figure.value_text or _plain(figure.value), figure.period) if part
     )
     lead.figure_ids = [figure.figure_id]
+    for extra in getattr(figure, "aggregated_ids", ()) or ():
+        if extra not in lead.figure_ids:
+            lead.figure_ids.append(extra)
     lead.figure = figure
     lead.rating = rating
     lead.grade_types = [candidate.lead_type]
@@ -358,6 +363,12 @@ def _merge(conn, provider, budget, leads, macro):
             or getattr(member.figure, "growth_unverified", False)
             for member in members
         )
+        issues = []
+        for member in members:
+            issue = getattr(member, "significance_issue", None)
+            if issue and issue not in issues:
+                issues.append(issue)
+        lead.significance_issue = "; ".join(issues) if issues else None
         criteria = store.criteria_for(conn, lead.grade_types)
         constituents = [_constituent_payload(member) for member in members]
         prompt = centurion_prompt(lead, criteria, 2, constituents=constituents, macro=macro)
@@ -399,8 +410,20 @@ def _critique(provider, budget, final):
             "price_run_counterevidence": _text(data.get("price_run_counterevidence")),
         }
         _note_unverified_cap(lead, review)
+        _note_significance(lead, review)
         lead.thesis.review = review
         lead.thesis.surviving_issues = review["surviving_issues"]
+
+
+def _note_significance(lead, review):
+    """One routine or on_time rating stays on the lead as a surviving issue."""
+    issue = getattr(lead, "significance_issue", None)
+    if not issue:
+        return
+    if issue.casefold() in review["assumptions_that_fail"].casefold():
+        return
+    review["assumptions_that_fail"] = (review["assumptions_that_fail"] + " " + issue).strip()
+    review["surviving_issues"] += 1
 
 
 def _note_unverified_cap(lead, review):
@@ -528,6 +551,9 @@ def _thesis_from_model(data, lead, criteria, pass_number, macro):
     if getattr(lead, "market_cap_unverified", False):
         if not any(UNVERIFIED in item.casefold() for item in assumptions):
             assumptions.append(UNVERIFIED)
+    issue = getattr(lead, "significance_issue", None)
+    if issue and not any(issue.casefold() in item.casefold() for item in assumptions):
+        assumptions.append(issue)
     thesis.risk_count = len(risks)
     thesis.risks_text = "\n".join(risks)
     thesis.assumptions_text = "\n".join(f"- {item}" for item in assumptions)

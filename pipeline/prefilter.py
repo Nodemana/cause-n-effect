@@ -160,6 +160,7 @@ def prefilter(conn, figures, limit=None, now=None):
             continue
         classified.append((figure, lead_type))
     classified, span_dropped = _prefer_spans(classified)
+    classified = _aggregate_insider_lots(classified)
     classified, older = _latest_periods(classified)
     for figure, lead_type in span_dropped:
         parties = extract_parties(figure, lead_type, by_name, cik_by_ticker)
@@ -210,30 +211,59 @@ def prefilter(conn, figures, limit=None, now=None):
 
 
 def interesting(rating):
-    """A lead is emitted only when every label clears the gate."""
-    if rating is None or not rating.complete():
-        return False
-    return (
-        rating.magnitude in {"large", "moderate"}
-        and rating.novelty == "first"
-        and rating.attention == "unnoticed"
-        and rating.timing == "early"
-    )
+    """A lead is emitted when the rating is not rejected.
+
+    One routine novelty, or one on_time timing, still emits the lead.
+    Two failed ratings reject it, and so does a hard failure on its own.
+    """
+    return failure_reason(rating) is None
 
 
 def failure_reason(rating):
+    """Why the rating is rejected, or None when the lead survives.
+
+    magnitude small, attention noticed, and timing late reject on their own.
+    novelty routine and timing on_time are surviving issues when exactly one
+    rating fails. Two or more failed ratings reject, including routine together
+    with on_time.
+    """
+    hard, soft = _split_rating(rating)
+    failed = hard + soft
+    if hard or len(failed) >= 2:
+        return "; ".join(failed)
+    return None
+
+
+def surviving_issue(rating):
+    """The one soft failure that stays on the lead, or None when nothing does."""
+    hard, soft = _split_rating(rating)
+    if hard or len(soft) != 1:
+        return None
+    return soft[0]
+
+
+def _split_rating(rating):
     if rating is None or not rating.complete():
-        return "significance response was incomplete"
-    checks = (
-        ("magnitude", rating.magnitude, {"large", "moderate"}, rating.magnitude_rationale),
-        ("novelty", rating.novelty, {"first"}, rating.novelty_rationale),
-        ("attention", rating.attention, {"unnoticed"}, rating.attention_rationale),
-        ("timing", rating.timing, {"early"}, rating.timing_rationale),
-    )
-    for name, label, ok, rationale in checks:
-        if label not in ok:
-            return f"{name} {label}: {rationale}"
-    return "significance ratings below the gate"
+        return ["significance response was incomplete"], []
+    hard = []
+    soft = []
+    if rating.magnitude not in {"large", "moderate"}:
+        hard.append(_rating_problem("magnitude", rating.magnitude, rating.magnitude_rationale))
+    if rating.novelty == "routine":
+        soft.append(_rating_problem("novelty", rating.novelty, rating.novelty_rationale))
+    elif rating.novelty != "first":
+        hard.append(_rating_problem("novelty", rating.novelty, rating.novelty_rationale))
+    if rating.attention != "unnoticed":
+        hard.append(_rating_problem("attention", rating.attention, rating.attention_rationale))
+    if rating.timing == "on_time":
+        soft.append(_rating_problem("timing", rating.timing, rating.timing_rationale))
+    elif rating.timing != "early":
+        hard.append(_rating_problem("timing", rating.timing, rating.timing_rationale))
+    return hard, soft
+
+
+def _rating_problem(name, label, rationale):
+    return f"{name} {label}: {rationale}"
 
 
 def extract_parties(figure, lead_type, by_name, cik_by_ticker):
@@ -454,21 +484,25 @@ def _earlier_similar(conn, figure):
     A later scout run stores the same figure again. That copy shares the
     period and the value, so it is not an earlier occurrence. A restatement
     of the same period is skipped too. A different period inside the band,
-    including the same value, is routine.
+    including the same value, is routine. Lots by the same insider on the
+    same day are one purchase, not an earlier print.
     """
     if figure.value in (None, 0):
         return False
     rows = conn.execute(
         """
-        SELECT value, period FROM figures
+        SELECT value, period, instrument FROM figures
         WHERE ticker = ? AND figure_type = ? AND instrument = ? AND figure_id != ?
           AND value IS NOT NULL AND value != 0
         """,
         (figure.ticker, figure.figure_type, figure.instrument, figure.figure_id),
     ).fetchall()
     period = figure.period or ""
+    identity = _purchase_key(figure.ticker, figure.instrument, period)
     for row in rows:
         if (row["period"] or "") == period:
+            continue
+        if identity is not None and identity == _purchase_key(figure.ticker, row["instrument"], row["period"]):
             continue
         gap = abs(row["value"] - figure.value) / abs(figure.value)
         if gap <= SIMILAR_VALUE_BAND:
@@ -524,10 +558,12 @@ def _growth_reason(conn, figure, lead_type):
 
     Capex matches a period that ends 365±10 days earlier. The instrument
     string and the period's exact formatting do not have to match, and a
-    different capex tag still counts. Backlog matches a prior quarter-end
-    or a year-ago end, including companyfacts history stored under another
-    instrument. A large order with none of those stays in the sweep as an
-    open growth question instead of a reject.
+    different capex tag still counts. When that quarter is missing, capex
+    uses the trailing-twelve-month total against the total from a year
+    earlier. Backlog matches a prior quarter-end or a year-ago end,
+    including companyfacts history stored under another instrument. A large
+    order with none of those stays in the sweep as an open growth question
+    instead of a reject.
     """
     if lead_type == "capex":
         windows = (YOY_WINDOW,)
@@ -546,7 +582,7 @@ def _growth_reason(conn, figure, lead_type):
         return None, False
     rows = conn.execute(
         """
-        SELECT figure_id, value, period, figure_type, source_type
+        SELECT figure_id, value, period, figure_type, source_type, instrument
         FROM figures
         WHERE ticker = ? AND figure_id != ? AND value IS NOT NULL AND value != 0
         """,
@@ -557,6 +593,14 @@ def _growth_reason(conn, figure, lead_type):
     if best is None and lead_type == "orders_backlog" and figure.value >= ORDER_LARGE_VALUE:
         figure.growth_unverified = True
         return None, False
+    if best is None and lead_type == "capex":
+        pair = _trailing_yoy(rows, end)
+        if pair is not None:
+            current, prior = pair
+            growth = 100.0 * (current - prior) / abs(prior)
+            if growth < need:
+                return f"below {label} threshold {need:g} percent", True
+            return None, True
     if best is None:
         return None, False
     growth = 100.0 * (figure.value - best) / abs(best)
@@ -601,23 +645,160 @@ def _growth_family(row, lead_type):
     return (row["source_type"] or "") == "xbrl_company_facts"
 
 
+def _trailing_yoy(rows, end):
+    """Current trailing-twelve-month total and the one a year earlier.
+
+    Used when the year-ago single quarter is not stored. The current total
+    ends on the candidate's period end (a few days of slack). The prior total
+    ends 365±10 days before that.
+    """
+    totals = []
+    for row in rows:
+        if not _growth_family(row, "capex") or not _is_trailing_twelve(row):
+            continue
+        prior_end = period_end(row["period"])
+        if prior_end is None or row["value"] in (None, 0):
+            continue
+        totals.append((prior_end, row["value"]))
+    current = None
+    for prior_end, value in totals:
+        gap = (end - prior_end).days
+        if not (-15 <= gap <= 45):
+            continue
+        rank = abs(gap)
+        if current is None or rank < current[0]:
+            current = (rank, prior_end, value)
+    if current is None:
+        return None
+    _, current_end, current_value = current
+    prior = None
+    low, high, target = YOY_WINDOW
+    for prior_end, value in totals:
+        days = (current_end - prior_end).days
+        if not (low <= days <= high):
+            continue
+        rank = abs(days - target)
+        if prior is None or rank < prior[0]:
+            prior = (rank, value)
+    if prior is None:
+        return None
+    return current_value, prior[1]
+
+
+def _is_trailing_twelve(row):
+    instrument = (row["instrument"] or "").casefold()
+    if instrument == "ttm":
+        return True
+    if instrument in {"annual", "quarter", "ytd", "instant"}:
+        return False
+    span = period_span_days(row["period"])
+    return span is not None and 350 <= span <= 380
+
+
 def _earlier_type(conn, figure):
     """True when this ticker already has this figure type in another period.
 
-    A re-stored copy of the same period is not an earlier figure.
+    A re-stored copy of the same period is not an earlier figure. Another lot
+    by the same insider on the same day is not an earlier figure either.
     """
     rows = conn.execute(
         """
-        SELECT period FROM figures
+        SELECT period, instrument FROM figures
         WHERE ticker = ? AND figure_type = ? AND figure_id != ?
         """,
         (figure.ticker, figure.figure_type, figure.figure_id),
     ).fetchall()
     period = figure.period or ""
+    identity = _purchase_key(figure.ticker, figure.instrument, period)
     for row in rows:
-        if (row["period"] or "") != period:
-            return True
+        if (row["period"] or "") == period:
+            continue
+        if identity is not None and identity == _purchase_key(figure.ticker, row["instrument"], row["period"]):
+            continue
+        return True
     return False
+
+
+def _aggregate_insider_lots(classified):
+    """Sum lots by the same insider, ticker, and trade day into one figure.
+
+    The scout used to suffix the period (`date|name|2`) so each lot kept a
+    figures key. Those rows then marked each other routine. The dollars are
+    one purchase. The primary figure keeps every lot id for the lead.
+    """
+    groups = {}
+    order = []
+    other = []
+    for figure, lead_type in classified:
+        key = None
+        if lead_type == "insider_buying":
+            key = _lot_group_key(figure)
+        if key is None:
+            other.append((figure, lead_type))
+            continue
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append(figure)
+    kept = list(other)
+    for key in order:
+        lots = groups[key]
+        if len(lots) == 1:
+            kept.append((lots[0], "insider_buying"))
+            continue
+        primary = min(lots, key=_lot_keep_rank)
+        total = sum(lot.value or 0 for lot in lots)
+        primary.value = total
+        primary.value_text = f"{len(lots)} lots totalling {total:g}"
+        primary.aggregated_ids = [lot.figure_id for lot in lots if lot.figure_id != primary.figure_id]
+        kept.append((primary, "insider_buying"))
+    return kept
+
+
+def _lot_group_key(figure):
+    day, insider = _day_and_insider(figure.period)
+    if not day or not insider:
+        return None
+    return (
+        (figure.ticker or "").upper(),
+        (figure.instrument or "").casefold(),
+        (figure.currency or "").upper(),
+        day,
+        insider,
+    )
+
+
+def _lot_keep_rank(figure):
+    """Unsuffixed period, then the larger lot, then the lower figure id."""
+    suffix = 1 if re.search(r"\|\d+$", figure.period or "") else 0
+    value = figure.value if figure.value is not None else float("-inf")
+    return (suffix, -value, figure.figure_id)
+
+
+def _purchase_key(ticker, instrument, period):
+    day, insider = _day_and_insider(period)
+    if not day or not insider:
+        return None
+    return ((ticker or "").upper(), (instrument or "").casefold(), day, insider)
+
+
+def _day_and_insider(period):
+    """Trade day and insider from `date|name` or `date|name|2`."""
+    text = period or ""
+    if "|" not in text:
+        return "", ""
+    day, _, rest = text.partition("|")
+    if len(day) != 10 or day[4] != "-" or day[7] != "-":
+        return "", ""
+    parts = rest.split("|")
+    if len(parts) >= 2 and parts[-1].isdigit():
+        insider = "|".join(parts[:-1])
+    else:
+        insider = rest
+    insider = insider.strip().casefold()
+    if not insider:
+        return "", ""
+    return day, insider
 
 
 def _dedupe_batch(candidates):
