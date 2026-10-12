@@ -98,6 +98,8 @@ def main(argv=None):
                     "supplier_order",
                 )
             )
+            print("SEC 10-Q and 10-K narratives for supplier backlog")
+            releases.extend(_releases(fetcher.collect_supplier_reports(suppliers), "supplier_order"))
     if not args.no_asx:
         print(f"ASX order and backlog announcements, at most {fetcher.ASX_CAP} per company")
         releases.extend(_releases(fetcher.collect_asx(fetcher.load_asx()), "supplier_order"))
@@ -105,7 +107,7 @@ def main(argv=None):
     started = utc_now()
     seen = started[:10]
     stale = pipeline.report_stale_latest(table["records"], seen)
-    figures = dedupe_figures(_figures(table["records"], seen))
+    figures = dedupe_figures(pipeline.keep_distinct_amounts(_figures(table["records"], seen)))
     if not figures:
         print("No orders-backlog figures.")
         return 1
@@ -182,6 +184,28 @@ def _segment(record):
     return ""
 
 
+def _instrument(record):
+    """Metric first, then a segment. A pipe row and a company-facts tag stay as they were."""
+    disclosure = (record.get("disclosure") or "").strip()
+    segment = _segment(record)
+    notes = record.get("notes") or []
+    concept = ""
+    if notes and " " not in str(notes[0]) and ":" not in str(notes[0]):
+        concept = str(notes[0])
+    if record.get("source_type") == "xbrl_company_facts" and concept:
+        return concept
+    if ":" in disclosure and not disclosure.startswith("segment:"):
+        return disclosure
+    if disclosure == "order_intake" and segment:
+        return segment
+    metric = disclosure if disclosure in {"orders", "backlog", "revenue"} else ""
+    if metric and segment:
+        return f"{metric}:{segment}"
+    if segment:
+        return segment
+    return metric or concept or disclosure
+
+
 def _figure_period(record):
     """A date or quarter. A segment word is not joined to the filing date.
 
@@ -205,15 +229,12 @@ def _figures(records, seen):
     for record in records:
         if record.get("value") is None or not record.get("ticker"):
             continue
-        notes = record.get("notes") or []
-        concept = notes[0] if notes and " " not in notes[0] else (record.get("disclosure") or "")
-        segment = _segment(record)
         rows.append(
             {
                 "ticker": record["ticker"],
                 "company": record.get("company"),
                 "figure_type": record.get("source_side") or "backlog",
-                "instrument": segment or concept,
+                "instrument": _instrument(record),
                 "period": _figure_period(record),
                 "value": record["value"],
                 "value_text": str(record["value"]),

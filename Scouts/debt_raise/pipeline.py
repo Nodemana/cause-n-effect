@@ -211,10 +211,10 @@ def _figure(filing, text, started_at, amount, min_deal=DEFAULT_MIN_DEAL_USD):
 
 
 def _dedupe_issuer_deals(figures, window_days=DEAL_REPEAT_DAYS):
-    """Keep one filing when the same issuer repeats the same amount within a few days.
+    """Keep one filing when the same issuer repeats a deal within a few days.
 
-    The later filing is kept. An 8-K and a 424B for the same notes are one deal.
-    A different amount is a different deal and stays.
+    The later filing is kept. The same amount, an amount within 10%, or an 8-K
+    and a 424B for one offering are one deal. A different amount is kept.
     """
     kept = []
     for figure in figures:
@@ -231,6 +231,12 @@ def _dedupe_issuer_deals(figures, window_days=DEAL_REPEAT_DAYS):
     return kept
 
 
+# A doubled tranche list can land about 70% high. An 8-K and a 424B for one
+# offering stay inside a doubling; a different deal the same week does not.
+_OFFERING_RATIO = 2.0
+_AMOUNT_TOLERANCE = 0.10
+
+
 def _same_deal(left, right, window_days):
     if (left.get("ticker") or "") != (right.get("ticker") or ""):
         return False
@@ -238,13 +244,42 @@ def _same_deal(left, right, window_days):
         return False
     if (left.get("figure_type") or "") != (right.get("figure_type") or ""):
         return False
-    if round(float(left.get("value") or 0), 2) != round(float(right.get("value") or 0), 2):
+    if not _same_size(left, right):
         return False
     left_on = _on(left)
     right_on = _on(right)
     if left_on is None or right_on is None:
         return False
     return abs((left_on - right_on).days) <= int(window_days)
+
+
+def _same_size(left, right):
+    """Exact amount, within 10%, or an 8-K and a 424B for one offering."""
+    left_value = float(left.get("value") or 0)
+    right_value = float(right.get("value") or 0)
+    if round(left_value, 2) == round(right_value, 2):
+        return True
+    larger = max(left_value, right_value)
+    smaller = min(left_value, right_value)
+    if larger <= 0:
+        return False
+    if (larger - smaller) / larger <= _AMOUNT_TOLERANCE:
+        return True
+    return _offering_pair(left, right) and larger / smaller <= _OFFERING_RATIO
+
+
+def _form_family(form):
+    text = (form or "").upper().replace(" ", "")
+    if text.startswith("8-K"):
+        return "8-K"
+    if text.startswith("424B"):
+        return "424B"
+    return ""
+
+
+def _offering_pair(left, right):
+    families = {_form_family(left.get("form")), _form_family(right.get("form"))}
+    return families == {"8-K", "424B"}
 
 
 def _on(figure):
