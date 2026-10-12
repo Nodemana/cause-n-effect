@@ -16,6 +16,19 @@ One row shape for both sides: company, ticker, counterparty when named, equipmen
 
 The backlog side covers defence, industrials, and chip equipment only, including AMAT, LRCX, and KLAC. Stale backlog tags are review rows, and a tag that switches from a stale name to the active tag is flagged. Unnamed customers on a specific order, missing values, and two amounts in one sentence are flagged for the Legate. Deferred revenue is not read, and transcripts are skipped.
 
+## Significance
+
+The code already reads backlog tags and order announcements. That pull is not a lead. The sector gate, the review flags, and a dedupe run first. A small LLM pass, inside a per-run token budget, then judges the shortlist and emits a lead only when the demand is genuinely interesting.
+
+Each emitted lead stores a short label and a one-line reason on four dimensions. The same four fields are stored on a reject.
+
+- **Magnitude.** The order or the backlog change in dollars, absolute and against prior backlog or revenue. A book that steps up hard is not a small named order.
+- **Novelty.** A new customer or a new equipment class, versus a repeat frame agreement or a backlog that only rolls forward.
+- **Market attention.** Whether the order or the backlog print is already noticed. Media and aggregators are for that check only. The figure stays from the filing, the ASX announcement, or the company release.
+- **Timing.** How early the disclosure is versus the next earnings date, or versus the period when the backlog converts.
+
+A candidate that fails is not a lead. It is a row in `lead_rejects`: scout `orders_backlog`, ticker, CIK when known, filing date, source URL, accession, `rejection_stage` (`deterministic` or `llm`), and the reason. A named customer on a backlog row is role `customer`. A named buyer on a supplier order is role `buyer`. Both go to `lead_reject_counterparties` with a normalised name and a ticker where it resolves. A search for buyer `AMZN` is the look-back when a supplier's stock later jumps on that spend. Adding `lead_rejects`, `lead_reject_counterparties`, and the significance columns on `leads` is a follow-up migration.
+
 ## Constraints and limitations
 
 SEC XBRL tagged numbers cover reported actuals only. They miss untagged figures and guidance, so full-text search and release text are needed. Supplier order books are rarely public in full, so this is a spotter's signal, not a ledger. The backlog side only covers defence, industrials, and chip equipment. The ASX feed is undocumented, returns only the latest five announcements per company (enough for a weekly run), and is health-checked.

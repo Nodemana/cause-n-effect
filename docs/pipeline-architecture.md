@@ -10,7 +10,7 @@ Today `shared/schema.sql` stores `runs` and `figures`, plus a small `leads` tabl
 
 ## Flow
 
-Scouts lodge one finding per lead. They do not merge. Each lead goes to one Centurion, which writes one thesis. The Legate then merges theses the research shows are linked, and each merge goes back to one Centurion as a single new lead for a fresh pass. Praetorians critique the final theses. The Legate ranks that set. The ranked list is what reaches the Imperator.
+Scouts are the cheap filter. Centurions are the expensive research. A scout's existing code pulls and parses, deterministic thresholds and a dedupe run first, and a small per-run token budget then judges the shortlist. Only a lead that survives is lodged. Scouts do not merge. Each surviving lead goes to one Centurion, which writes one thesis. The Legate then merges theses the research shows are linked, and each merge goes back to one Centurion as a single new lead for a fresh pass. Praetorians critique the final theses. The Legate ranks that set. The ranked list is what reaches the Imperator.
 
 ```mermaid
 flowchart TD
@@ -53,7 +53,42 @@ Research, the return pass, the critiques, and the ranking stay inside the run. T
 
 ## Scouts
 
-Each scout pulls official findings (SEC, ASX, company releases) and lodges leads into `leads`. A lead is one finding: ticker, lead type, source link, and the figure it rests on. Lead types match the scout folders: `capex`, `debt_raise`, `orders_backlog`, `accumulation`, `insider_buying`.
+Each scout pulls official findings (SEC, ASX, company releases) with the code already in its folder. That pull is not a lead. Deterministic gates run first: the scout's own thresholds, then a dedupe of the pull. What remains is a shortlist. A small LLM pass, inside a per-run token budget, reads that shortlist and applies four judgments. It emits a row into `leads` only when the item is genuinely interesting. A reject is written to `lead_rejects` and is not inserted into `leads`. The aim is that a Centurion never receives a run of low-value leads, such as hundreds of routine bond issues.
+
+A lodged lead is one finding: ticker, lead type, source link, the figure it rests on, and a significance assessment. Lead types match the scout folders: `capex`, `debt_raise`, `orders_backlog`, `accumulation`, `insider_buying`.
+
+Each dimension is a short label plus a one-line rationale, not necessarily a number:
+
+- **Magnitude** (`significance_magnitude`, `significance_magnitude_rationale`): how large the move is, absolute and relative to the company's size.
+- **Novelty** (`significance_novelty`, `significance_novelty_rationale`): the first time this company has done it, or routine behaviour.
+- **Market attention** (`significance_attention`, `significance_attention_rationale`): whether anyone else has written about or noticed it. Media and aggregators may be checked only for that. They are never a source of figures.
+- **Timing** (`significance_timing`, `significance_timing_rationale`): how early this is relative to the next earnings date or catalyst.
+
+Per-type guidance for those four judgments is in each scout README.
+
+### Reject log
+
+`lead_rejects` is the searchable record of what a scout saw and did not emit. The use case is a look-back: a small company's stock jumps because a large buyer spent heavily with it, the owner missed it, and the log should show why. Search is by the lead's ticker and by any named counterparty (buyer, supplier, or customer).
+
+Each reject row stores the scout, the ticker and the CIK when known, the filing date, the source URL, and the accession. `rejection_stage` is `deterministic` (threshold or dedupe) or `llm` (the token-budget judgment). `reason` is the one-line cause. The four significance labels and their rationales are on the same row. An LLM reject fills all four. A deterministic reject fills the dimensions that gate used and leaves the others empty.
+
+Named counterparties from the source text are child rows in `lead_reject_counterparties`: a normalised name, a ticker and CIK where they resolve, and a role of `buyer`, `supplier`, or `customer`. A capex filing that names a supplier, or a supplier order that names Amazon as the buyer, is findable without reading the filing again.
+
+```sql
+-- All rejects that name AMZN as the buyer.
+SELECT r.scout, r.ticker, r.filing_date, r.rejection_stage, r.reason, r.source_url
+FROM lead_rejects AS r
+JOIN lead_reject_counterparties AS c ON c.reject_id = r.reject_id
+WHERE c.ticker = 'AMZN' AND c.role = 'buyer';
+
+-- Every reject for one issuer, whatever the stage.
+SELECT scout, filing_date, rejection_stage, reason
+FROM lead_rejects
+WHERE ticker = 'ACME'
+ORDER BY filing_date;
+```
+
+Adding `lead_rejects`, `lead_reject_counterparties`, and the eight significance columns on `leads` is a follow-up code change. None of them are in `shared/migrations/001_pipeline.sql`.
 
 A new row starts at status `fresh`. The scout does not merge it with another lead, does not rank it against other lead types, and does not write a thesis.
 
@@ -61,7 +96,7 @@ A new row starts at status `fresh`. The scout does not merge it with another lea
 
 The Legate is the Portfolio Manager agent. After the scouts finish, it assigns fresh leads. This step does not merge.
 
-1. Drop leads that fail the scout's own gate or that duplicate a lead already in flight.
+1. Drop leads that fail the scout's own gate or that duplicate a lead already in flight. Low-significance candidates never arrive: the scout logged them and did not emit them.
 2. Assign each remaining lead to one Centurion. Assigned rows move to status `assigned`. One lead, one Centurion.
 
 The same pass watches open positions. A new scout hit near a position the Imperator is already tracking is stored with `parent_position_id` set to that position. It is an update, not a new standalone lead, and it does not compete for a slot on the ranked list on its own.
@@ -111,7 +146,9 @@ Sketch of the columns below. The migration that creates them is [Implemented sch
 `quality_score` is written when the Centurion finishes a pass. `outcome` is written only after the Imperator acts, and monitoring updates it from brokerage performance. `parent_position_id` is set when the row updates a position the Imperator already tracks.
 
 ```sql
--- Sketch of the pipeline tables. Applied by shared/migrations/001_pipeline.sql.
+-- Sketch of the pipeline tables. Applied by shared/migrations/001_pipeline.sql,
+-- except the significance columns on leads and the lead_rejects tables,
+-- which are a follow-up migration.
 
 CREATE TABLE leads (
   lead_id INTEGER PRIMARY KEY,
@@ -127,6 +164,15 @@ CREATE TABLE leads (
   priority INTEGER,                 -- Legate rank after critique
   quality_score INTEGER,            -- count of rubric criteria cleared
   outcome TEXT,                     -- empty until the Imperator acts
+  -- Follow-up migration. Not in 001_pipeline.sql yet.
+  significance_magnitude TEXT,             -- short label
+  significance_magnitude_rationale TEXT,   -- one-line reason
+  significance_novelty TEXT,
+  significance_novelty_rationale TEXT,
+  significance_attention TEXT,
+  significance_attention_rationale TEXT,
+  significance_timing TEXT,
+  significance_timing_rationale TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -167,6 +213,43 @@ CREATE TABLE critiques (
   written_at TEXT NOT NULL
 );
 
+-- Follow-up migration. Not in 001_pipeline.sql yet.
+-- Searchable log of candidates a scout did not emit.
+CREATE TABLE lead_rejects (
+  reject_id INTEGER PRIMARY KEY,
+  scout TEXT NOT NULL,                  -- capex, debt_raise, orders_backlog, accumulation, insider_buying
+  ticker TEXT NOT NULL,
+  cik TEXT,                             -- issuer CIK when known
+  filing_date TEXT,
+  source_url TEXT,
+  accession TEXT,
+  rejection_stage TEXT NOT NULL CHECK (rejection_stage IN ('deterministic', 'llm')),
+  reason TEXT NOT NULL,
+  significance_magnitude TEXT,
+  significance_magnitude_rationale TEXT,
+  significance_novelty TEXT,
+  significance_novelty_rationale TEXT,
+  significance_attention TEXT,
+  significance_attention_rationale TEXT,
+  significance_timing TEXT,
+  significance_timing_rationale TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE lead_reject_counterparties (
+  reject_id INTEGER NOT NULL REFERENCES lead_rejects(reject_id),
+  role TEXT NOT NULL CHECK (role IN ('buyer', 'supplier', 'customer')),
+  name_normalised TEXT NOT NULL,
+  ticker TEXT,                          -- resolved ticker, when known
+  cik TEXT,
+  PRIMARY KEY (reject_id, role, name_normalised)
+);
+
+CREATE INDEX ix_lead_rejects_ticker ON lead_rejects(ticker);
+CREATE INDEX ix_lead_rejects_cik ON lead_rejects(cik);
+CREATE INDEX ix_reject_cp_ticker ON lead_reject_counterparties(ticker);
+CREATE INDEX ix_reject_cp_name ON lead_reject_counterparties(name_normalised);
+
 -- Written by the Legate after individual theses exist.
 -- rationale is the official-source link from that research.
 CREATE TABLE legate_merges (
@@ -198,3 +281,4 @@ Beyond the sketch:
 - `theses` stores the Centurion `run_id`, `thesis_text`, `risks`, and `quality_score`. One row is one lead's thesis.
 - `critiques` stores the Praetorian `run_id`, `critique`, `verdict` (`revise`, `accept`, or `reject`), and `round`.
 - `legate_merges` stores the rationale, `priority_rank`, and `bias_audit`. `rationale` is the official-source evidence from the Centurions' research that links the two theses. The row is written when the Legate merges, after the individual theses and before Praetorian critique. Constituent lead ids are rows in `legate_merge_leads`.
+- Significance on `leads`, plus `lead_rejects` and `lead_reject_counterparties`, is specified above and is not applied yet. A later migration adds the eight significance columns and the two reject tables, including the ticker and counterparty indexes.
