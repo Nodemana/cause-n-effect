@@ -32,6 +32,6 @@ Every SEC and ASX request goes through `shared/nethttp.py`. That module spaces r
 - `scouts/accumulation` — early M&A positioning from SEC Schedules 13D and 13G (legacy `SC 13D`/`SC 13G` and XML `SCHEDULE 13D`/`SCHEDULE 13G`, including amendments) and ASX Forms 603, 604, and 605. Software in that folder fetches, parses, and screens. Ambiguous filings are flagged for the Portfolio Manager.
 - `scouts/orders-backlog` — one table for customer-side disclosed backlog (defence, industrials, chip equipment) and supplier-side orders (turbines, transformers, switchgear). A spotter's signal, not a full ledger.
 - `scouts/capex` — follow big spenders' capex to 2nd/3rd-tier suppliers.
-- `scouts/debt-raise` — track new loans, credit facilities and bond issues from SEC 8-K Items 1.01/2.03, 424B prospectuses and ASX announcements.
+- `scouts/debt-raise` — use-of-proceeds gate for SEC 8-K items 1.01/2.03, 424B filings, and ASX debt announcements. A cheap phrase filter scores the index text or headline; the full filing is read only above a configurable threshold or when that filter cannot decide. Run analytics and any stated amount sit in the SQLite history database. SEC calls require `SEC_CONTACT_EMAIL` and are refused before send when it is missing.
 
-`scouts/capex` and `scouts/debt-raise` describe purpose only. Scout software is added in the scout's own folder when that scout is built.
+`scouts/capex` describes purpose only. Scout software is added in the scout's own folder when that scout is built.

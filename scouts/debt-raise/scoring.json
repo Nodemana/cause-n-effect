@@ -1,0 +1,14 @@
+{
+  "notes": "Score is the highest matching weight. Zero is boilerplate such as general corporate purposes. The full document is read when that score is above threshold, or when no rule matches. Threshold 2 sends capex (3), acquisitions (4), and named projects (5) to the full read, and leaves generic (0) and refinance or working capital (1) on the cheap filter. mid_min and mid_max mark scores that are specific enough to be a mid-size raise: if the threshold sits above them, those filings never get a full read.",
+  "threshold": 2,
+  "mid_min": 2,
+  "mid_max": 4,
+  "rules": [
+    {"id": "generic", "pattern": "general corporate purposes?", "weight": 0},
+    {"id": "working_capital", "pattern": "working capital", "weight": 1},
+    {"id": "refinance", "pattern": "\\brefinanc\\w*|\\brepay(?:ment|ing)?\\b", "weight": 1},
+    {"id": "capex", "pattern": "capital expenditures?|\\bcapex\\b", "weight": 3},
+    {"id": "acquisition", "pattern": "\\bacqui(?:red?|res|sition|sitions)\\b", "weight": 4},
+    {"id": "data_center", "pattern": "data cent(?:er|re) construction", "weight": 5}
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "hits": {
+    "total": {"value": 2},
+    "hits": [
+      {
+        "_id": "1",
+        "_source": {
+          "adsh": "0000999001-26-000010",
+          "ciks": ["999001"],
+          "form": "8-K",
+          "file_date": "2026-03-01",
+          "items": "1.01,9.01",
+          "file_description": "Item 1.01. Proceeds will be used for general corporate purposes.",
+          "display_names": ["Northwind Grid  (NWT)  (CIK 0000999001)"]
+        }
+      }
+    ]
+  }
+}

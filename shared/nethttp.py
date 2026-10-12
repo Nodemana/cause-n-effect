@@ -55,6 +55,9 @@ def _host_key(url):
         return "sec.gov"
     if host == "asx.com.au" or host.endswith(".asx.com.au"):
         return "asx.com.au"
+    # ASX company announcements are served from this host. It shares the ASX gate.
+    if host == "asx.api.markitdigital.com":
+        return "asx.com.au"
     return host
 
 

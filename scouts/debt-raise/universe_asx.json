@@ -1,0 +1,7 @@
+{
+  "description": "ASX issuers scanned for debt announcements. The research feed returns only the latest few headlines per code, so edit this list when those headlines move on. Tickers are ASX codes.",
+  "companies": [
+    {"ticker": "SCG", "name": "Scentre Group"},
+    {"ticker": "TLS", "name": "Telstra Group"}
+  ]
+}
