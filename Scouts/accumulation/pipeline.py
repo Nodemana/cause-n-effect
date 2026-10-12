@@ -56,29 +56,78 @@ def store_run(db_path, report, started_at, notes=None):
 
 
 def figures_from_report(report, seen_at):
+    """One figure per screened position, including review rows that parsed.
+
+    verified is 1 only when the cover page of the primary document yielded both
+    the percent of class and the share count. Currency is USD for SEC and AUD
+    for ASX. The source URL is the primary document, and the accession is kept
+    on that URL and in the period.
+    """
     rows = []
     for row in report.get("candidates") or []:
-        target = row.get("target") or {}
-        ticker = target.get("ticker")
-        if not ticker:
-            continue
-        stake = row.get("stake_pct")
-        filed = row.get("filing_date") or ""
-        rows.append(
-            {
-                "ticker": ticker,
-                "company": target.get("name"),
-                "figure_type": "stake_pct",
-                "instrument": row.get("filer") or "",
-                "period": filed or row.get("event_date") or "",
-                "value": stake,
-                "value_text": None if stake is None else str(stake),
-                "currency": None,
-                "seen_at": seen_at,
-                "announced_on": filed[:10] or None,
-                "source_url": row.get("document_url"),
-                "source_type": "asx_announcement" if row.get("source") == "asx" else "filing",
-                "verified": 1,
-            }
-        )
+        built = figure_from_position(row, seen_at, [])
+        if built:
+            rows.append(built)
+    for item in report.get("review") or []:
+        built = figure_from_position(item.get("position") or {}, seen_at, item.get("flags") or [])
+        if built:
+            rows.append(built)
     return rows
+
+
+def figure_from_position(position, seen_at, flags):
+    target = position.get("target") or {}
+    ticker = (target.get("ticker") or "").upper()
+    if not ticker:
+        return None
+    if position.get("source") == "asx" and not ticker.endswith(".AX"):
+        ticker = f"{ticker}.AX"
+    stake = position.get("stake_pct")
+    shares = position.get("share_count")
+    if stake is None and shares is None:
+        return None
+    filed = (position.get("filing_date") or position.get("event_date") or "")[:10]
+    filer = position.get("filer") or ""
+    accession = position.get("accession") or ""
+    if stake is not None and shares is not None:
+        text = f"{stake}% ({shares} shares)"
+    elif stake is not None:
+        text = f"{stake}%"
+    else:
+        text = str(shares)
+    return {
+        "ticker": ticker,
+        "company": target.get("name") or None,
+        "figure_type": "substantial_holding",
+        "instrument": position.get("form_type") or "",
+        "period": f"{filed}|{accession}|{filer}",
+        "value": stake if stake is not None else shares,
+        "value_text": text,
+        "currency": "AUD" if position.get("source") == "asx" else "USD",
+        "seen_at": seen_at,
+        "announced_on": filed or None,
+        "source_url": _source_url(position.get("document_url"), accession),
+        "source_type": "asx_announcement" if position.get("source") == "asx" else "filing",
+        "verified": _cover_verified(stake, shares, flags),
+    }
+
+
+def _cover_verified(stake, shares, flags):
+    """1 when percent of class and shares were both read from the cover page."""
+    if "unparseable_stake" in (flags or []):
+        return 0
+    if stake is None or shares is None:
+        return 0
+    return 1
+
+
+def _source_url(url, accession):
+    text = (url or "").strip()
+    if not text:
+        return None
+    acc = (accession or "").strip()
+    compact = acc.replace("-", "")
+    if acc and acc not in text and (not compact or compact not in text):
+        sep = "&" if "?" in text else "?"
+        return f"{text}{sep}accession={acc}"
+    return text

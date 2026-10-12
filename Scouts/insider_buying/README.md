@@ -22,7 +22,7 @@ Insider buying excludes sales, option exercises, grants, and gifts. Form 4 code 
 
 ## Run
 
-The live command writes this run into the shared figures table and exits nonzero when it stores no figure. SEC Form 4 requests wait until `SEC_CONTACT_EMAIL` is set. The offline check uses the Form 4 fixture.
+The live command writes this run into the shared figures table and exits nonzero when it stores no figure. SEC Form 4 requests wait until `SEC_CONTACT_EMAIL` is set. `--limit` caps how many Form 4 filings are downloaded (default 50). The offline check uses the Form 4 fixture. `--help` prints usage and does not open a connection.
 
 ```bash
 python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite

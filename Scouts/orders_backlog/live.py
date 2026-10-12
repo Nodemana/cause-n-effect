@@ -8,6 +8,7 @@ ASX order and backlog announcements still run. The command exits nonzero
 when this run stores no figure.
 """
 
+import argparse
 import json
 import os
 import sqlite3
@@ -36,24 +37,26 @@ def sec_block_message():
     return "SEC_CONTACT_EMAIL is missing. No SEC request was sent."
 
 
-def _option(args, name):
-    if name not in args:
-        return None
-    index = args.index(name)
-    if index + 1 >= len(args):
-        raise SystemExit(f"{name} needs a value")
-    return args[index + 1]
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="python3 -m Scouts.orders_backlog.live",
+        description="Store customer backlog and supplier order figures.",
+    )
+    parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite history path")
+    parser.add_argument("--sec-fixture", help="read this companyfacts JSON instead of contacting EDGAR")
+    parser.add_argument("--no-asx", action="store_true", help="do not request ASX announcements")
+    return parser
 
 
 def main(argv=None):
-    args = list(sys.argv[1:] if argv is None else argv)
-    db_path = Path(_option(args, "--db") or DEFAULT_DB)
+    args = build_parser().parse_args(argv)
+    db_path = Path(args.db)
     customers = fetcher.load_customers()
     suppliers = fetcher.load_suppliers()
     customer_facts = []
     supplier_facts = []
     releases = []
-    fixture = _option(args, "--sec-fixture")
+    fixture = args.sec_fixture
     if fixture:
         fixture = Path(fixture)
         payload = json.loads(fixture.read_text(encoding="utf-8"))
@@ -94,7 +97,7 @@ def main(argv=None):
                     "supplier_order",
                 )
             )
-    if "--no-asx" not in args:
+    if not args.no_asx:
         print(f"ASX order and backlog announcements, at most {fetcher.ASX_CAP} per company")
         releases.extend(_releases(fetcher.collect_asx(fetcher.load_asx()), "supplier_order"))
     table = pipeline.build_table(customer_facts, supplier_facts, releases)

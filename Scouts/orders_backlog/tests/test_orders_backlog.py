@@ -438,6 +438,24 @@ class OrdersBacklogTests(unittest.TestCase):
             if previous is not None:
                 os.environ["SEC_CONTACT_EMAIL"] = previous
 
+    def test_help_exits_zero_without_network(self):
+        import subprocess
+        import sys
+
+        env = {key: value for key, value in os.environ.items() if key != "SEC_CONTACT_EMAIL"}
+        root = str(Path(__file__).resolve().parents[3])
+        for flag in ("--help", "-h"):
+            completed = subprocess.run(
+                [sys.executable, "-m", "Scouts.orders_backlog.live", flag],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("usage", completed.stdout.lower())
+
 
 def _orders(points):
     return {"facts": {"us-gaap": {"OrdersReceived": {"units": {"USD": points}}}}}

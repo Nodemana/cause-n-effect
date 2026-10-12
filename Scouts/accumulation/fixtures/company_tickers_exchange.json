@@ -1,0 +1,12 @@
+{
+  "fields": ["cik", "name", "ticker", "exchange"],
+  "data": [
+    [999201, "Example Digital Inc", "NUAIW", "Nasdaq"],
+    [999201, "Example Digital Inc", "NUAI", "Nasdaq"],
+    [999202, "Example Foreign Mining", "FMTOF", "OTC"],
+    [999203, "Example Warrant Shell", "NUAIW", "Nasdaq"],
+    [999204, "Example Units Inc", "EXAMU", "Nasdaq"],
+    [999205, "Draw Example Inc", "DRAW", "NYSE"],
+    [999101, "Northwind Resources Inc", "NWND", "Nasdaq"]
+  ]
+}
