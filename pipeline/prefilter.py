@@ -216,7 +216,8 @@ def interesting(rating, *, ignore_on_time=False):
 
     One routine novelty, or one on_time timing, still emits the lead.
     Two failed ratings reject it, and so does a hard failure on its own.
-    Quarter-end capex and backlog pass ignore_on_time, so that band is not a failure.
+    Every orders_backlog figure passes ignore_on_time, and so does a
+    quarter-end capex figure, so that band is not a failure.
     """
     return failure_reason(rating, ignore_on_time=ignore_on_time) is None
 
@@ -227,8 +228,8 @@ def failure_reason(rating, *, ignore_on_time=False):
     magnitude small, attention noticed, and timing late reject on their own.
     novelty routine and timing on_time are surviving issues when exactly one
     rating fails. Two or more failed ratings reject, including routine together
-    with on_time. For a quarter-end capex or backlog figure, on_time is not
-    an issue at all.
+    with on_time. For every orders_backlog figure, and for a quarter-end
+    capex figure, on_time is not an issue at all.
     """
     hard, soft = _split_rating(rating, ignore_on_time=ignore_on_time)
     failed = hard + soft

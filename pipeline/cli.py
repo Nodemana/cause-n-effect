@@ -68,7 +68,10 @@ def build_parser():
             "When LLM_API_KEY is unset the offline stub runs the same stages and "
             "does not open a network connection. The key is never printed. "
             "Shares outstanding are cached from SEC companyfacts when "
-            "SEC_CONTACT_EMAIL is set. An official price source is TODO; "
+            "SEC_CONTACT_EMAIL is set. The same SEC client then names suppliers "
+            "on capex leads and customers on backlog leads from 8-K and 10-K "
+            "filings before the thesis is written. A source error drops that "
+            "company's parties. An official price source is TODO; "
             "the sweep does not call an unofficial price feed. "
             "The figures summary is the lead figures used after --limit."
         ),
@@ -126,6 +129,7 @@ def _run(parser, args):
         token_budget=args.token_budget,
         macro_cache=args.macro_cache,
         shares_client=shares_client,
+        parties_client=shares_client,
     )
     for key in (
         "run_id",

@@ -1,7 +1,8 @@
 """Sweep latest scout figures into pending decisions.
 
 Stages, in order: thresholds and dedupe, significance inside the token
-budget, one Centurion thesis per lead, Legate merge of linked theses,
+budget, SEC counterparty names when a parties client is passed, one
+Centurion thesis per lead, Legate merge of linked theses,
 a second Centurion pass only for each merged lead, Praetorian critique,
 Legate ranking, and a pending decision for each presented lead.
 
@@ -19,6 +20,7 @@ from shared.shares import cache_shares_outstanding, companies_from_figures
 from shared.store import utc_now
 
 from pipeline.budget import TokenBudget
+from pipeline.counterparties import enrich_leads
 from pipeline.llm import parse_json_object, resolve_provider
 from pipeline.load import is_quarter_figure, load_latest_figures
 from pipeline.marketcap import UNVERIFIED
@@ -98,6 +100,7 @@ class PlannedLead:
         self.real_id = None
         self.real_thesis_id = None
         self.real_merge_id = None
+        self.counterparties = []
 
 
 def run_pipeline(
@@ -110,8 +113,13 @@ def run_pipeline(
     macro_cache=None,
     now=None,
     shares_client=None,
+    parties_client=None,
 ):
-    """Run one sweep. `dry_run` computes the result and writes nothing."""
+    """Run one sweep. `dry_run` computes the result and writes nothing.
+
+    `parties_client` is a sec_client() used to name suppliers and customers
+    from SEC filings. With no client that step is skipped.
+    """
     if limit is not None and int(limit) < 1:
         raise ValueError("limit must be a positive integer")
     for lead_type in _LEAD_TYPES:
@@ -133,6 +141,7 @@ def run_pipeline(
         names, _ciks = party_index(figures)
         candidates, rejects, used = prefilter(conn, figures, limit=limit, now=started)
         leads = _rate(conn, provider, budget, candidates, rejects)
+        enrich_leads(leads, client=parties_client, names=names, as_of=started)
         _research(conn, provider, budget, leads, names, macro)
         leads = _drop_hard_failures(leads, rejects)
         merged = _merge(conn, provider, budget, leads, macro)
@@ -214,10 +223,12 @@ def _rate(conn, provider, budget, candidates, rejects):
 
 
 def _quarter_timing(candidate):
-    """Quarter-end capex and backlog do not treat on_time as an issue."""
-    if candidate.lead_type not in {"capex", "orders_backlog"}:
-        return False
-    return is_quarter_figure(candidate.figure, candidate.lead_type)
+    """Every orders_backlog figure ignores on_time. Capex does so only for a quarter print."""
+    if candidate.lead_type == "orders_backlog":
+        return True
+    if candidate.lead_type == "capex":
+        return is_quarter_figure(candidate.figure, "capex")
+    return False
 
 
 def _lead_from_candidate(candidate, rating):
@@ -364,6 +375,7 @@ def _merge(conn, provider, budget, leads, macro):
         lead.rating = primary.rating
         lead.grade_types = ordered_types(member.lead_type for member in members)
         lead.members = members
+        lead.counterparties = _merged_counterparties(members)
         lead.link_kind = kind
         lead.summary = _rationale(kind, members)
         lead.market_cap_unverified = bool(
@@ -798,6 +810,19 @@ def _identity(lead):
         names.add(normalise_name(lead.ticker))
     tickers = {str(lead.ticker).upper()} if lead.ticker else set()
     return names, tickers
+
+
+def _merged_counterparties(members):
+    found = []
+    seen = set()
+    for member in members:
+        for party in getattr(member, "counterparties", None) or []:
+            key = (party.get("role"), party.get("name_normalised"), party.get("source_url"))
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(dict(party))
+    return found
 
 
 def _primary(kind, members):

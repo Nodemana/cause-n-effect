@@ -24,14 +24,17 @@ def significance_prompt(candidate):
     quarter = candidate.lead_type in {"capex", "orders_backlog"} and is_quarter_figure(
         figure, candidate.lead_type
     )
-    novelty_rule = (
-        "This is a quarter-end capex or backlog figure. novelty follows GROWTH_PCT: "
-        "growth of at least 50 percent is first, and a smaller stored growth rate is routine. "
-        "An earlier quarter of the same figure is not by itself routine. "
-        "timing on_time is recorded and is not a failure for this figure."
-        if quarter
-        else "novelty is first only when EARLIER_FIGURE is no."
-    )
+    if quarter:
+        novelty_rule = (
+            "This is a quarter-end capex or backlog figure. novelty follows GROWTH_PCT: "
+            "growth of at least 50 percent is first, and a smaller stored growth rate is routine. "
+            "An earlier quarter of the same figure is not by itself routine. "
+        )
+    else:
+        novelty_rule = "novelty is first only when EARLIER_FIGURE is no. "
+    timing_rule = ""
+    if candidate.lead_type == "orders_backlog" or quarter:
+        timing_rule = "timing on_time is recorded and is not a failure for this figure. "
     return "\n".join(
         [
             "TASK: significance",
@@ -53,7 +56,8 @@ def significance_prompt(candidate):
             "attention, attention_rationale, timing, timing_rationale.",
             "magnitude is large, moderate, or small. novelty is first or routine. "
             + novelty_rule
-            + " attention is unnoticed or noticed. "
+            + timing_rule
+            + "attention is unnoticed or noticed. "
             "timing is early (event age at most 45 days), on_time (46 to 120 days), or late (older than 120).",
             "Each rationale is one sentence. Use only the fields above. "
             "Do not invent a figure, a source, or a media article.",
@@ -80,8 +84,22 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
         f"GROWTH_PCT: {_number(getattr(figure, 'growth_pct', None))}",
         f"GROWTH_TEXT: {_one_line(getattr(figure, 'growth_text', None))}",
         f"MARKET_CAP: {_number(getattr(figure, 'market_cap', None))}",
-        "CRITERIA_BEGIN",
+        "COUNTERPARTIES_BEGIN",
     ]
+    for party in getattr(lead, "counterparties", None) or []:
+        lines.append(
+            json.dumps(
+                {
+                    "role": party.get("role") or "",
+                    "name": party.get("name") or "",
+                    "ticker": party.get("ticker") or "",
+                    "source_url": party.get("source_url") or "",
+                },
+                sort_keys=True,
+            )
+        )
+    lines.append("COUNTERPARTIES_END")
+    lines.append("CRITERIA_BEGIN")
     for criterion in criteria:
         threshold = criterion.get("threshold_value")
         unit = criterion.get("threshold_unit") or ""
@@ -127,7 +145,8 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
         "grades, suppliers, customers, buyers, price_run. "
         "grades is a list of {name, passed, evidence}. "
         "risks and assumptions are lists of sentences. "
-        "suppliers, customers, and buyers are lists of {name, ticker}. "
+        "suppliers, customers, and buyers are lists of {name, ticker} "
+        "taken from COUNTERPARTIES and from the figure text. "
         "price_run is null on a first pass. "
         "Figures only from the source URL and the fields above."
     )
