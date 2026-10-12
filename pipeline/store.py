@@ -165,6 +165,28 @@ def insert_lead(conn, run_id, planned, created_at):
                 lead_id,
             ),
         )
+        for party in getattr(planned, "counterparties", None) or []:
+            name = (party.get("name") or "").strip()
+            role = (party.get("role") or "").strip()
+            source_url = (party.get("source_url") or "").strip()
+            if role not in {"supplier", "customer", "buyer"} or not name or not source_url:
+                continue
+            ticker = (party.get("ticker") or "").strip() or None
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO lead_counterparties (
+                    lead_id, role, name, name_normalised, ticker, source_url
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lead_id,
+                    role,
+                    name,
+                    party.get("name_normalised") or normalise_name(name),
+                    ticker,
+                    source_url,
+                ),
+            )
     return lead_id
 
 

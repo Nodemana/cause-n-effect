@@ -430,7 +430,12 @@ def _parties(prompt, constituents):
             suppliers.extend(item.get("suppliers") or [])
             customers.extend(item.get("customers") or [])
             buyers.extend(item.get("buyers") or [])
-        return _unique_parties(suppliers), _unique_parties(customers), _unique_parties(buyers)
+        extra_suppliers, extra_customers, extra_buyers = _counterparty_parties(prompt)
+        return (
+            _unique_parties(suppliers + extra_suppliers),
+            _unique_parties(customers + extra_customers),
+            _unique_parties(buyers + extra_buyers),
+        )
     value_text = _field(prompt, "VALUE_TEXT")
     figure_type = _field(prompt, "FIGURE_TYPE")
     instrument = _field(prompt, "INSTRUMENT")
@@ -441,7 +446,38 @@ def _parties(prompt, constituents):
         buyers.append({"name": instrument.strip(), "ticker": ""})
     if figure_type in {"customer_backlog", "backlog"} and _is_party(instrument):
         customers.append({"name": instrument.strip(), "ticker": ""})
-    return _unique_parties(suppliers), _unique_parties(customers), _unique_parties(buyers)
+    extra_suppliers, extra_customers, extra_buyers = _counterparty_parties(prompt)
+    return (
+        _unique_parties(suppliers + extra_suppliers),
+        _unique_parties(customers + extra_customers),
+        _unique_parties(buyers + extra_buyers),
+    )
+
+
+def _counterparty_parties(prompt):
+    suppliers, customers, buyers = [], [], []
+    for line in _block(prompt, "COUNTERPARTIES").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        name = (item.get("name") or "").strip()
+        if not name:
+            continue
+        party = {"name": name, "ticker": (item.get("ticker") or "").strip()}
+        role = (item.get("role") or "").casefold()
+        if role == "supplier":
+            suppliers.append(party)
+        elif role == "customer":
+            customers.append(party)
+        elif role == "buyer":
+            buyers.append(party)
+    return suppliers, customers, buyers
 
 
 def _constituents(prompt):

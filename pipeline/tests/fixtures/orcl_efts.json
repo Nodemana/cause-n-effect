@@ -1,0 +1,23 @@
+{
+  "hits": {
+    "total": {"value": 1},
+    "hits": [
+      {
+        "_id": "0000999001-26-000008:orcl-8k.htm",
+        "_source": {
+          "adsh": "0000999001-26-000008",
+          "ciks": ["0000999001"],
+          "form": "8-K",
+          "file_date": "2026-08-15",
+          "items": "1.01",
+          "display_names": ["Oracle Corp"]
+        },
+        "highlight": {
+          "doc_text": [
+            "entered into a <em>supply agreement</em> with Globex Power to purchase equipment"
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -28,7 +28,7 @@ from pipeline.prefilter import (  # noqa: E402
     interesting,
     surviving_issue,
 )
-from pipeline.prompts import praetorian_prompt  # noqa: E402
+from pipeline.prompts import praetorian_prompt, significance_prompt  # noqa: E402
 from pipeline.store import search_rejects  # noqa: E402
 from shared.pipeline_store import connect  # noqa: E402
 from shared.shares import cache_shares_outstanding, shares_from_companyfacts  # noqa: E402
@@ -1446,6 +1446,82 @@ class GateTests(unittest.TestCase):
         self.assertFalse(any("timing on_time" in reason for reason in reasons))
         self.assertTrue(any("timing late" in reason for reason in reasons))
 
+    def test_supplier_order_on_time_is_not_an_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            conn = _history(path)
+            try:
+                save_run(
+                    conn,
+                    "orders-backlog",
+                    "2026-10-12T14:31:00Z",
+                    [
+                        _orders("SUP", "filing", "2026-06-30", 500_000_000, figure_type="supplier_order"),
+                        _orders("SUP", "filing", "2026-03-31", 200_000_000, figure_type="supplier_order"),
+                        _orders("LATE", "filing", "2026-01-31", 500_000_000, figure_type="supplier_order"),
+                        _orders("LATE", "filing", "2025-10-31", 200_000_000, figure_type="supplier_order"),
+                        *_caps("SUP", "LATE"),
+                    ],
+                )
+            finally:
+                conn.close()
+            run_pipeline(path, provider=StubProvider(), token_budget=80000, now=SWEEP_AT)
+            conn = connect(path)
+            try:
+                kept = conn.execute(
+                    """
+                    SELECT l.significance_timing, l.significance_novelty, r.assumptions_that_fail
+                    FROM leads AS l
+                    JOIN theses AS t ON t.lead_id = l.lead_id
+                    JOIN praetorian_reviews AS r ON r.thesis_id = t.thesis_id
+                    WHERE l.ticker = 'SUP'
+                    """
+                ).fetchone()
+                late = [
+                    row["reason"] or ""
+                    for row in conn.execute(
+                        """
+                        SELECT reason FROM lead_rejects
+                        WHERE ticker = 'LATE' AND rejection_stage = 'llm'
+                        """
+                    )
+                ]
+                leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
+            finally:
+                conn.close()
+        self.assertIn("SUP", leads)
+        self.assertNotIn("LATE", leads)
+        self.assertEqual(kept["significance_timing"], "on_time")
+        self.assertEqual(kept["significance_novelty"], "routine")
+        self.assertIn("novelty routine", kept["assumptions_that_fail"])
+        self.assertNotIn("timing on_time", kept["assumptions_that_fail"])
+        self.assertTrue(any("timing late" in reason for reason in late))
+        self.assertFalse(any("timing on_time" in reason for reason in late))
+
+    def test_on_time_exemption_prompt_covers_every_backlog_figure(self):
+        supplier = significance_prompt(
+            _prompt_candidate("orders_backlog", "supplier_order", "filing", "2026-06-30")
+        )
+        self.assertIn("QUARTER_FIGURE: no", supplier)
+        self.assertIn("timing on_time is recorded and is not a failure", supplier)
+        self.assertNotIn("novelty follows GROWTH_PCT", supplier)
+        quarter = significance_prompt(
+            _prompt_candidate("orders_backlog", "backlog", "quarter", "2026-04-01/2026-06-30")
+        )
+        self.assertIn("QUARTER_FIGURE: yes", quarter)
+        self.assertIn("novelty follows GROWTH_PCT", quarter)
+        self.assertIn("timing on_time is recorded and is not a failure", quarter)
+        annual = significance_prompt(
+            _prompt_candidate(
+                "capex",
+                "PaymentsToAcquireProductiveAssets",
+                "annual",
+                "2025-01-01/2025-12-31",
+            )
+        )
+        self.assertIn("QUARTER_FIGURE: no", annual)
+        self.assertNotIn("not a failure", annual)
+
     def test_capex_yoy_uses_trailing_twelve_month_totals(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "history.sqlite")
@@ -1871,6 +1947,25 @@ def _facts_backlog(ticker, period, value):
 
 def _view(row):
     return type("Row", (), dict(row))()
+
+
+def _prompt_candidate(lead_type, figure_type, instrument, period):
+    figure = type("Figure", (), {})()
+    figure.ticker = "GEV"
+    figure.figure_type = figure_type
+    figure.value = 500_000_000
+    figure.value_text = ""
+    figure.instrument = instrument
+    figure.period = period
+    figure.source_url = "https://www.sec.gov/Archives/edgar/data/1/gev.htm"
+    figure.earlier_similar = True
+    figure.earlier_type = True
+    figure.growth_pct = 12
+    figure.period_age_days = 104
+    candidate = type("Candidate", (), {})()
+    candidate.lead_type = lead_type
+    candidate.figure = figure
+    return candidate
 
 
 def _order(ticker, instrument, value_text, figure_type="supplier_order"):
