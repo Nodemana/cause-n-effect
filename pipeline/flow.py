@@ -2,14 +2,16 @@
 
 `run_pipeline` does the deterministic work, writes significance task files,
 records status awaiting_agents, and returns. `ingest_run` checks result
-files and advances one judgement stage. Combining leads, a leftover Legate
-merge, and ranking stay in process and do not write task files.
+files and advances one judgement stage. Combining leads and a leftover Legate
+merge stay in process. Ranking writes the candidate report and one legate task.
 
 Stage order: significance, then one Centurion task per lead, a leftover Legate
 merge, centurion pass 2 only for that leftover, then a Praetorian critique,
-then ranking. The critique lists every flaw and does not drop a lead.
-Ranking writes at most `--max-theses` theses (default 5) to
-`data/reports/<run_id>.md`. Linkable
+then ranking, then Legate selection. The critique lists every flaw and does
+not drop a lead. Ranking writes every candidate thesis to
+`data/reports/<run_id>-candidates.md` and a legate_selection task.
+The Legate selects at most 5. Ingest writes
+`data/reports/<run_id>-final.md` from that selection. Linkable
 capex, orders backlog, and debt raises become one capex-chain lead before
 that Centurion. Same-ticker insider and accumulation signals inside the
 window become one smart-money lead. Macro stays a lead of its own. Market cap
@@ -35,6 +37,8 @@ from pipeline.agent import (
     SIGNIFICANCE_SCHEMA,
     CENTURION_SCHEMA,
     PRAETORIAN_SCHEMA,
+    LEGATE_SELECTION_SCHEMA,
+    LEGATE_TASK_ID,
     AgentResultError,
     figure_task_id,
     lead_task_id,
@@ -64,21 +68,26 @@ from pipeline.prompts import (
     centurion_prompt,
     load_macro,
     ordered_types,
+    legate_selection_prompt,
     praetorian_prompt,
     rules_text,
     significance_prompt,
 )
-from pipeline.report import reports_directory, write_report
+from pipeline.report import reports_directory, write_candidates_report, write_final_report
 from pipeline.scout_groups import CHAIN_TYPES, combine
 from pipeline import store
 
-SHORTLIST_MAX = 5
 # One surviving issue costs this many score points. Magnitude and growth
 # can still place a large backlog or a sharp capex print above a small stake.
 _ISSUE_PENALTY = 8.0
 _PRICE_RUNS = {"new", "acceleration", "priced-in"}
 _LEAD_TYPES = ("capex", "debt_raise", "orders_backlog", "accumulation", "insider_buying", "macro")
-_AGENT_STAGES = ("significance", "centurion_1", "centurion_2", "praetorian")
+_AGENT_STAGES = ("significance", "centurion_1", "centurion_2", "praetorian", "legate_selection")
+_LEGATE_RULES = (
+    "Select at most 5 candidate lead ids. "
+    "Each pick has a rationale. "
+    "Each lead id is copied from the candidate list."
+)
 _JUDGEMENT_STAGE = "agent"
 PRAETORIAN_RULES = Path(__file__).resolve().parents[1] / "Praetorians" / "README.md"
 
@@ -127,6 +136,8 @@ class PlannedLead:
         self.real_id = None
         self.real_thesis_id = None
         self.real_merge_id = None
+        self.pick_order = None
+        self.selection_rationale = None
         self.counterparties = []
         self.related_findings = []
 
@@ -140,7 +151,6 @@ def run_pipeline(
     now=None,
     shares_client=None,
     queue_dir=None,
-    max_theses=SHORTLIST_MAX,
 ):
     """Do the deterministic work and queue the next agent stage.
 
@@ -150,8 +160,6 @@ def run_pipeline(
     """
     if limit is not None and int(limit) < 1:
         raise ValueError("limit must be a positive integer")
-    if int(max_theses) < 1:
-        raise ValueError("max_theses must be a positive integer")
     for lead_type in _LEAD_TYPES:
         rules_text(lead_type)
     started = now or utc_now()
@@ -184,13 +192,12 @@ def run_pipeline(
         state.names = names
         state.queue_dir = queue
         state.reports_dir = reports_directory(queue)
-        state.max_theses = int(max_theses)
         state.limit = limit
         run_id = store.start_run(conn, started)
         state.run_id = run_id
         store.begin_pipeline_run(conn, run_id, started, queue, "awaiting_agents", "significance")
         tasks = _open_significance(conn, state)
-        if state.stage == "ranking":
+        if state.finished:
             return _complete_result(conn, state)
         save_state(state)
         store.set_pipeline_stage(conn, run_id, "awaiting_agents", state.stage)
@@ -204,7 +211,8 @@ def ingest_run(db_path, run_id, *, queue_dir=None, parties_client=None):
 
     A missing or malformed result raises AgentResultError and leaves the
     stage where it is. Legate merge and ranking run here when their inputs
-    are ready. Ranking writes no task files.
+    are ready. Ranking writes the candidate report and one legate task.
+    The selection result then writes the final report.
     """
     conn = connect(db_path)
     try:
@@ -219,8 +227,10 @@ def ingest_run(db_path, run_id, *, queue_dir=None, parties_client=None):
         queue = stored_queue or str(Path(queue_dir or "data/agent_queue").resolve())
         if row["finished_at"]:
             state = load_state(queue, run_id)
+            if _candidates_report_path(state) is None:
+                write_candidates_report(state, _ranked_from_state(state))
             if _report_path(state) is None:
-                write_report(state, _ranked_from_state(state))
+                write_final_report(state, _selected_from_state(state))
             return _complete_result(conn, state)
         state = load_state(queue, run_id)
         if state.pending_persist:
@@ -239,8 +249,12 @@ def ingest_run(db_path, run_id, *, queue_dir=None, parties_client=None):
                 _apply_centurion_2(conn, state, results)
             elif stage == "praetorian":
                 _apply_praetorian(conn, state, results)
+            elif stage == "legate_selection":
+                _apply_legate_selection(conn, state, results)
         if state.pending_persist:
             _finish(conn, state, leads=state.leads, merged=state.merged, ranked=_ranked_from_state(state))
+            return _complete_result(conn, state)
+        if state.finished:
             return _complete_result(conn, state)
         save_state(state)
         store.set_pipeline_stage(conn, run_id, "awaiting_agents", state.stage)
@@ -299,6 +313,7 @@ def _awaiting_result(state, *, status, tasks, figures, macro, dry_run=False):
         "tasks": tasks,
         "queue_dir": None if dry_run else state.queue_dir,
         "report": None,
+        "candidates": None,
     }
 
 
@@ -316,6 +331,7 @@ def _complete_result(conn, state):
         """,
         (run_id,),
     ).fetchone()[0]
+    stage = conn.execute("SELECT stage FROM pipeline_runs WHERE run_id = ?", (run_id,)).fetchone()
     if not state.macro:
         macro = "skipped"
     else:
@@ -334,25 +350,42 @@ def _complete_result(conn, state):
         "dry_run": False,
         "macro": macro,
         "status": "complete",
-        "stage": "ranking",
+        "stage": stage["stage"] if stage else "legate_selection",
         "tasks": 0,
         "queue_dir": state.queue_dir,
         "report": _report_path(state),
+        "candidates": _candidates_report_path(state),
     }
 
 
-def _report_path(state):
+def _report_file(state, suffix):
     directory = getattr(state, "reports_dir", None) or reports_directory(state.queue_dir or "data/agent_queue")
-    path = Path(directory) / f"{state.run_id}.md"
+    path = Path(directory) / f"{state.run_id}{suffix}"
     if path.is_file():
         return str(path)
     return None
 
 
+def _report_path(state):
+    return _report_file(state, "-final.md")
+
+
+def _candidates_report_path(state):
+    return _report_file(state, "-candidates.md")
+
+
 def _ranked_from_state(state):
     by_id = {lead.synthetic_id: lead for lead in list(state.leads) + list(state.merged)}
     final = [by_id[item] for item in state.final_ids]
-    return [lead for lead in final if getattr(lead, "rank", None)]
+    ranked = [lead for lead in final if getattr(lead, "rank", None)]
+    ranked.sort(key=lambda lead: lead.rank or 0)
+    return ranked
+
+
+def _selected_from_state(state):
+    selected = [lead for lead in _ranked_from_state(state) if getattr(lead, "pick_order", None)]
+    selected.sort(key=lambda lead: lead.pick_order)
+    return selected
 
 
 def _open_significance(conn, state):
@@ -560,12 +593,7 @@ def _apply_praetorian(conn, state, results):
         if data is None:
             raise AgentResultError(f"{lead_id}: missing praetorian result")
         _attach_review(lead, data)
-    ranked = _rank(final, state.max_theses)
-    state.final_ids = [lead.synthetic_id for lead in final]
-    state.pending_persist = True
-    state.stage = "praetorian"
-    save_state(state)
-    _ = (conn, ranked)
+    _publish_candidates(conn, state)
 
 
 def _queue_praetorian(conn, state):
@@ -581,11 +609,11 @@ def _queue_praetorian(conn, state):
 def _queue_ranking(conn, state):
     final = _final_leads(state.leads, state.merged)
     state.final_ids = [lead.synthetic_id for lead in final]
-    ranked = _rank(final, state.max_theses)
+    _rank(final)
     state.pending_persist = True
     state.stage = "ranking"
     save_state(state)
-    _ = (conn, ranked)
+    _ = conn
 
 
 def _write_judgement_task(state, stage, lead_id, prompt, rules, subject, evidence, macro_context, output_schema):
@@ -819,8 +847,7 @@ def _attach_review(lead, data):
     lead.thesis.review = {"flaws": flaws}
 
 
-def _rank(final, max_theses=SHORTLIST_MAX):
-    cap = SHORTLIST_MAX if max_theses is None else int(max_theses)
+def _rank(final):
     reviewed = []
     for lead in final:
         if lead.thesis is None:
@@ -831,7 +858,9 @@ def _rank(final, max_theses=SHORTLIST_MAX):
     scored.sort(key=lambda item: _rank_key(item[1], item[0]))
     for index, (score, lead) in enumerate(scored, start=1):
         lead.rank = index
-        lead.presented = index <= cap
+        lead.presented = False
+        lead.pick_order = None
+        lead.selection_rationale = None
         flaws = (getattr(lead.thesis, "review", None) or {}).get("flaws") or []
         lead.rank_rationale = (
             f"Rank {index}: score {score:.1f} from ROI {lead.thesis.roi or lead.thesis.roi_pct}, "
@@ -841,6 +870,89 @@ def _rank(final, max_theses=SHORTLIST_MAX):
             f"Praetorian flaws recorded: {len(flaws)}."
         )
     return [lead for _score, lead in scored]
+
+
+def _publish_candidates(conn, state):
+    """Store every ranked thesis and queue the Legate selection."""
+    by_id = {lead.synthetic_id: lead for lead in list(state.leads) + list(state.merged)}
+    final = [by_id[item] for item in state.final_ids]
+    ranked = _rank(final)
+    _persist(conn, state.run_id, state.judgement_rejects, state.leads, state.merged, ranked)
+    write_candidates_report(state, ranked)
+    if not ranked:
+        write_final_report(state, [])
+        store.complete_run(conn, state.run_id, utc_now())
+        state.pending_persist = False
+        state.finished = True
+        state.stage = "legate_selection"
+        save_state(state)
+        return
+    _write_legate_task(state, ranked)
+    state.pending_persist = False
+    state.finished = False
+    state.stage = "legate_selection"
+    save_state(state)
+
+
+def _write_legate_task(state, ranked):
+    candidates = []
+    for lead in ranked:
+        flaws = (getattr(lead.thesis, "review", None) or {}).get("flaws") or []
+        candidates.append(
+            {
+                "lead_id": lead.real_id,
+                "ticker": lead.ticker,
+                "rank": lead.rank,
+                "source_scout": lead.source_scout,
+                "summary": lead.summary,
+                "flaws": len(flaws),
+            }
+        )
+    directory = state.reports_dir or reports_directory(state.queue_dir)
+    report = str(Path(directory) / f"{state.run_id}-candidates.md")
+    _write_judgement_task(
+        state,
+        "legate_selection",
+        LEGATE_TASK_ID,
+        legate_selection_prompt(candidates),
+        _LEGATE_RULES,
+        {"run_id": state.run_id},
+        {"candidates_report": report, "candidates": candidates},
+        None,
+        LEGATE_SELECTION_SCHEMA,
+    )
+
+
+def _apply_legate_selection(conn, state, results):
+    data = results.get(LEGATE_TASK_ID)
+    if data is None:
+        raise AgentResultError(f"{LEGATE_TASK_ID}: missing result")
+    known = {lead.real_id: lead for lead in _ranked_from_state(state) if lead.real_id is not None}
+    db_ids = {
+        row["lead_id"]
+        for row in conn.execute("SELECT lead_id FROM rankings WHERE run_id = ?", (state.run_id,))
+    }
+    unknown = [item for item in data["lead_ids"] if item not in db_ids or item not in known]
+    if unknown:
+        listed = ", ".join(str(item) for item in unknown)
+        raise AgentResultError(f"{LEGATE_TASK_ID}: unknown lead_ids {listed}")
+    picks = []
+    selected = []
+    for order, lead_id in enumerate(data["lead_ids"], start=1):
+        lead = known[lead_id]
+        rationale = str(data["rationale"][str(lead_id)]).strip()
+        lead.presented = True
+        lead.pick_order = order
+        lead.selection_rationale = rationale
+        picks.append((lead_id, rationale))
+        selected.append(lead)
+    created = utc_now()
+    store.record_selection(conn, state.run_id, picks, created)
+    write_final_report(state, selected)
+    state.pending_persist = False
+    state.finished = True
+    state.stage = "legate_selection"
+    save_state(state)
 
 
 def _deterministic_notes(lead):
@@ -924,12 +1036,16 @@ def _rank_figures(lead):
 
 
 def _finish(conn, state, leads, merged, ranked):
+    """Finish a sweep that has no candidate theses."""
     row = store.pipeline_run(conn, state.run_id)
     if row is None or row["finished_at"] is None:
         _persist(conn, state.run_id, state.judgement_rejects, leads, merged, ranked)
-    write_report(state, ranked)
+        write_candidates_report(state, ranked)
+        write_final_report(state, [])
+        store.complete_run(conn, state.run_id, utc_now())
     state.pending_persist = False
-    state.stage = "ranking"
+    state.finished = True
+    state.stage = "legate_selection"
     save_state(state)
 
 
@@ -984,18 +1100,13 @@ def _persist(conn, run_id, rejects, leads, merged, ranked):
         )
         if lead.real_merge_id is not None:
             store.set_merge_rank(conn, lead.real_merge_id, lead.rank)
-        if lead.presented:
-            store.set_status(conn, lead.real_id, "presented", lead.rank)
-            store.insert_decision(conn, run_id, lead.real_id, created)
-        else:
-            store.set_status(conn, lead.real_id, "researched", lead.rank)
+        store.set_status(conn, lead.real_id, "researched", lead.rank)
     ranked_ids = {lead.real_id for lead in ranked}
     for lead in list(leads) + list(merged):
         if lead.real_id in ranked_ids:
             continue
         status = "researched" if lead.thesis is not None else "assigned"
         store.set_status(conn, lead.real_id, status)
-    store.complete_run(conn, run_id, utc_now())
     return run_id
 
 

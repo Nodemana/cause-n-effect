@@ -142,7 +142,7 @@ Each pass is a row in `critiques`. The thesis that leaves this step is one the L
 
 ## Rank
 
-After the critiques, the Legate ranks every final thesis. The score is expected return, plus growth and magnitude, minus 8 points per deterministic surviving issue (a significance soft issue, an unverified market cap, or an open backlog growth question). Praetorian flaws appear on the rationale and in the report. They do not change the score or remove a lead. A merged thesis is one entry. `--max-theses` (default 5) is how many of those rows move to status `presented` and into `data/reports/<run_id>.md`. That file is what the Imperator reads: thesis, cause to effect chain, tickers, evidence links, the full Praetorian flaw list, and macro context.
+After the critiques, the Legate ranks every final thesis. The score is expected return, plus growth and magnitude, minus 8 points per deterministic surviving issue (a significance soft issue, an unverified market cap, or an open backlog growth question). Praetorian flaws appear on the rationale and in the candidate report. They do not change the score or remove a lead. A merged thesis is one entry. Ranking writes every candidate to `data/reports/<run_id>-candidates.md` and queues one Legate task. The Legate selects at most 5 lead ids, with a rationale for each pick. That selection is what moves to status `presented` and into `data/reports/<run_id>-final.md`. That file is what the Imperator reads: thesis, cause to effect chain, tickers, evidence links, the full Praetorian flaw list, the Legate rationale, and macro context.
 
 ## Outcome
 

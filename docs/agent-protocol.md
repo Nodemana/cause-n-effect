@@ -12,7 +12,7 @@ python3 -m pipeline status --db /tmp/cause-n-effect.sqlite --run <run_id>
 python3 -m pipeline ingest --db /tmp/cause-n-effect.sqlite --run <run_id>
 ```
 
-Repeat `status` and `ingest` after each stage. The last successful `ingest` prints `status: complete`, `stage: ranking`, and the ranking and decision counts.
+Repeat `status` and `ingest` after each stage. The last successful `ingest` prints `status: complete`, `stage: legate_selection`, and the ranking and decision counts.
 
 `--queue-dir` overrides the default `data/agent_queue`. `ingest` must use the same directory the run stored.
 
@@ -29,7 +29,8 @@ A market cap is shares outstanding times an official USD share-price figure alre
 3. **Legate merge** — deterministic, no task file. Chain types are not merged again. A leftover cross-group link, such as capex with insider buying, becomes one merged lead.
 4. **centurion_2** — one task per leftover merged lead. A sweep with no leftover merge skips this stage.
 5. **praetorian** — one task per lead that still has a thesis (the chain or smart-money lead, a single lead, or a leftover merge). The result is a list of flaws. Each flaw has `flaw`, `severity` (`low`, `moderate`, or `high`), and `evidence`. An empty list is valid. The critique does not reject, drop, or filter a lead.
-6. **ranking** — deterministic. Score is expected return, plus growth and magnitude, minus 8 points per deterministic surviving issue (a significance soft issue, an unverified market cap, or an open backlog growth question). Praetorian flaws are not part of that count and do not remove a lead. The top of the list, at most `--max-theses` (default 5), gets a pending decision and a section in `data/reports/<run_id>.md`. Each section includes that thesis's full flaw list. No task file.
+6. **ranking** — deterministic. Score is expected return, plus growth and magnitude, minus 8 points per deterministic surviving issue (a significance soft issue, an unverified market cap, or an open backlog growth question). Praetorian flaws are not part of that count and do not remove a lead. Every ranked thesis is written to `data/reports/<run_id>-candidates.md`, with its full flaw list, and one `legate_selection` task is queued.
+7. **legate_selection** — the Legate writes `legate_selection.result.json`. `lead_ids` has at most 5 integers, each a candidate from that task. `rationale` has one non-empty string per chosen id, keyed by the id as text. `ingest` rejects a longer list, a duplicate, an unknown id, or a missing rationale, and leaves the stage where it is. A valid file writes `data/reports/<run_id>-final.md` with those theses and a pending decision for each. An empty `lead_ids` array selects none.
 
 A stage with nothing left to judge is skipped. The run then finishes with zero rankings and zero decisions.
 
@@ -39,7 +40,7 @@ A stage with nothing left to judge is skipped. The run then finishes with zero r
 data/agent_queue/<pipeline_run_id>/<stage>/<lead_id>.task.json
 ```
 
-Significance has no lead row yet, so `<lead_id>` is `figure-<figure_id>`. Centurion and Praetorian stages use the sweep lead key (`1`, `2`, …). The database `lead_id` is assigned when ranking finishes.
+Significance has no lead row yet, so `<lead_id>` is `figure-<figure_id>`. Centurion and Praetorian stages use the sweep lead key (`1`, `2`, …). Ranking assigns the database `lead_id`. The Legate task id is the literal `legate_selection`, and the ids inside its result are those database lead ids.
 
 The JSON object contains:
 
@@ -83,8 +84,16 @@ The Centurion still writes one result file. There is no shared evidence file and
 
 `flaws` is an array of `{flaw, severity, evidence}`. `severity` is `low`, `moderate`, or `high`. `flaw` and `evidence` are non-empty strings. The array may be empty. Extra keys are rejected. The list is stored and shown. It does not reject the lead.
 
+### Legate selection
+
+`lead_ids` is an array of at most 5 integers. `rationale` is an object with one non-empty string for each chosen id. The key is the lead id as text. Extra keys are rejected. An empty array selects none.
+
+```text
+data/agent_queue/<pipeline_run_id>/legate_selection/legate_selection.result.json
+```
+
 ## After the last stage
 
-Ranking reads the ingested expected return, timeframe, and the deterministic surviving issues. It writes `rankings` for every lead that still has a thesis and a `pending` row in `decisions` for each presented lead. A Praetorian flaw does not remove a row from `rankings`. `--max-theses` on `run` caps that presented list (default 5). The same list is written to `data/reports/<run_id>.md` when the queue is `data/agent_queue` (the report directory is the queue directory's sibling `reports/`). Each section has the thesis, the cause to effect chain, the tickers, the evidence links, the full Praetorian flaw list (severity, flaw, and evidence), and the macro context. `pipeline_runs.status` becomes `complete` and `stage` becomes `ranking`. `provider` is `agent`. Token columns stay at 0.
+Ranking reads the ingested expected return, timeframe, and the deterministic surviving issues. It writes `rankings` for every lead that still has a thesis. A Praetorian flaw does not remove a row from `rankings`. The same list is written to `data/reports/<run_id>-candidates.md` when the queue is `data/agent_queue` (the report directory is the queue directory's sibling `reports/`). Each section has the lead id, the thesis, the cause to effect chain, the tickers, the evidence links, the full Praetorian flaw list (severity, flaw, and evidence), and the macro context. The Legate selection then writes a `pending` row in `decisions` for each chosen lead and `data/reports/<run_id>-final.md` with those theses and the rationale for each pick. `pipeline_runs.status` becomes `complete` and `stage` becomes `legate_selection`. `provider` is `agent`. Token columns stay at 0.
 
 A judgement reject is stored with `rejection_stage` `agent`. A threshold or dedupe reject stays `deterministic` and is written by `run`, before any agent task.

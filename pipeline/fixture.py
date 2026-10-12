@@ -24,6 +24,8 @@ def fixture_response(prompt):
         return _centurion(prompt)
     if task == "praetorian":
         return _praetorian(prompt)
+    if task == "legate_selection":
+        return _legate_selection(prompt)
     raise FixtureError(f"fixture has no response for task {task!r}")
 
 
@@ -95,6 +97,8 @@ def _stub_text(prompt):
         return json.dumps(_centurion(prompt), sort_keys=True)
     if task == "praetorian":
         return json.dumps(_praetorian(prompt), sort_keys=True)
+    if task == "legate_selection":
+        return json.dumps(_legate_selection(prompt), sort_keys=True)
     raise FixtureError(f"stub has no response for task {task!r}")
 
 
@@ -543,6 +547,20 @@ def _official_citation(thesis):
         "asx_announcement",
     )
     return any(mark in text for mark in marks)
+
+
+def _legate_selection(prompt):
+    """Select every listed candidate, at most 5, in the order the prompt lists them."""
+    ids = []
+    for line in (prompt or "").splitlines():
+        if not line.startswith("LEAD_ID: "):
+            continue
+        ids.append(int(line.split(":", 1)[1].strip()))
+    chosen = ids[:5]
+    return {
+        "lead_ids": chosen,
+        "rationale": {str(item): f"Selected lead {item}." for item in chosen},
+    }
 
 
 def _praetorian(prompt):

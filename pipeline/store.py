@@ -80,7 +80,7 @@ def complete_run(conn, run_id, finished_at):
         conn.execute(
             """
             UPDATE pipeline_runs
-            SET status = 'complete', stage = 'ranking', finished_at = ?,
+            SET status = 'complete', stage = 'legate_selection', finished_at = ?,
                 token_budget = 0, tokens_used = 0, provider = 'agent'
             WHERE run_id = ?
             """,
@@ -367,6 +367,53 @@ def insert_decision(conn, run_id, lead_id, created_at):
             ) VALUES (?, ?, 'pending', ?, ?)
             """,
             (lead_id, run_id, created_at, created_at),
+        )
+
+
+def record_selection(conn, run_id, picks, created_at):
+    """Store the Legate's picks, mark them presented, and complete the run.
+
+    `picks` is `(lead_id, rationale)` in selection order. An empty list
+    completes the run with no decisions.
+    """
+    with conn:
+        for order, (lead_id, rationale) in enumerate(picks, start=1):
+            conn.execute(
+                "UPDATE rankings SET presented = 1 WHERE run_id = ? AND lead_id = ?",
+                (run_id, lead_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO legate_selections (
+                    run_id, lead_id, pick_order, rationale, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (run_id, lead_id, order, rationale, created_at),
+            )
+            conn.execute(
+                """
+                INSERT INTO decisions (
+                    lead_id, run_id, status, created_at, updated_at
+                ) VALUES (?, ?, 'pending', ?, ?)
+                """,
+                (lead_id, run_id, created_at, created_at),
+            )
+            conn.execute(
+                """
+                UPDATE leads
+                SET status = 'presented', priority = ?, updated_at = ?
+                WHERE lead_id = ?
+                """,
+                (order, created_at, lead_id),
+            )
+        conn.execute(
+            """
+            UPDATE pipeline_runs
+            SET status = 'complete', stage = 'legate_selection', finished_at = ?,
+                token_budget = 0, tokens_used = 0, provider = 'agent'
+            WHERE run_id = ?
+            """,
+            (created_at, run_id),
         )
 
 

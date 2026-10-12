@@ -68,6 +68,11 @@ _LEAD = (
     "rank",
     "presented",
     "rank_rationale",
+    "real_id",
+    "real_thesis_id",
+    "real_merge_id",
+    "pick_order",
+    "selection_rationale",
 )
 _THESIS = (
     "markdown",
@@ -106,8 +111,8 @@ class SweepState:
         self.judgement_rejects = []
         self.queue_dir = ""
         self.reports_dir = ""
-        self.max_theses = 5
         self.limit = None
+        self.finished = False
         self.figures = 0
         self.deterministic_rejects = 0
         self.pending_persist = False
@@ -147,8 +152,8 @@ def _dump_state(state):
         "judgement_rejects": [_dump_reject(item) for item in state.judgement_rejects],
         "queue_dir": state.queue_dir,
         "reports_dir": state.reports_dir,
-        "max_theses": state.max_theses,
         "limit": state.limit,
+        "finished": bool(getattr(state, "finished", False)),
         "figures": state.figures,
         "deterministic_rejects": state.deterministic_rejects,
         "pending_persist": bool(state.pending_persist),
@@ -170,8 +175,8 @@ def _load_state(data):
     state.judgement_rejects = [_load_reject(item) for item in data.get("judgement_rejects") or []]
     state.queue_dir = data.get("queue_dir") or ""
     state.reports_dir = data.get("reports_dir") or ""
-    state.max_theses = int(data.get("max_theses") or 5)
     state.limit = data.get("limit")
+    state.finished = bool(data.get("finished"))
     state.figures = data.get("figures") or 0
     state.deterministic_rejects = data.get("deterministic_rejects") or 0
     state.pending_persist = bool(data.get("pending_persist"))

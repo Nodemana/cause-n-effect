@@ -1,7 +1,8 @@
-"""Markdown shortlist written when ranking finishes.
+"""Markdown reports written beside the agent queue.
 
-The file sits beside the agent queue. With the default queue
-`data/agent_queue`, the path is `data/reports/<run_id>.md`.
+With the default queue `data/agent_queue`, ranking writes
+`data/reports/<run_id>-candidates.md` and the Legate selection writes
+`data/reports/<run_id>-final.md`.
 """
 
 from pathlib import Path
@@ -11,56 +12,98 @@ def reports_directory(queue_dir):
     return str(Path(queue_dir).resolve().parent / "reports")
 
 
-def write_report(state, ranked):
-    """Write the presented theses. Ranking still stores every reviewed lead."""
-    cap = int(getattr(state, "max_theses", None) or 5)
-    presented = [lead for lead in ranked if getattr(lead, "presented", False)]
-    presented.sort(key=lambda lead: lead.rank or 0)
-    presented = presented[:cap]
-    directory = getattr(state, "reports_dir", None) or reports_directory(state.queue_dir)
-    path = Path(directory) / f"{state.run_id}.md"
+def write_candidates_report(state, ranked):
+    """Write every ranked thesis, including its Praetorian flaw list."""
+    ordered = sorted(ranked, key=lambda lead: lead.rank or 0)
+    path = _report_path(state, "-candidates.md")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        render_report(state.run_id, presented, max_theses=cap, macro=getattr(state, "macro", None)),
+        render_candidates(state.run_id, ordered, macro=getattr(state, "macro", None)),
         encoding="utf-8",
     )
     return path
 
 
-def render_report(run_id, presented, *, max_theses, macro):
-    count = len(presented)
+def write_final_report(state, selected):
+    """Write the theses the Legate selected, in pick order."""
+    ordered = sorted(selected, key=lambda lead: getattr(lead, "pick_order", None) or 0)
+    path = _report_path(state, "-final.md")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        render_final(state.run_id, ordered, macro=getattr(state, "macro", None)),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _report_path(state, suffix):
+    directory = getattr(state, "reports_dir", None) or reports_directory(state.queue_dir)
+    return Path(directory) / f"{state.run_id}{suffix}"
+
+
+def render_candidates(run_id, ranked, *, macro):
+    count = len(ranked)
     thesis_word = "thesis" if count == 1 else "theses"
     lines = [
-        f"# Theses for {run_id}",
+        f"# Candidate theses for {run_id}",
         "",
         f"Sweep macro context: {_text(macro) or 'none'}",
         "",
-        f"{count} {thesis_word}. Cap {max_theses}.",
+        f"{count} candidate {thesis_word}. The Legate selects at most 5.",
         "",
     ]
-    if not presented:
-        lines.append("No theses passed ranking.")
+    if not ranked:
+        lines.append("No candidate theses.")
         lines.append("")
         return "\n".join(lines)
-    for lead in presented:
-        lines.extend(_lead_section(lead))
+    for lead in ranked:
+        lines.extend(_lead_section(lead, selection=False))
     return "\n".join(lines)
 
 
-def _lead_section(lead):
+def render_final(run_id, selected, *, macro):
+    count = len(selected)
+    thesis_word = "thesis" if count == 1 else "theses"
+    lines = [
+        f"# Selected theses for {run_id}",
+        "",
+        f"Sweep macro context: {_text(macro) or 'none'}",
+        "",
+        f"{count} selected {thesis_word}.",
+        "",
+    ]
+    if not selected:
+        lines.append("No theses selected.")
+        lines.append("")
+        return "\n".join(lines)
+    for lead in selected:
+        lines.extend(_lead_section(lead, selection=True))
+    return "\n".join(lines)
+
+
+def _lead_section(lead, *, selection):
     thesis = lead.thesis
     company = (lead.company or "").strip()
     title = f"{lead.ticker}"
     if company and company != lead.ticker:
         title = f"{lead.ticker} — {company}"
     tickers = ", ".join(_tickers(lead)) or "none"
-    return [
+    lines = [
         f"## Rank {lead.rank}. {title}",
         "",
+        f"**Lead id:** {getattr(lead, 'real_id', None) or 'none'}",
         f"**Lead:** {lead.lead_type}",
         f"**Scout:** {lead.source_scout}",
         f"**Tickers:** {tickers}",
-        "",
+    ]
+    if selection:
+        lines.append(f"**Legate rationale:** {_text(getattr(lead, 'selection_rationale', None)) or 'none'}")
+    lines.extend(
+        [
+            "",
+        ]
+    )
+    return lines + [
         "### Thesis",
         "",
         _thesis_paragraph(thesis),

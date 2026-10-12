@@ -26,7 +26,7 @@ flowchart LR
 
 **Praetorians.** Praetorians critique an unmerged thesis straight from the first pass, and a merged finding only after its second-pass thesis. They write every flaw as flaw, severity, and evidence ([Praetorians/README.md](Praetorians/README.md)). They do not reject, drop, or filter a lead.
 
-**Legate rank.** The Legate ranks every critiqued thesis. The score is expected return, plus growth and magnitude, minus deterministic surviving issues. Praetorian flaws are shown and do not change the score or remove a lead. A merged thesis is one entry. At most five theses are written to the report. The ranked list goes to the Imperator, who decides.
+**Legate rank.** The Legate ranks every critiqued thesis. The score is expected return, plus growth and magnitude, minus deterministic surviving issues. Praetorian flaws are shown and do not change the score or remove a lead. A merged thesis is one entry. Ranking writes every candidate. The Legate then selects at most five, and that selection is the final report. The Imperator decides.
 
 **After the decision.** Each lead is tracked as acted on, not acted on, or pending. Acted-on leads are monitored against their thesis with live brokerage portfolio data (position and profit and loss), and those outcomes feed back.
 
@@ -71,7 +71,7 @@ After each of those Centurions has written an individual thesis, the Legate read
 
 Only a merged finding goes back to one Centurion as a single new lead. That Centurion runs a second, fresh full thesis pass and writes one new thesis: grade, potential ROI, risks, timeframe, and stated assumptions. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis.
 
-After that critique, the Legate ranks every thesis. The score is expected return, plus growth and magnitude, minus deterministic surviving issues. Praetorian flaws are shown and do not change the score or remove a lead. A merged thesis is one entry on the list. The ranked list goes to the Imperator. He decides and places the trades himself.
+After that critique, the Legate ranks every thesis. The score is expected return, plus growth and magnitude, minus deterministic surviving issues. Praetorian flaws are shown and do not change the score or remove a lead. A merged thesis is one entry on the list. The Legate then selects at most five of those candidates. The Imperator reads that selection and places the trades himself.
 
 ## After the decision
 

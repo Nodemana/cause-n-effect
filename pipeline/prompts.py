@@ -197,6 +197,30 @@ def praetorian_prompt(thesis_markdown, price_run):
     )
 
 
+def legate_selection_prompt(candidates):
+    lines = [
+        "TASK: legate_selection",
+        "Select at most 5 lead ids from the candidates below.",
+        "Reply with one JSON object and no other text. Keys: lead_ids, rationale.",
+        "lead_ids is an array of integers copied from the LEAD_ID lines. At most 5. No duplicates.",
+        "rationale is an object. Each key is a chosen lead id written as text. Each value is a non-empty string.",
+        "An empty lead_ids array selects none, and rationale is then {}.",
+        "The candidate report lists every thesis and its Praetorian flaws.",
+    ]
+    for item in candidates:
+        lines.extend(
+            [
+                f"LEAD_ID: {item['lead_id']}",
+                f"TICKER: {item['ticker']}",
+                f"RANK: {item['rank']}",
+                f"SCOUT: {item['source_scout']}",
+                f"SUMMARY: {item['summary']}",
+                f"FLAWS: {item['flaws']}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def load_macro(conn, path=None):
     """Macro text for the second pass.
 

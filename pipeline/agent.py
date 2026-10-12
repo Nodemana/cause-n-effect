@@ -114,11 +114,29 @@ PRAETORIAN_SCHEMA = {
     },
 }
 
+SELECTION_MAX = 5
+LEGATE_TASK_ID = "legate_selection"
+
+LEGATE_SELECTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["lead_ids", "rationale"],
+    "properties": {
+        "lead_ids": {
+            "type": "array",
+            "maxItems": SELECTION_MAX,
+            "items": {"type": "integer"},
+        },
+        "rationale": {"type": "object"},
+    },
+}
+
 _SCHEMAS = {
     "significance": SIGNIFICANCE_SCHEMA,
     "centurion_1": CENTURION_SCHEMA,
     "centurion_2": CENTURION_SCHEMA,
     "praetorian": PRAETORIAN_SCHEMA,
+    "legate_selection": LEGATE_SELECTION_SCHEMA,
 }
 
 _SIGNIFICANCE_ENUMS = {
@@ -240,6 +258,8 @@ def validate(stage, lead_id, data):
         return _validate_centurion(lead_id, data)
     if stage == "praetorian":
         return _validate_praetorian(lead_id, data)
+    if stage == "legate_selection":
+        return _validate_legate_selection(lead_id, data)
     return [f"{lead_id}: unknown stage {stage}"]
 
 
@@ -320,6 +340,42 @@ def _validate_praetorian(lead_id, data):
             errors.append(f"{prefix}: severity must be {_listed(_FLAW_SEVERITIES)}")
         if "evidence" in item and (not isinstance(item.get("evidence"), str) or not item["evidence"].strip()):
             errors.append(f"{prefix}: evidence must be a non-empty string")
+    return errors
+
+
+def _validate_legate_selection(lead_id, data):
+    errors = _unexpected(lead_id, data, {"lead_ids", "rationale"})
+    errors.extend(_missing(lead_id, data, {"lead_ids", "rationale"}))
+    lead_ids = data.get("lead_ids")
+    chosen = []
+    if "lead_ids" not in data:
+        pass
+    elif not isinstance(lead_ids, list):
+        errors.append(f"{lead_id}: lead_ids must be a list")
+    elif len(lead_ids) > SELECTION_MAX:
+        errors.append(f"{lead_id}: lead_ids must contain at most {SELECTION_MAX} ids")
+    else:
+        seen = set()
+        for index, item in enumerate(lead_ids):
+            if isinstance(item, bool) or not isinstance(item, int):
+                errors.append(f"{lead_id}: lead_ids[{index}] must be an integer")
+                continue
+            if item in seen:
+                errors.append(f"{lead_id}: lead_ids contains duplicate {item}")
+            seen.add(item)
+            chosen.append(item)
+    rationale = data.get("rationale")
+    if "rationale" not in data:
+        return errors
+    if not isinstance(rationale, dict):
+        errors.append(f"{lead_id}: rationale must be an object")
+        return errors
+    expected = {str(item) for item in chosen}
+    if set(rationale) != expected:
+        errors.append(f"{lead_id}: rationale must have one entry for each lead id")
+    for key, value in rationale.items():
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"{lead_id}: rationale[{key}] must be a non-empty string")
     return errors
 
 

@@ -42,7 +42,7 @@ def build_parser():
             "Deterministic gates run in process. Significance, Centurion theses, "
             "and Praetorian reviews are task files under data/agent_queue. "
             "A run records status awaiting_agents and exits. "
-            "ingest reads result files and advances until ranking writes pending decisions."
+            "ingest reads result files and advances until the Legate selection writes pending decisions."
         ),
     )
     sub = parser.add_subparsers(dest="command")
@@ -72,8 +72,10 @@ def build_parser():
             "A source error drops that company's parties and the contact address is not logged. "
             "A market cap is shares outstanding times an official share-price figure. "
             "The figures summary is the lead figures used after --limit. "
-            "Ranking later writes at most --max-theses pending decisions and "
-            "data/reports/<run_id>.md beside the queue directory. "
+            "Ranking later writes every candidate thesis to "
+            "data/reports/<run_id>-candidates.md and a legate_selection task. "
+            "The Legate selects at most 5 lead ids. "
+            "ingest writes data/reports/<run_id>-final.md from that selection. "
             "A Praetorian critique lists every flaw in each thesis and does not drop a lead."
         ),
     )
@@ -99,22 +101,12 @@ def build_parser():
         default=None,
         help="JSON file with a summary key. Missing file skips macro context on a capex chain and on a later merge",
     )
-    run.add_argument(
-        "--max-theses",
-        type=int,
-        default=5,
-        help=(
-            "Pending decisions and data/reports/<run_id>.md include at most this many theses. "
-            "Default 5. With the default queue data/agent_queue the report is data/reports/<run_id>.md"
-        ),
-    )
-
     status = sub.add_parser(
         "status",
         help="List agent task files that do not yet have a result",
         description=(
             "Print the run status, the stage, and each outstanding "
-            "<lead_id>.task.json. A finished run has status complete and stage ranking."
+            "<lead_id>.task.json. A finished run has status complete and stage legate_selection."
         ),
     )
     status.add_argument("--db", required=True, help="SQLite database written by pipeline run")
@@ -134,8 +126,11 @@ def build_parser():
             "A macro lead stays separate, and its Centurion task lists related findings from those scouts. "
             "A leftover cross-group merge, when one exists, gets a second Centurion pass. "
             "A Praetorian critique then lists every flaw. It does not reject or drop a lead. "
-            "Ranking and pending decisions follow. The flaw list is shown in the report and does not remove a lead from ranking. "
-            "Ranking writes at most the run's --max-theses theses to data/reports/<run_id>.md. "
+            "Ranking then writes every candidate, with its flaw list, to data/reports/<run_id>-candidates.md "
+            "and one legate_selection task. The flaw list is shown and does not remove a lead. "
+            "The Legate writes legate_selection.result.json with at most 5 lead ids and a rationale for each pick. "
+            "ingest checks that each id is a candidate, then writes data/reports/<run_id>-final.md "
+            "and a pending decision for each selected thesis. "
             "Merge and ranking do not write task files. "
             "When SEC_CONTACT_EMAIL is set, the significance ingest names counterparties "
             "before the Centurion tasks are written. The address is not logged."
@@ -168,8 +163,6 @@ def build_parser():
 def _run(parser, args):
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be a positive integer")
-    if args.max_theses < 1:
-        parser.error("--max-theses must be a positive integer")
     shares_client = sec_client() if sec_contact_email() else None
     result = run_pipeline(
         args.db,
@@ -178,7 +171,6 @@ def _run(parser, args):
         macro_cache=args.macro_cache,
         shares_client=shares_client,
         queue_dir=args.queue_dir,
-        max_theses=args.max_theses,
     )
     _print_result(result)
     return 0
@@ -232,6 +224,7 @@ def _print_result(result):
         "dry_run",
         "macro",
         "report",
+        "candidates",
     ):
         print(f"{key}: {result[key]}")
 

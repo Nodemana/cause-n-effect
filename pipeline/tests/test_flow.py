@@ -19,7 +19,7 @@ if str(REPO) not in sys.path:
 from pipeline.agent import AgentResultError  # noqa: E402
 from pipeline.cli import main  # noqa: E402
 import pipeline.flow as flow  # noqa: E402
-from pipeline.fixture import run_with_fixture  # noqa: E402
+from pipeline.fixture import fixture_response, run_with_fixture  # noqa: E402
 from pipeline.flow import ingest_run, pipeline_status, run_pipeline  # noqa: E402
 from shared.pipeline_store import connect, lodge_lead  # noqa: E402
 from shared.store import save_run  # noqa: E402
@@ -48,17 +48,21 @@ class PipelineFlowTests(unittest.TestCase):
             self.assertEqual(result["tokens_used"], 0)
             self.assertEqual(result["token_budget"], 0)
             self.assertEqual(result["status"], "complete")
-            self.assertEqual(result["stage"], "ranking")
+            self.assertEqual(result["stage"], "legate_selection")
             self.assertEqual(result["macro"], "skipped")
             self.assertFalse(result["dry_run"])
             self.assertEqual(result["merges"], 0)
             self.assertEqual(result["decisions"], 3)
             self.assertEqual(result["rankings"], 3)
             report_path = Path(result["report"])
+            candidates_path = Path(result["candidates"])
             self.assertEqual(report_path.parent.name, "reports")
-            self.assertEqual(report_path.name, f"{result['run_id']}.md")
+            self.assertEqual(report_path.name, f"{result['run_id']}-final.md")
+            self.assertEqual(candidates_path.name, f"{result['run_id']}-candidates.md")
             report = report_path.read_text(encoding="utf-8")
+            candidates = candidates_path.read_text(encoding="utf-8")
             self.assertEqual(report.count("\n## Rank "), 3)
+            self.assertEqual(candidates.count("\n## Rank "), 3)
             self.assertIn("Spender AMZN", report)
             self.assertIn("Supplier (backlog) GEV", report)
             self.assertIn(AMZN_URL, report)
@@ -68,10 +72,14 @@ class PipelineFlowTests(unittest.TestCase):
             self.assertIn("**Tickers:**", report)
             self.assertIn("### Evidence", report)
             self.assertIn("### Praetorian", report)
+            self.assertIn("### Praetorian", candidates)
             self.assertIn("No flaws recorded.", report)
+            self.assertIn("**Lead id:**", report)
+            self.assertIn("**Legate rationale:**", report)
             self.assertNotIn("Stage skipped.", report)
             self.assertNotIn("**Verdict:**", report)
             self.assertTrue(any(prompt.startswith("TASK: praetorian") for prompt in result["prompts"]))
+            self.assertTrue(any(prompt.startswith("TASK: legate_selection") for prompt in result["prompts"]))
             self.assertIn("### Macro context", report)
             self.assertIn("Sweep macro context: none", report)
 
@@ -660,7 +668,10 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertNotIn("LLM_MODEL", completed.stdout)
         self.assertIn("awaiting_agents", completed.stdout)
         self.assertIn("agent_queue", completed.stdout)
-        self.assertIn("--max-theses", completed.stdout)
+        self.assertNotIn("--max-theses", completed.stdout)
+        self.assertIn("legate_selection", completed.stdout)
+        self.assertIn("-candidates.md", completed.stdout)
+        self.assertIn("-final.md", completed.stdout)
         self.assertNotIn("--with-praetorians", completed.stdout)
         self.assertIn("data/reports", completed.stdout)
         self.assertNotIn("TODO", completed.stdout)
@@ -690,35 +701,25 @@ class PipelineFlowTests(unittest.TestCase):
             socket.socket = real_socket
             urllib.request.urlopen = real_open
 
-    def test_max_theses_caps_the_report_and_the_decisions(self):
+    def test_legate_selection_chooses_the_final_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "history.sqlite")
-            conn = _history(path)
-            try:
-                rows = []
-                tickers = ("T01", "T02", "T03", "T04", "T05", "T06")
-                for ticker in tickers:
-                    rows.append(
-                        _figure(
-                            ticker,
-                            ticker,
-                            "insider_purchase",
-                            "ceo",
-                            "2026-10-01|Ada",
-                            250000,
-                            "250000 shares",
-                            f"https://www.sec.gov/Archives/edgar/data/1/{ticker.lower()}.xml",
-                        )
-                    )
-                rows.extend(_caps(*tickers))
-                save_run(conn, "insider-buying", "2026-10-12T16:10:00Z", rows)
-            finally:
-                conn.close()
+            queue = str(Path(tmp) / "agent_queue")
+            _seed_insiders(path, ("T01", "T02", "T03", "T04", "T05", "T06"))
             with self.assertRaises(SystemExit) as caught:
-                main(["run", "--db", path, "--max-theses", "0"])
+                main(["run", "--db", path, "--max-theses", "2"])
             self.assertEqual(caught.exception.code, 2)
-            result = run_with_fixture(path, max_theses=2)
+
+            def choose_two(task):
+                prompt = task["prompt"]
+                if prompt.startswith("TASK: legate_selection"):
+                    ids = _lead_ids(prompt)[:2]
+                    return {"lead_ids": ids, "rationale": {str(item): "Kept for the shortlist." for item in ids}}
+                return fixture_response(prompt)
+
+            result = run_with_fixture(path, responder=choose_two, queue_dir=queue)
             report = Path(result["report"]).read_text(encoding="utf-8")
+            candidates = Path(result["candidates"]).read_text(encoding="utf-8")
             conn = connect(path)
             try:
                 ranked = conn.execute(
@@ -730,25 +731,111 @@ class PipelineFlowTests(unittest.TestCase):
                     """
                 ).fetchall()
                 decisions = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+                picks = conn.execute(
+                    "SELECT lead_id, rationale FROM legate_selections ORDER BY pick_order"
+                ).fetchall()
             finally:
                 conn.close()
         self.assertEqual(result["rankings"], 6)
         self.assertEqual(result["decisions"], 2)
         self.assertEqual(decisions, 2)
         self.assertEqual(len(ranked), 6)
+        self.assertEqual(len(picks), 2)
         self.assertEqual(report.count("\n## Rank "), 2)
-        self.assertIn("2 theses. Cap 2.", report)
+        self.assertEqual(candidates.count("\n## Rank "), 6)
+        self.assertIn("2 selected theses.", report)
+        self.assertIn("6 candidate theses.", candidates)
+        self.assertIn("Kept for the shortlist.", report)
         presented = [row["ticker"] for row in ranked if row["presented"]]
         held = [row["ticker"] for row in ranked if not row["presented"]]
         self.assertEqual(len(presented), 2)
         self.assertEqual(len(held), 4)
         for ticker in presented:
             self.assertIn(ticker, report)
+            self.assertIn(ticker, candidates)
             self.assertIn(f"https://www.sec.gov/Archives/edgar/data/1/{ticker.lower()}.xml", report)
         for ticker in held:
+            self.assertIn(ticker, candidates)
             self.assertNotIn(ticker, report)
         self.assertIn("### Praetorian", report)
+        self.assertIn("### Praetorian", candidates)
         self.assertIn("Form 4", report)
+
+    def test_legate_selection_rejects_an_invalid_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            queue = str(Path(tmp) / "agent_queue")
+            _seed_insiders(path, ("T01", "T02", "T03", "T04", "T05", "T06"))
+
+            def choose_all(task):
+                prompt = task["prompt"]
+                if prompt.startswith("TASK: legate_selection"):
+                    ids = _lead_ids(prompt)
+                    return {"lead_ids": ids, "rationale": {str(item): "All of them." for item in ids}}
+                return fixture_response(prompt)
+
+            with self.assertRaises(AgentResultError) as caught:
+                run_with_fixture(path, responder=choose_all, queue_dir=queue)
+            self.assertIn("at most 5", str(caught.exception))
+            conn = connect(path)
+            try:
+                stored = conn.execute("SELECT run_id, status, stage FROM pipeline_runs").fetchone()
+                self.assertEqual(stored["status"], "awaiting_agents")
+                self.assertEqual(stored["stage"], "legate_selection")
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0], 0)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM rankings").fetchone()[0], 6)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM rankings WHERE presented = 1").fetchone()[0], 0)
+                run_id = stored["run_id"]
+            finally:
+                conn.close()
+            result_path = Path(queue) / run_id / "legate_selection" / "legate_selection.result.json"
+            task_path = result_path.with_name("legate_selection.task.json")
+            ids = _lead_ids(json.loads(task_path.read_text(encoding="utf-8"))["prompt"])
+            candidates = Path(tmp) / "reports" / f"{run_id}-candidates.md"
+            self.assertTrue(candidates.is_file())
+            self.assertEqual(candidates.read_text(encoding="utf-8").count("\n## Rank "), 6)
+            self.assertFalse((Path(tmp) / "reports" / f"{run_id}-final.md").is_file())
+
+            result_path.write_text(
+                json.dumps({"lead_ids": [999999], "rationale": {"999999": "missing"}}) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(AgentResultError) as caught:
+                ingest_run(path, run_id, queue_dir=queue)
+            self.assertIn("unknown lead_ids", str(caught.exception))
+
+            result_path.write_text(
+                json.dumps({"lead_ids": [ids[0], ids[0]], "rationale": {str(ids[0]): "twice"}}) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(AgentResultError) as caught:
+                ingest_run(path, run_id, queue_dir=queue)
+            self.assertIn("duplicate", str(caught.exception))
+
+            result_path.write_text(
+                json.dumps({"lead_ids": [ids[0]], "rationale": {}}) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(AgentResultError) as caught:
+                ingest_run(path, run_id, queue_dir=queue)
+            self.assertIn("rationale", str(caught.exception))
+
+            chosen = ids[:2]
+            result_path.write_text(
+                json.dumps(
+                    {"lead_ids": chosen, "rationale": {str(item): "Kept after the retry." for item in chosen}}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            done = ingest_run(path, run_id, queue_dir=queue)
+            self.assertEqual(done["status"], "complete")
+            self.assertEqual(done["decisions"], 2)
+            self.assertEqual(done["rankings"], 6)
+            final = Path(done["report"]).read_text(encoding="utf-8")
+            self.assertEqual(final.count("\n## Rank "), 2)
+            self.assertIn("Kept after the retry.", final)
+            self.assertEqual(Path(done["candidates"]).read_text(encoding="utf-8").count("\n## Rank "), 6)
 
     def test_rejects_cli_finds_ticker_and_counterparty(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -834,9 +921,11 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertEqual(names.count("006_agent_handoff.sql"), 1)
         self.assertEqual(names.count("008_macro_leads.sql"), 1)
         self.assertEqual(names.count("009_praetorian_flaws.sql"), 1)
+        self.assertEqual(names.count("010_legate_selection.sql"), 1)
         self.assertNotIn("007_prices_cleanup.sql", names)
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         self.assertIn("lead_counterparties", tables)
+        self.assertIn("legate_selections", tables)
         self.assertNotIn("prices", tables)
         self.assertNotIn("cleanup_log", tables)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}
@@ -1008,7 +1097,38 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertEqual(tokens["tokens_used"], 0)
         self.assertEqual(tokens["token_budget"], 0)
         self.assertEqual(tokens["status"], "complete")
-        self.assertEqual(tokens["stage"], "ranking")
+        self.assertEqual(tokens["stage"], "legate_selection")
+
+
+def _lead_ids(prompt):
+    found = []
+    for line in prompt.splitlines():
+        if line.startswith("LEAD_ID: "):
+            found.append(int(line.split(":", 1)[1].strip()))
+    return found
+
+
+def _seed_insiders(path, tickers):
+    conn = _history(path)
+    try:
+        rows = []
+        for ticker in tickers:
+            rows.append(
+                _figure(
+                    ticker,
+                    ticker,
+                    "insider_purchase",
+                    "ceo",
+                    "2026-10-01|Ada",
+                    250000,
+                    "250000 shares",
+                    f"https://www.sec.gov/Archives/edgar/data/1/{ticker.lower()}.xml",
+                )
+            )
+        rows.extend(_caps(*tickers))
+        save_run(conn, "insider-buying", "2026-10-12T16:10:00Z", rows)
+    finally:
+        conn.close()
 
 
 def _seed(path):

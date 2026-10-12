@@ -59,7 +59,7 @@ class MacroSignalTests(unittest.TestCase):
             self.assertEqual(legs[(None, "WTI")]["source_url"], WTI_URL)
             result = run_with_fixture(path, queue_dir=queue, now=SWEEP_AT)
             self.assertEqual(result["status"], "complete")
-            self.assertEqual(result["stage"], "ranking")
+            self.assertEqual(result["stage"], "legate_selection")
             tasks = [json.loads(path.read_text(encoding="utf-8")) for path in (Path(queue) / result["run_id"] / "significance").glob("*.task.json")]
             blob = "\n".join(task["prompt"] for task in tasks)
             self.assertIn("125.44", blob)
@@ -231,7 +231,13 @@ def _assert_brent_related(test, queue, run_id):
 def _assert_brent_report(test, report_path):
     text = Path(report_path).read_text(encoding="utf-8")
     test.assertLessEqual(text.count("\n## Rank "), 5)
-    test.assertIn("Cap 5.", text)
+    test.assertIn("selected thes", text)
+    test.assertNotIn("Cap ", text)
+    candidates_path = Path(str(report_path).replace("-final.md", "-candidates.md"))
+    candidates = candidates_path.read_text(encoding="utf-8")
+    test.assertGreaterEqual(candidates.count("\n## Rank "), text.count("\n## Rank "))
+    test.assertIn("### Praetorian", candidates)
+    test.assertIn("BRENT", candidates)
     brent = _report_section(text, "BRENT")
     test.assertIn("### Thesis", brent)
     test.assertIn("### Cause → effect", brent)

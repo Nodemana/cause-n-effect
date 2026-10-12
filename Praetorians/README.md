@@ -4,7 +4,7 @@ Praetorians critique theses, and that is their only job. After the Centurions wr
 
 They receive the Centurion's output: the recommendation, the expected return, the risks, the timeframe, and the stated assumptions. They write every flaw they find. They do not reject a lead, drop a lead, or remove it from the set that ranking sees. A thesis with a long flaw list is ranked on the same terms as a thesis with an empty list.
 
-Ranking may show the flaw list. The score does not use it, and the presented set does not shrink because of it.
+Ranking may show the flaw list. The score does not use it. The candidate report keeps every thesis. The Legate's later selection is a separate step.
 
 ## Output
 
