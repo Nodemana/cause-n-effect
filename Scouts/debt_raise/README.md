@@ -26,7 +26,7 @@ The live command writes this run into the shared figures table. It exits nonzero
 
 ```bash
 python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite
-python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --since 2026-10-01 --until 2026-10-08 --tickers SCG,AAPL
+python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --since 2026-10-01 --until 2026-10-08 --tickers SCG,AAPL --limit 50
 python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/debt_raise/fixtures/sec_check.json --no-asx
 ```
 

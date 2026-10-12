@@ -22,11 +22,13 @@ for _entry in (str(_REPO), str(_HERE)):
 from shared.nethttp import EndpointError, asx_client, sec_client
 
 EFTS_URL = "https://efts.sec.gov/LATEST/search-index"
+TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 ASX_API = "https://asx.api.markitdigital.com/asx-research/1.0"
 _DEBT_HEADLINE = re.compile(
     r"\b(debt|loan|facility|facilities|bond|notes|refinanc\w*|credit|borrow\w*)\b",
     re.I,
 )
+# 8-K/A is left out of the search. Amendments are not part of this pull.
 FORMS = (
     "8-K",
     "424B1",
@@ -41,17 +43,59 @@ EIGHT_K_ITEMS = frozenset({"1.01", "2.03"})
 _PAGE = 100
 
 
-def collect(start, end, client=None, ticker_map=None, limit=None, tickers=None):
-    """In-scope filings for the window. Summary text is the index description."""
+def collect_window(start, end, tickers=None, client=None, limit=None):
+    """In-scope filings for the window, scoped by issuer CIK when tickers are set.
+
+    Tickers are resolved through the SEC company ticker file. The search uses
+    the efts ``ciks`` parameter and does not drop a hit because its display
+    name has no ticker. A 424B filing often has none; the ticker is filled
+    from the CIK. Returns ``(filings, unmapped_tickers)``.
+
+    Pass a client in tests. With no client, SEC calls use sec_client.
+    """
     client = client or sec_client()
-    ticker_map = ticker_map or {}
-    wanted = _ticker_set(tickers)
+    cik_to_ticker, ticker_to_cik = fetch_ticker_tables(client)
+    ciks = None
+    missing = []
+    if tickers is not None:
+        ciks, missing, preferred = resolve_tickers(tickers, ticker_to_cik)
+        if not ciks:
+            return [], missing
+        cik_to_ticker.update(preferred)
+    filings = collect(
+        start,
+        end,
+        client=client,
+        ticker_map=cik_to_ticker,
+        limit=limit,
+        ciks=ciks,
+    )
+    return filings, missing
+
+
+def collect(start, end, client=None, ticker_map=None, limit=None, ciks=None, tickers=None):
+    """In-scope filings for the window. Summary text is the index description.
+
+    Company scope is the efts ``ciks`` parameter. ``tickers`` is resolved to
+    those CIKs when ``ciks`` is omitted. Hits are kept by CIK, not by the
+    ticker text on the hit.
+    """
+    client = client or sec_client()
+    ticker_map = dict(ticker_map or {})
+    if tickers and not ciks:
+        if ticker_map:
+            ticker_to_cik = {symbol: cik for cik, symbol in ticker_map.items()}
+        else:
+            loaded, ticker_to_cik = fetch_ticker_tables(client)
+            ticker_map.update(loaded)
+        ciks, _missing, preferred = resolve_tickers(_ticker_list(tickers), ticker_to_cik)
+        ticker_map.update(preferred)
+        if not ciks:
+            return []
     filings = []
-    for hit in iter_hits(client, start, end):
-        filing = filing_from_hit(hit.get("_source") or {}, ticker_map)
+    for hit in iter_hits(client, start, end, ciks=ciks):
+        filing = filing_from_hit(hit.get("_source") or {}, ticker_map, ciks=ciks)
         if filing is None:
-            continue
-        if wanted and (filing.get("ticker") or "").upper() not in wanted:
             continue
         filings.append(filing)
         if limit is not None and len(filings) >= limit:
@@ -59,10 +103,10 @@ def collect(start, end, client=None, ticker_map=None, limit=None, tickers=None):
     return filings
 
 
-def iter_hits(client, start, end):
+def iter_hits(client, start, end, ciks=None):
     offset = 0
     while True:
-        url = efts_url(start, end, offset)
+        url = efts_url(start, end, offset, ciks=ciks)
         _require_sec(url)
         page = client.json(url)
         hits = ((page.get("hits") or {}).get("hits")) or []
@@ -74,32 +118,93 @@ def iter_hits(client, start, end):
             return
 
 
-def efts_url(start, end, offset=0):
-    """EDGAR full-text search. A `q=*` term and an `8-K/A` form both return no hits."""
-    query = urllib.parse.urlencode(
-        {
-            "dateRange": "custom",
-            "startdt": start,
-            "enddt": end,
-            "forms": ",".join(FORMS),
-            "from": str(offset),
-        }
-    )
+def efts_url(start, end, offset=0, ciks=None):
+    """EDGAR full-text search for the window.
+
+    ``q`` is omitted. A ``q`` of ``*`` is a literal asterisk, not a match-all,
+    and an ``8-K/A`` form is not requested. Company scope is the ``ciks`` parameter.
+    """
+    params = {
+        "dateRange": "custom",
+        "startdt": start,
+        "enddt": end,
+        "forms": ",".join(FORMS),
+        "from": str(offset),
+    }
+    if ciks:
+        params["ciks"] = ",".join(_cik10(cik) for cik in ciks)
+    query = urllib.parse.urlencode(params, safe=",")
     return f"{EFTS_URL}?{query}"
 
 
-def filing_from_hit(source, ticker_map=None):
+def fetch_ticker_tables(client):
+    """Map 10-digit CIKs to tickers, and tickers to CIKs, from the SEC ticker file."""
+    _require_sec(TICKERS_URL)
+    payload = client.json(TICKERS_URL)
+    rows = payload.values() if isinstance(payload, dict) else payload
+    cik_to_ticker = {}
+    ticker_to_cik = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            cik = _cik10(row.get("cik_str"))
+        except (TypeError, ValueError):
+            continue
+        ticker = (row.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        cik_to_ticker.setdefault(cik, ticker)
+        ticker_to_cik.setdefault(ticker, cik)
+    return cik_to_ticker, ticker_to_cik
+
+
+def resolve_tickers(tickers, ticker_to_cik):
+    """Split requested symbols into known CIKs and symbols the file does not list.
+
+    The preferred ticker for a CIK is the one that was requested, so a 424B
+    hit is labeled with that symbol even when the index omits it.
+    """
+    ciks = []
+    missing = []
+    preferred = {}
+    seen = set()
+    for ticker in _ticker_list(tickers):
+        key = ticker
+        if not key:
+            continue
+        cik = ticker_to_cik.get(key)
+        if not cik:
+            missing.append(key)
+            continue
+        preferred.setdefault(cik, key)
+        if cik not in seen:
+            seen.add(cik)
+            ciks.append(cik)
+    return ciks, missing, preferred
+
+
+def filing_from_hit(source, ticker_map=None, ciks=None):
     form = normalize_form(source.get("form"))
     items = split_items(source.get("items"))
     if not in_scope(form, items):
         return None
-    ciks = source.get("ciks") or []
+    present = _cik_list(source.get("ciks"))
     accession = source.get("adsh") or ""
-    if not ciks or not accession:
+    if not present or not accession:
         return None
-    cik = str(int(str(ciks[0]))).zfill(10)
+    allowed = {_cik10(cik) for cik in ciks} if ciks else None
+    if allowed is not None:
+        matched = [cik for cik in present if cik in allowed]
+        if not matched:
+            return None
+        cik = matched[0]
+    else:
+        cik = present[0]
     ticker_map = ticker_map or {}
-    ticker = ticker_from_display(source.get("display_names")) or ticker_map.get(cik)
+    # The company ticker file wins. 424B display names often have no ticker,
+    # and a paren in the name is not a reliable symbol.
+    ticker = ticker_map.get(cik) or ticker_from_display(source.get("display_names"))
     filed = source.get("file_date") or source.get("display_date_filed")
     return {
         "accession": accession,
@@ -297,17 +402,20 @@ def _keep_primary_name(name):
     return lower.endswith((".htm", ".html", ".txt"))
 
 
-def _ticker_set(tickers):
+def _ticker_list(tickers):
+    """Requested symbols, uppercased, with an ASX suffix removed. Order is kept."""
     if not tickers:
-        return None
-    wanted = set()
+        return []
+    rows = []
+    seen = set()
     for ticker in tickers:
         token = str(ticker).strip().upper()
         if token.endswith(".AX"):
             token = token[:-3]
-        if token:
-            wanted.add(token)
-    return wanted or None
+        if token and token not in seen:
+            seen.add(token)
+            rows.append(token)
+    return rows
 
 
 def archive_base(cik, accession):
@@ -347,6 +455,20 @@ def _require_asx(url):
 
 def _hostname(url):
     return (urllib.parse.urlsplit(url).hostname or "").lower().rstrip(".")
+
+
+def _cik10(value):
+    return str(int(str(value).strip())).zfill(10)
+
+
+def _cik_list(values):
+    found = []
+    for value in values or []:
+        try:
+            found.append(_cik10(value))
+        except (TypeError, ValueError):
+            continue
+    return found
 
 
 def _pdf_text(body):
