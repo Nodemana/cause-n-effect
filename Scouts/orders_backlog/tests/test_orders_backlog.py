@@ -269,7 +269,7 @@ class OrdersBacklogTests(unittest.TestCase):
                                     "fy": 2026,
                                     "fp": "Q2",
                                     "form": "10-Q",
-                                    "filed": "2026-05-01",
+                                    "filed": "2026-06-01",
                                 },
                                 {
                                     "end": "2025-10-26",
@@ -318,8 +318,11 @@ class OrdersBacklogTests(unittest.TestCase):
                 os.environ["SEC_CONTACT_EMAIL"] = previous
         self.assertEqual(run, "orders-backlog")
         stored = {(row["period"], row["currency"]): row["value"] for row in rows}
-        self.assertEqual(stored, {("2025-10-26", "USD"): 50, ("2026-04-26", "EUR"): 200})
-        self.assertTrue(any("value=100" in line and "kept value=200" in line for line in caught.output))
+        self.assertEqual(
+            stored,
+            {("2025-10-26|2025-12-01", "USD"): 50, ("2026-04-26|2026-06-01", "USD"): 100},
+        )
+        self.assertTrue(any("value=200" in line and "kept value=100" in line for line in caught.output))
 
     def test_ir_urls_are_the_only_non_sec_asx_fetches(self):
         from shared.nethttp import EndpointError
@@ -327,6 +330,113 @@ class OrdersBacklogTests(unittest.TestCase):
         company = dict(SUPPLIER, ir_urls=["https://www.sec.gov/news"])
         with self.assertRaises(EndpointError):
             fetcher.collect_ir([company], client=object())
+
+    def test_same_day_runs_keep_their_figures(self):
+        from model import record
+
+        def table(value):
+            return {
+                "records": [
+                    record(
+                        source_side="supplier_order",
+                        company="Northwind Turbines",
+                        ticker="NWT",
+                        source_url="https://www.sec.gov/order",
+                        filing_date="2026-06-02",
+                        source_type="8-K",
+                        disclosure="order",
+                        counterparty="Harbour Utilities",
+                        equipment_or_period="turbines",
+                        value=value,
+                        currency="USD",
+                    )
+                ]
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "history.sqlite")
+            first = pipeline.store_run(db, table(180_000_000), "2026-10-12T08:15:00Z")
+            second = pipeline.store_run(db, table(40_000_000), "2026-10-12T18:45:09Z")
+            self.assertEqual(first["run_id"], "2026-10-12-081500-orders-backlog")
+            self.assertEqual(second["run_id"], "2026-10-12-184509-orders-backlog")
+            conn = sqlite3.connect(db)
+            morning = conn.execute("SELECT value FROM figures WHERE run_id = ?", (first["run_id"],)).fetchone()[0]
+            afternoon = conn.execute("SELECT value FROM figures WHERE run_id = ?", (second["run_id"],)).fetchone()[0]
+            self.assertEqual(morning, 180_000_000)
+            self.assertEqual(afternoon, 40_000_000)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 2)
+            conn.close()
+
+    def test_asx_markit_keeps_order_headlines(self):
+        from shared.nethttp import EndpointError
+
+        url = "https://asx.api.markitdigital.com/asx-research/1.0/companies/wor/announcements?count=5"
+
+        class Fake:
+            def __init__(self, payload):
+                self.payload = payload
+                self.urls = []
+
+            def json(self, called):
+                self.urls.append(called)
+                return self.payload
+
+            def get(self, called, accept=""):
+                self.urls.append(called)
+                return b"Order for turbines worth $10 million", "text/plain"
+
+        with self.assertRaises(EndpointError):
+            fetcher.collect_asx([{"ticker": "WOR"}], client=Fake({"data": []}))
+        payload = {
+            "data": {
+                "displayName": "Worley Ltd",
+                "items": [
+                    {"headline": "Worley awarded turbine order", "documentKey": "key-1", "date": "2026-10-01"},
+                    {"headline": "Dividend", "documentKey": "key-2", "date": "2026-10-02"},
+                ],
+            }
+        }
+        documents = fetcher.collect_asx([{"ticker": "WOR", "name": "Worley"}], client=Fake(payload))
+        self.assertEqual(len(documents), 1)
+        self.assertIn("key-1", documents[0]["url"])
+        self.assertIn("turbines", documents[0]["body"])
+        self.assertEqual(documents[0]["form"], "ASX")
+        self.assertEqual(documents[0]["filing_date"], "2026-10-01")
+
+    def test_live_fixture_stores_a_figure_and_empty_run_exits_nonzero(self):
+        import live
+
+        previous = os.environ.pop("SEC_CONTACT_EMAIL", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                db = str(Path(tmp) / "history.sqlite")
+                code = live.main(
+                    [
+                        "--db",
+                        db,
+                        "--sec-fixture",
+                        str(FIX / "amat_facts.json"),
+                        "--no-asx",
+                    ]
+                )
+                self.assertEqual(code, 0)
+                conn = sqlite3.connect(db)
+                rows = conn.execute(
+                    "SELECT ticker, figure_type, instrument, value, verified FROM figures ORDER BY value"
+                ).fetchall()
+                conn.close()
+                values = {row[3]: row for row in rows}
+                self.assertIn(12400000000, values)
+                clean = values[12400000000]
+                self.assertEqual(clean[0], "AMAT")
+                self.assertEqual(clean[1], "customer_backlog")
+                self.assertEqual(clean[2], "RevenueRemainingPerformanceObligation")
+                self.assertEqual(clean[4], 1)
+                empty = live.main(["--db", str(Path(tmp) / "empty.sqlite"), "--no-asx"])
+                self.assertEqual(empty, 1)
+        finally:
+            if previous is not None:
+                os.environ["SEC_CONTACT_EMAIL"] = previous
 
 
 def _orders(points):

@@ -49,16 +49,14 @@ def migrate(conn):
 
 
 def allocate_run_id(conn, started_at):
-    base = f"{started_at[:10]}-debt-raise"
-    taken = conn.execute("SELECT 1 FROM runs WHERE run_id = ?", (base,)).fetchone()
-    if not taken:
-        return base
-    stamp = started_at[11:19].replace(":", "") or "extra"
-    return f"{base}-{stamp}"
+    from shared.store import allocate_run_id as allocate
+
+    return allocate(conn, started_at, "debt-raise")
 
 
 def save_run(conn, started_at, threshold, seen, cheap_n, full_n, score_histogram, scores, figures, notes):
     with conn:
+        conn.execute("BEGIN IMMEDIATE")
         run_id = allocate_run_id(conn, started_at)
         conn.execute(
             "INSERT INTO runs (run_id, scout, started_at, notes) VALUES (?, ?, ?, ?)",

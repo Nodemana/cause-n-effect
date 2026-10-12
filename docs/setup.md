@@ -35,6 +35,7 @@ Every SEC and ASX request goes through `shared/nethttp.py`. The client spaces re
 Run from the repository root. These use fixtures and do not open a network connection.
 
 ```bash
+python3 -m unittest discover -s shared/tests -t .
 python3 -m unittest discover -s Scouts/accumulation/tests -t .
 python3 Scouts/orders_backlog/tests/test_orders_backlog.py
 python3 Scouts/debt_raise/tests/test_debt_raise.py
@@ -44,16 +45,21 @@ python3 Scouts/capex/tests/test_capex.py
 
 ## Live pulls
 
-These write the shared `figures` table. Each command exits nonzero when that run stores no figure. Use one `--db` path when the runs should share a file. The file stays out of git. SEC requests run only when `SEC_CONTACT_EMAIL` is set; otherwise the command says so and does not send one. ASX still runs for debt-raise, insider-buying, and capex. orders_backlog stores SEC company facts and does not call ASX.
+These write the shared `figures` table. Each run id is the UTC date, the UTC time as HHMMSS, and the scout name (`2026-10-12-143052-capex`). A second run the same day inserts its own id and leaves the first run's figures in place. Each command exits nonzero when that run stores no figure. Use one `--db` path when the runs should share a file. The file stays out of git. SEC requests run only when `SEC_CONTACT_EMAIL` is set; otherwise the command says so and does not send one. ASX still runs.
 
 On the machine that has the contact email:
 
 ```bash
 python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite
+python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --since 2026-10-01 --until 2026-10-08 --tickers SCG,AAPL
 python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite
 python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite
+python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite --quarters 8
 python3 -m Scouts.orders_backlog.live --db /tmp/cause-n-effect.sqlite
+python3 -m Scouts.accumulation.live --db /tmp/cause-n-effect.sqlite
 ```
+
+`--since` and `--until` bound the debt-raise SEC window. `--tickers` is a comma-separated list and also filters that scout's ASX watchlist. Capex `--quarters` keeps companyfacts whose period end falls in the last N quarters (default 8).
 
 Offline SEC checks use a fixture instead of EDGAR and do not open a network connection:
 
@@ -62,6 +68,7 @@ python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --sec-fixture 
 python3 -m Scouts.insider_buying.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/insider_buying/fixtures/sec_form4_ceo.xml --no-asx
 python3 -m Scouts.capex.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/capex/fixtures/companyfacts_amzn.json --no-asx
 python3 -m Scouts.orders_backlog.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/orders_backlog/fixtures/amat_facts.json --no-asx
+python3 -m Scouts.accumulation.live --db /tmp/cause-n-effect.sqlite --sec-fixture Scouts/accumulation/fixtures/sec_13d.xml --no-asx
 ```
 
 Debt-raise can print the threshold histogram for a database that already has a run:

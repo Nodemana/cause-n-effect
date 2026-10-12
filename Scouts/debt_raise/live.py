@@ -2,10 +2,15 @@
 nonzero when this run stores none.
 
     python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite
+    python3 -m Scouts.debt_raise.live --db /tmp/cause-n-effect.sqlite --since 2026-10-01 --until 2026-10-08 --tickers SCG,AAPL --limit 50
 
 SEC is contacted only when SEC_CONTACT_EMAIL is set. When it is missing, this
 script stops before any SEC request and still runs the ASX watchlist.
 `--sec-fixture FILE --no-asx` scores a recorded filings JSON instead of the network.
+`--since` and `--until` bound the SEC window. `--tickers` is a comma-separated list.
+Tickers are resolved to CIKs and the EDGAR search is filtered with the ciks
+parameter. A 424B hit with no ticker in the index is labeled from that CIK.
+`--limit` caps in-scope SEC filings (default 50).
 """
 
 import json
@@ -26,6 +31,7 @@ import pipeline  # noqa: E402
 
 UNIVERSE = _HERE / "universe_asx.json"
 DEFAULT_DB = Path("/tmp/cause-n-effect-debt-live.sqlite")
+DEFAULT_LIMIT = 50
 
 
 def sec_block_message():
@@ -34,29 +40,81 @@ def sec_block_message():
     return "SEC_CONTACT_EMAIL is missing. No SEC request was sent."
 
 
+def _option(args, name):
+    if name not in args:
+        return None
+    index = args.index(name)
+    if index + 1 >= len(args) or str(args[index + 1]).startswith("--"):
+        raise SystemExit(f"{name} needs a value")
+    return args[index + 1]
+
+
+def _tickers(value):
+    if not value:
+        return None
+    rows = [part.strip().upper() for part in value.split(",") if part.strip()]
+    return rows or None
+
+
+def _limit(args):
+    raw = _option(args, "--limit")
+    if raw is None:
+        return DEFAULT_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        raise SystemExit("--limit must be an integer") from None
+    if value < 1:
+        raise SystemExit("--limit must be at least 1")
+    return value
+
+
+def _window(args):
+    """SEC date window. `--until` defaults to today; `--since` defaults to three days earlier."""
+    until = _option(args, "--until")
+    since = _option(args, "--since")
+    end = until or date.today().isoformat()
+    date.fromisoformat(end)
+    if since:
+        date.fromisoformat(since)
+        return since, end
+    start = (date.fromisoformat(end) - timedelta(days=3)).isoformat()
+    return start, end
+
+
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
-    db_path = DEFAULT_DB
-    if "--db" in args:
-        db_path = Path(args[args.index("--db") + 1])
+    db_path = Path(_option(args, "--db") or DEFAULT_DB)
+    tickers = _tickers(_option(args, "--tickers"))
     filings = []
-    fixture = None
-    if "--sec-fixture" in args:
-        fixture = Path(args[args.index("--sec-fixture") + 1])
+    fixture = _option(args, "--sec-fixture")
+    if fixture:
+        fixture = Path(fixture)
         payload = json.loads(fixture.read_text(encoding="utf-8"))
-        filings.extend(payload.get("filings") or [])
+        rows = payload.get("filings") or []
+        if tickers:
+            wanted = {(ticker.upper().removesuffix(".AX")) for ticker in tickers}
+            rows = [row for row in rows if (row.get("ticker") or "").upper().removesuffix(".AX") in wanted]
+        filings.extend(rows)
         print(f"SEC fixture {fixture}")
     else:
         blocked = sec_block_message()
         if blocked:
             print(blocked)
         else:
-            end = date.today().isoformat()
-            start = (date.today() - timedelta(days=3)).isoformat()
-            print(f"SEC window {start} to {end}, at most 5 in-scope filings")
-            filings.extend(fetcher.collect(start, end, limit=5))
+            start, end = _window(args)
+            limit = _limit(args)
+            scope = f" for {', '.join(tickers)}" if tickers else ""
+            print(f"SEC window {start} to {end}, at most {limit} in-scope filings{scope}")
+            found, missing = fetcher.collect_window(start, end, tickers=tickers, limit=limit)
+            if missing:
+                print(f"unmapped tickers: {', '.join(missing)}")
+            filings.extend(found)
     if "--no-asx" not in args:
         companies = json.loads(UNIVERSE.read_text(encoding="utf-8"))["companies"]
+        if tickers:
+            wanted = {(ticker.upper().removesuffix(".AX")) for ticker in tickers}
+            companies = [row for row in companies if (row.get("ticker") or "").upper() in wanted]
         filings.extend(fetcher.collect_asx(companies))
     if not filings:
         print("No filings to score.")

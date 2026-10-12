@@ -103,8 +103,6 @@ def parse_company_facts(payload, company, source_side):
                 notes.append("an active tag is also present for this company")
         elif stale_seen and concept in active_concepts:
             notes.append("stale tags also exist for this company; this row uses the active tag")
-        if concept not in notes:
-            notes.append(concept)
         value = point.get("val")
         if value is None:
             flags.append("missing_value")
@@ -125,7 +123,7 @@ def parse_company_facts(payload, company, source_side):
                 source_type="xbrl_company_facts",
                 disclosure=disclosure,
                 flags=flags,
-                notes=notes,
+                notes=[concept, *notes],
             )
         )
     return rows

@@ -10,8 +10,8 @@ for _entry in (str(_REPO), str(_ROOT)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from parser import parse_company_facts, parse_release
-from shared.store import connect, dedupe_figures, save_run
+from parser import parse_company_facts, parse_release  # noqa: E402
+from shared.store import connect, dedupe_figures, save_run  # noqa: E402
 
 _RECORD_KEYS = (
     "source_side",
@@ -71,60 +71,52 @@ def to_json(table):
     return json.dumps(table, indent=2) + "\n"
 
 
-def figures_from_records(records, seen_at):
-    """History rows for one orders-backlog table. Flagged rows stay, unverified."""
-    figures = []
-    for row in records:
-        ticker = row.get("ticker")
-        if not ticker:
-            continue
-        filed = str(row.get("filing_date") or "")[:10]
-        figures.append(
-            {
-                "ticker": ticker,
-                "company": row.get("company"),
-                "figure_type": _figure_type(row),
-                "instrument": row.get("counterparty") or "",
-                "period": row.get("equipment_or_period") or "",
-                "value": row.get("value"),
-                "value_text": _plain(row.get("value")),
-                "currency": row.get("currency"),
-                "seen_at": seen_at,
-                "announced_on": filed or None,
-                "source_url": row.get("source_url"),
-                "source_type": row.get("source_type"),
-                "verified": 0 if row.get("flags") else 1,
-                "start": row.get("start"),
-                "end": row.get("end"),
-                "frame": row.get("frame"),
-                "fp": row.get("fp"),
-            }
-        )
-    return figures
+def store_run(db_path, table, started_at, notes=None):
+    """Insert one orders-backlog run. Earlier runs and their figures stay put.
 
-
-def store_run(db_path, records, started_at, seen_at, notes=None):
-    """Dedupe, then write one orders-backlog run. Duplicate keys are logged."""
-    figures = dedupe_figures(figures_from_records(records, seen_at))
-    run_id = f"{started_at[:10]}-orders-backlog"
+    Rows that share a figures key are collapsed first. A single-quarter value
+    beats a year-to-date value, then the latest filing wins. Drops are logged.
+    """
+    seen_at = started_at[:10]
+    figures = dedupe_figures(figures_from_records(table.get("records") or [], seen_at))
     conn = connect(db_path)
     try:
-        save_run(conn, run_id, "orders-backlog", started_at, figures, notes=notes)
+        run_id = save_run(conn, "orders-backlog", started_at, figures, notes=notes)
     finally:
         conn.close()
     return {"run_id": run_id, "figures": len(figures)}
 
 
-def _figure_type(row):
-    for note in reversed(row.get("notes") or []):
-        if (
-            isinstance(note, str)
-            and note.isidentifier()
-            and note[:1].isupper()
-            and not note.isupper()
-        ):
-            return note
-    return row.get("disclosure") or "backlog"
+def figures_from_records(records, seen_at):
+    rows = []
+    for record in records:
+        ticker = record.get("ticker")
+        if not ticker:
+            continue
+        value = record.get("value")
+        filed = record.get("filing_date") or ""
+        rows.append(
+            {
+                "ticker": ticker,
+                "company": record.get("company"),
+                "figure_type": record["source_side"],
+                "instrument": record.get("counterparty") or record.get("disclosure") or "",
+                "period": record.get("equipment_or_period") or filed,
+                "value": value,
+                "value_text": _plain(value),
+                "currency": record.get("currency"),
+                "seen_at": seen_at,
+                "announced_on": filed[:10] or None,
+                "source_url": record.get("source_url"),
+                "source_type": record.get("source_type"),
+                "verified": 0 if record.get("flags") else 1,
+                "start": record.get("start"),
+                "end": record.get("end"),
+                "frame": record.get("frame"),
+                "fp": record.get("fp"),
+            }
+        )
+    return rows
 
 
 def _plain(value):

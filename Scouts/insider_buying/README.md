@@ -6,7 +6,7 @@ Finds open-market insider purchases, including CEO buys. A CEO buy is the same r
 
 ## Data sources
 
-SEC Form 4 and Form 4/A ownership XML, and ASX Appendix 3Y PDFs. ASX headlines come from `asx.api.markitdigital.com`. Every request goes through `shared/nethttp.py`. The SEC collector refuses to send when `SEC_CONTACT_EMAIL` is missing.
+SEC Form 4 and Form 4/A ownership XML, and ASX Appendix 3Y PDFs. The collector skips the XSL HTML render and the full-submission text file, and reads `primary_doc.xml` (or the ownership document inside a submission wrapper, including a default namespace). ASX headlines come from `asx.api.markitdigital.com`. Every request goes through `shared/nethttp.py`. The SEC collector refuses to send when `SEC_CONTACT_EMAIL` is missing.
 
 ## What it captures
 
