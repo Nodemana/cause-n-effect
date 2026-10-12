@@ -939,6 +939,70 @@ class OrdersBacklogTests(unittest.TestCase):
                 self.assertNotIn(dropped_value, {row["value"] for row in rows})
         self.assertNotIn("2026-06-26", {row["equipment_or_period"] for row in table["records"] if row.get("value")})
 
+    def test_gev_10q_narrative_does_not_store_comparatives_or_contract_lines(self):
+        text = (FIX / "gev_10q_rpo.txt").read_text(encoding="utf-8")
+        self.assertIn("RPO increased $26.0 billion", text)
+        self.assertIn("RPO increased $47.6 billion", text)
+        self.assertIn("increased $304 million", text)
+        self.assertIn("higher contract losses", text)
+        self.assertIn("from June 30, 2025", text)
+        gev = {
+            "ticker": "GEV",
+            "name": "GE Vernova Inc",
+            "cik": "0001996810",
+            "equipment": ["turbines", "transformers", "switchgear"],
+        }
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rows = parser.parse_release(
+                text,
+                gev,
+                "supplier_order",
+                "10-Q",
+                "https://www.sec.gov/Archives/edgar/data/1996810/000199681026000148/gev-20260630.htm",
+                "2026-07-22",
+                accession="0001996810-26-000148",
+            )
+        valued = [row for row in rows if row.get("value") is not None]
+        values = {row["value"] for row in valued}
+        for amount in (47_600_000_000, 26_000_000_000, 304_000_000, 300_000_000, 14_088_000_000, 700_000_000):
+            self.assertNotIn(amount, values)
+        periods = {row["equipment_or_period"] for row in valued}
+        self.assertNotIn("2025-06-30", periods)
+        self.assertNotIn("2026-07-22", periods)
+        figures = live._figures(rows, "2026-07-22")
+        self.assertFalse(figures)
+        self.assertNotIn("transformers", {row["instrument"] for row in figures})
+
+        comparative = (
+            "For the quarter ended June 30, 2026, orders were $24.2 billion. "
+            "Orders were $20.0 billion for the quarter ended June 30, 2025."
+        )
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rows = parser.parse_release(
+                comparative, gev, "supplier_order", "10-Q", "https://www.sec.gov/gev-compare", "2026-07-22"
+            )
+        kept = [row for row in rows if row.get("value") is not None]
+        self.assertEqual(
+            [(row["disclosure"], row["equipment_or_period"], row["value"]) for row in kept],
+            [("orders", "2026-06-30", 24_200_000_000)],
+        )
+        self.assertIn(
+            "skipped prior-year comparative ticker=GEV value=20000000000 period=2025-06-30 document=2026-06-30",
+            stdout.getvalue(),
+        )
+        named = parser.parse_release(
+            (FIX / "exhibit99_order.txt").read_text(encoding="utf-8"),
+            SUPPLIER, "supplier_order", "8-K", "https://www.sec.gov/order", "2026-06-02",
+        )
+        self.assertEqual(named[0]["disclosure"], "order")
+        self.assertEqual(named[0]["counterparty"], "Harbour Utilities")
+        self.assertEqual(named[0]["equipment_or_period"], "turbines")
+        figure = live._figures(named, "2026-06-02")[0]
+        self.assertEqual(figure["period"], "2026-06-02")
+        self.assertEqual(figure["instrument"], "turbines")
+
     def test_supplier_10q_is_collected_without_a_socket(self):
         text = (FIX / "etn_10q_backlog.txt").read_text(encoding="utf-8")
         etn = {

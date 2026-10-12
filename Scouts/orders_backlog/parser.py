@@ -235,7 +235,7 @@ def _backlog_text(text, company, source_type, source_url, filing_date):
         rows.append(_shell(company, "customer_backlog", "backlog", source_type, source_url, filing_date,
                            ["missing_value"], ["backlog mentioned without an adjacent amount"],
                            equipment_or_period=_release_period(sentence, filed_period, filing_date)))
-    return rows
+    return _drop_prior_comparatives(rows, filed_period, company)
 
 
 def _adjacent_backlog(sentence, company, source_type, source_url, filing_date, filed_period):
@@ -290,7 +290,10 @@ _METRIC_KIND = {
     "revenue": "revenue",
     "revenues": "revenue",
 }
-_CHANGE = re.compile(r"\b(?:growth|up|down|increase|decrease)\b", re.I)
+_CHANGE = re.compile(
+    r"\b(?:growth|up|down|increas(?:e|ed|es|ing)?|decreas(?:e|ed|es|ing)?|declin(?:e|ed|es|ing)?)\b",
+    re.I,
+)
 _CUSTOMER_ORDER = re.compile(r"\border from\b|\breceived an order\b|\border with\b", re.I)
 _SECTION = (
     "Electrical Americas",
@@ -304,11 +307,52 @@ _SECTION = (
 )
 _IN_ORDER_TO = re.compile(r"\bin order to\b", re.I)
 _ORDER_WORD = re.compile(r"\borders?\b|\bcontracts?\b|\bawarded\b", re.I)
+# A single customer order is an announcement. A balance-sheet "contract" line is not.
+_ANNOUNCED_ORDER = re.compile(
+    r"\breceived an order\b|\border from\b|\border with\b|\bawarded\b|"
+    r"\bannounced\b.{0,60}\border\b|\border\b.{0,40}\b(?:valued|worth)\b",
+    re.I,
+)
+_NOT_AN_ORDER = re.compile(
+    r"\bcontract (?:assets?|liabilit\w*|losses|loss)\b|\bdeferred (?:income|assets?)\b|"
+    r"\brpo\b|\bremaining performance\b",
+    re.I,
+)
+_NOT_A_COUNTERPARTY = re.compile(
+    r"^(?:January|February|March|April|May|June|July|August|September|October|November|December|All|The|Our|Its)$",
+    re.I,
+)
 
 
 def _mentions_order(text):
     """'in order to' is not an order. A customer order or an orders figure is."""
     return _ORDER_WORD.search(_IN_ORDER_TO.sub(" ", text or "")) is not None
+
+
+def _is_order_announcement(sentence):
+    """A single customer order, not a contract-asset or RPO sentence that mentions orders."""
+    if _NOT_AN_ORDER.search(sentence or ""):
+        return False
+    return _ANNOUNCED_ORDER.search(sentence or "") is not None
+
+
+def _drop_prior_comparatives(rows, document_period, company):
+    """A 2026 release that repeats a 2025 column is not a new period."""
+    end = _iso_date(document_period or "")
+    if end is None:
+        return rows
+    kept = []
+    for row in rows or []:
+        period = _row_period_end(row)
+        value = row.get("value")
+        if period is not None and value is not None and period.year < end.year:
+            print(
+                f"skipped prior-year comparative ticker={company.get('ticker')} "
+                f"value={float(value):.0f} period={period.isoformat()} document={end.isoformat()}"
+            )
+            continue
+        kept.append(row)
+    return kept
 
 
 def _document_period(text):
@@ -745,6 +789,8 @@ def _supplier_text(text, company, source_type, source_url, filing_date):
             continue
         if not orderish:
             continue
+        if not intake and not _is_order_announcement(sentence):
+            continue
         amounts = _moneys(sentence)
         equipment = _equipment(sentence, company)
         period = _period(sentence)
@@ -825,7 +871,7 @@ def _supplier_text(text, company, source_type, source_url, filing_date):
                 notes=notes,
             )
         )
-    return _drop_small_backlogs(rows, plain, company)
+    return _drop_prior_comparatives(_drop_small_backlogs(rows, plain, company), filed_period, company)
 
 
 def _choose_point(points, company, concept, end, currency):
@@ -1019,7 +1065,9 @@ def _pipe_row(sentence, company, source_side, disclosure, source_type, source_ur
     """
     cells = [cell.strip(" ;") for cell in sentence.split("|")]
     cells = [cell for cell in cells if cell]
-    if len(cells) < 2:
+    if not cells:
+        return None
+    if len(cells) < 2 and not _moneys(sentence):
         return None
     segment = None
     period = None
@@ -1165,7 +1213,7 @@ def _counterparty(sentence):
         match = re.search(pattern, sentence)
         if match:
             name = re.split(r"\s+\b(?:for|valued|worth|to supply)\b", match.group(1))[0].strip(" ,.")
-            if name:
+            if name and not _NOT_A_COUNTERPARTY.match(name):
                 return name, False
     return None, True
 
