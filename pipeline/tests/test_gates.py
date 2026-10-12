@@ -250,16 +250,14 @@ class GateTests(unittest.TestCase):
             path = str(Path(tmp) / "history.sqlite")
             conn = _history(path)
             try:
-                save_run(
-                    conn,
-                    "orders-backlog",
-                    "2026-10-12T14:31:00Z",
-                    [
-                        _order("GEV", "orders", "40600000000"),
-                        _order("GEV", "backlog|40600000000", "40600000000", figure_type="backlog"),
-                        _order("GEV", "Amazon", "2000000000 buyer: Amazon"),
-                    ],
-                )
+                labels = [
+                    _order("GEV", "orders", "40600000000"),
+                    _order("GEV", "backlog|40600000000", "40600000000", figure_type="backlog"),
+                    _order("GEV", "Amazon", "2000000000 buyer: Amazon"),
+                ]
+                for row in labels:
+                    row["value"] = 20_000_000
+                save_run(conn, "orders-backlog", "2026-10-12T14:31:00Z", labels)
             finally:
                 conn.close()
             run_pipeline(path, provider=StubProvider(), token_budget=80000)
