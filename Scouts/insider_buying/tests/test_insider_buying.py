@@ -453,6 +453,54 @@ Nature of change:
             if previous is not None:
                 os.environ["SEC_CONTACT_EMAIL"] = previous
 
+    def test_same_day_lots_sum_to_one_figure(self):
+        import live
+
+        figures = [
+            {
+                "ticker": "MIN.AX",
+                "figure_type": "insider_purchase",
+                "instrument": "",
+                "period": "2026-09-15|Ada North",
+                "value": 100_000,
+                "value_text": "1000 shares at 100 AUD",
+                "currency": "AUD",
+            },
+            {
+                "ticker": "MIN.AX",
+                "figure_type": "insider_purchase",
+                "instrument": "",
+                "period": "2026-09-15|Ada North",
+                "value": 50_000,
+                "value_text": "500 shares at 100 AUD",
+                "currency": "AUD",
+            },
+            {
+                "ticker": "MIN.AX",
+                "figure_type": "insider_purchase",
+                "instrument": "",
+                "period": "2026-09-15|Ada North|3",
+                "value": 25_000,
+                "value_text": "250 shares at 100 AUD",
+                "currency": "AUD",
+            },
+            {
+                "ticker": "MIN.AX",
+                "figure_type": "insider_purchase",
+                "instrument": "",
+                "period": "2026-09-16|Ada North",
+                "value": 10_000,
+                "value_text": "100 shares",
+                "currency": "AUD",
+            },
+        ]
+        kept = live._unique_figures(figures)
+        by_period = {row["period"]: row for row in kept}
+        self.assertEqual(set(by_period), {"2026-09-15|Ada North", "2026-09-16|Ada North"})
+        self.assertEqual(by_period["2026-09-15|Ada North"]["value"], 175_000)
+        self.assertIn("3 lots totalling 175000", by_period["2026-09-15|Ada North"]["value_text"])
+        self.assertFalse(any("|2" in row["period"] or "|3" in row["period"] for row in kept))
+
     def test_same_day_runs_keep_their_figures(self):
         import live
 

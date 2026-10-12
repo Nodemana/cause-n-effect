@@ -13,8 +13,10 @@ at most five announcements per company.
 The default database is /tmp/cause-n-effect-capex.sqlite. SEC names are
 AMZN, ORCL, and MSFT in universe_sec.json. Guidance search covers the last
 90 days. Cash-flow tags keep the reported span. A single quarter is derived when the
-prior year-to-date figure is present. Periods older than --quarters (default 8)
-are dropped.
+prior year-to-date figure is present. Periods older than --quarters (default 8,
+and at least 5) are dropped. Cash-flow spans inside that window are all kept,
+so a year-to-date or trailing-twelve-month row does not crowd out the year-ago
+quarter.
 """
 
 import argparse

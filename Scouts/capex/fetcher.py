@@ -41,6 +41,8 @@ CAPEX_TAGS = (
 )
 STATEMENT_FORMS = frozenset({"10-K", "10-Q", "20-F", "10-K/A", "10-Q/A", "20-F/A"})
 RECENT_QUARTERS = 8
+# Year-over-year needs the current quarter and the one four quarters earlier.
+MIN_SINGLE_QUARTERS = 5
 FLOW_TAGS = frozenset(
     {
         "PaymentsToAcquirePropertyPlantAndEquipment",
@@ -58,7 +60,11 @@ _ASX_CAPEX = re.compile(
 
 
 def collect_companyfacts(companies, client=None, n=4, quarters=RECENT_QUARTERS, as_of=None):
-    """Latest reported facts for each capex tag. `client` is required in tests."""
+    """Reported facts for each capex tag. `client` is required in tests.
+
+    `n` caps balance-sheet tags. Cash-flow tags keep the quarter window instead,
+    so a year-to-date row cannot push out the year-ago quarter.
+    """
     client = client or sec_client()
     found = []
     for company in companies:
@@ -101,12 +107,19 @@ def select_facts(payload, n=4, quarters=RECENT_QUARTERS, as_of=None, ticker=""):
     those are equal, the latest filing wins. Each duration is labelled quarter,
     ytd, ttm, or annual. Year-to-date is only a span that starts on the
     fiscal-year start and is not itself a quarter or a full year.
+
+    Cash-flow tags keep every span in the window (at least five quarters).
+    `n` used to cap those spans together, so the latest year-to-date and
+    trailing-twelve-month rows filled a `quarters=8` pull and the year-ago
+    quarter was never stored. `n` still caps balance-sheet tags.
     """
-    cutoff = period_cutoff(quarters, as_of)
+    flow_cutoff = period_cutoff(max(int(quarters), MIN_SINGLE_QUARTERS), as_of)
+    other_cutoff = period_cutoff(quarters, as_of)
     gaap = (payload.get("facts") or {}).get("us-gaap") or {}
     fiscal_start = infer_fiscal_start(payload)
     chosen = []
     for tag in CAPEX_TAGS:
+        cutoff = flow_cutoff if tag in FLOW_TAGS else other_cutoff
         node = gaap.get(tag) or {}
         for unit, rows in (node.get("units") or {}).items():
             if not _monetary(unit):
@@ -137,7 +150,10 @@ def select_facts(payload, n=4, quarters=RECENT_QUARTERS, as_of=None, ticker=""):
                 key=lambda row: (row.get("end") or "", row.get("start") or ""),
                 reverse=True,
             )
-            for row in ordered[:n]:
+            # Balance-sheet snapshots stay on `n`. Cash-flow spans do not share
+            # that cap: the quarter window is what limits them.
+            picked = ordered if tag in FLOW_TAGS else ordered[:n]
+            for row in picked:
                 chosen.append(
                     {
                         "tag": tag,

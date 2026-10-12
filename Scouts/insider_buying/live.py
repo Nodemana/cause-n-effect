@@ -41,21 +41,89 @@ def sec_block_message():
 
 
 def _unique_figures(figures):
-    """Same-day buys that share a period get a suffix so the figures key still holds."""
+    """Sum lots that share an insider, ticker, and day.
+
+    A second row used to get a `|2` period suffix so the figures key held.
+    Those suffixes made each lot look like an earlier routine print. A row
+    that is not one of those lots still gets a suffix when its key repeats.
+    """
+    grouped = []
+    by_lot = {}
     used = set()
-    kept = []
     for item in figures:
-        period = item["period"]
-        key = (item["ticker"], item["figure_type"], item["instrument"], period)
-        n = 2
-        while key in used:
-            period = f"{item['period']}|{n}"
-            key = (item["ticker"], item["figure_type"], item["instrument"], period)
-            n += 1
-        item["period"] = period
-        used.add(key)
-        kept.append(item)
-    return kept
+        key = _lot_key(item)
+        if key is not None and key in by_lot:
+            current = by_lot[key]
+            current["value"] = (current.get("value") or 0) + (item.get("value") or 0)
+            count = current.get("_lots", 1) + 1
+            current["_lots"] = count
+            current["value_text"] = f"{count} lots totalling {current['value']:g}"
+            continue
+        row = dict(item)
+        if key is not None:
+            row["period"] = _canonical_period(row.get("period") or "")
+            row["_lots"] = 1
+            by_lot[key] = row
+        period = row.get("period") or ""
+        instrument = row.get("instrument") or ""
+        store_key = (row.get("ticker"), row.get("figure_type"), instrument, period)
+        copy = 2
+        while store_key in used:
+            period = f"{row.get('period') or ''}|{copy}"
+            store_key = (row.get("ticker"), row.get("figure_type"), instrument, period)
+            copy += 1
+        row["period"] = period
+        row["instrument"] = instrument
+        used.add(store_key)
+        grouped.append(row)
+    for row in grouped:
+        row.pop("_lots", None)
+    return grouped
+
+
+def _lot_key(item):
+    if item.get("figure_type") != "insider_purchase":
+        return None
+    day, insider = _day_and_insider(item.get("period") or "")
+    if not day or not insider:
+        return None
+    return (
+        (item.get("ticker") or "").upper(),
+        item.get("figure_type"),
+        item.get("instrument") or "",
+        (item.get("currency") or "").upper(),
+        day,
+        insider,
+    )
+
+
+def _canonical_period(period):
+    day, _insider = _day_and_insider(period)
+    if not day:
+        return period
+    _day, _, rest = (period or "").partition("|")
+    parts = rest.split("|")
+    if len(parts) >= 2 and parts[-1].isdigit():
+        rest = "|".join(parts[:-1])
+    return f"{day}|{rest}"
+
+
+def _day_and_insider(period):
+    text = period or ""
+    if "|" not in text:
+        return "", ""
+    day, _, rest = text.partition("|")
+    if len(day) != 10 or day[4] != "-" or day[7] != "-":
+        return "", ""
+    parts = rest.split("|")
+    if len(parts) >= 2 and parts[-1].isdigit():
+        insider = "|".join(parts[:-1])
+    else:
+        insider = rest
+    insider = insider.strip().casefold()
+    if not insider:
+        return "", ""
+    return day, insider
 
 
 def build_parser():
