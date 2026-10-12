@@ -4,6 +4,8 @@ Praetorians critique theses, and that is their only job. After the Centurions wr
 
 They receive the Centurion's output: the recommendation (where to put the money, the expected return, the risks, and the timeframe) and the stated assumptions. They have no assumptions section. The assumptions under attack are the Centurion's.
 
+On any prior price run, the Centurion has already classified it as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence, and noted that call as a concern where relevant. The Praetorians review that classification and state whether they agree or disagree, with counter-evidence. The Centurion decides first. The Praetorians challenge that call.
+
 They challenge:
 
 - An assumption that does not make sense, and why.
@@ -22,4 +24,9 @@ They argue the other side of every claim. Counter-evidence is aimed at the Centu
 ## Contradicting research
 
 ## The other side of the claim
+
+## Price-run classification
+
+Agree or disagree:
+Counter-evidence:
 ```

@@ -94,7 +94,7 @@ A new row starts at status `fresh`. The scout does not merge it with another lea
 
 A lead that is stored goes to one Centurion, which writes one individual thesis. After the Centurions write those theses, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis.
 
-That second pass includes a priced-in check. The Centurion looks at the actual stock price and past performance and asks whether the move already looks priced in. A big prior stock-price run does not by itself mean the thesis is old. It may be a new driver or an acceleration of an existing one. The Centurion does not reject, mark stale, or downgrade on price action alone. It records the prior run and the possible tail-end-of-cycle concern as a noted concern in the thesis, in the risks or assumptions, for the Praetorians and the Legate to weigh. That concern is that the capex or backlog may be just the tail end of an already massive run of spending or orders that has already come through. The stock price and past performance come from quote data.
+That second pass includes a priced-in check on any prior price run. The Centurion makes the call first, classifying the run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with its reasoning and evidence. It notes that call as a concern where relevant. There is no automatic rejection. The stock price and past performance come from quote data. The Praetorians then review that classification and state whether they agree or disagree, with counter-evidence.
 
 ## Assign
 
@@ -127,7 +127,7 @@ Only a merged finding goes back to one Centurion as a single new lead. That Cent
 
 ## Praetorians
 
-Praetorians are ephemeral agents. Their only job is critique. A thesis the Legate does not merge gets no second pass and comes straight from the first thesis. A merged finding comes only after its second-pass thesis. They attack the stated assumptions, weak or non-official sources, and conclusions, with counter-evidence. They do not write an assumptions list of their own, and they do not merge or rank.
+Praetorians are ephemeral agents. Their only job is critique. A thesis the Legate does not merge gets no second pass and comes straight from the first thesis. A merged finding comes only after its second-pass thesis. They attack the stated assumptions, weak or non-official sources, and conclusions, with counter-evidence. On any prior price run they review the Centurion's classification, already made, and state whether they agree or disagree, with counter-evidence. They do not write an assumptions list of their own, and they do not merge or rank.
 
 Each pass is a row in `critiques`. The thesis that leaves this step is one the Legate may rank.
 

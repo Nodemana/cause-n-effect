@@ -19,9 +19,9 @@ flowchart LR
 
 **Legate merge.** After those individual theses exist, the Legate merges any the research shows are linked, chiefly a buyer's capex thesis with a different company's orders_backlog thesis, and only when official-source evidence from that research is stored in `legate_merges.rationale` (a sector match is not enough); same-company supportive merges are allowed. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass, and a thesis that is not merged gets no second pass and goes straight to the Praetorians.
 
-**Second pass.** That Centurion runs a fresh full pass on the merged lead alone: grade, thesis, potential ROI, risks, timeframe, and stated assumptions. That second-pass thesis is what then goes to the Praetorians.
+**Second pass.** That Centurion runs a fresh full pass on the merged lead alone: grade, thesis, potential ROI, risks, timeframe, and stated assumptions. On any prior price run it classifies the run first as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence, and notes that call as a concern where relevant.
 
-**Praetorians.** Praetorians critique an unmerged thesis straight from the first pass, and a merged finding only after its second-pass thesis, attacking stated assumptions, weak sources, and conclusions with counter-evidence ([Praetorians/README.md](Praetorians/README.md)). They state no assumptions of their own.
+**Praetorians.** Praetorians critique an unmerged thesis straight from the first pass, and a merged finding only after its second-pass thesis, attacking stated assumptions, weak sources, and conclusions with counter-evidence ([Praetorians/README.md](Praetorians/README.md)). They then review the Centurion's price-run classification and state whether they agree or disagree, with counter-evidence, and they state no assumptions of their own.
 
 **Legate rank.** The Legate ranks those critiqued theses: fewest surviving issues, highest ROI, and shortest timeframe first, then by remaining risk count and size, and a merged thesis is one entry. The ranked list goes to the Imperator, who decides.
 
@@ -38,7 +38,7 @@ Pulling a filing is not a lead: each survivor stores a short label and a one-lin
 
 A lead that is stored goes to one Centurion, which writes one individual thesis. After the Centurions write those theses, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis.
 
-That second pass includes a priced-in check. The Centurion looks at the actual stock price and past performance and asks whether the move already looks priced in. A big prior stock-price run does not by itself mean the thesis is old. It may be a new driver or an acceleration of an existing one. The Centurion does not reject, mark stale, or downgrade on price action alone. It records the prior run and the possible tail-end-of-cycle concern as a noted concern in the thesis, in the risks or assumptions, for the Praetorians and the Legate to weigh. That concern is that the capex or backlog may be just the tail end of an already massive run of spending or orders that has already come through. The stock price and past performance come from quote data.
+That second pass includes a priced-in check on any prior price run. The Centurion makes the call first, classifying the run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with its reasoning and evidence. It notes that call as a concern where relevant. There is no automatic rejection. The stock price and past performance come from quote data. The Praetorians then review that classification and state whether they agree or disagree, with counter-evidence.
 
 1. **Capex**: big spenders' capex, traced to tier-2 and tier-3 suppliers.
 2. **Debt raises**: loans, facilities and bonds, run through a two-stage use-of-proceeds filter with threshold analytics.
@@ -49,13 +49,13 @@ That second pass includes a priced-in check. The Centurion looks at the actual s
 ## Roles
 - **Scouts** find leads. They do not merge them.
 - **Centurions** research one lead into one thesis. Spin-up is in [Centurions/README.md](Centurions/README.md). Only a merged finding comes back for a second, fresh full thesis pass.
-- **Praetorians** critique theses only: an unmerged thesis straight from the first pass, and a merged finding after its second-pass thesis. The job is in [Praetorians/README.md](Praetorians/README.md).
+- **Praetorians** critique theses only: an unmerged thesis straight from the first pass, and a merged finding after its second-pass thesis. They review the Centurion's price-run classification after that call is made. The job is in [Praetorians/README.md](Praetorians/README.md).
 - **Legate** is the AI Portfolio Manager. After the individual theses exist it merges linked ones, sends only each merge back for a second pass, and ranks after critique.
 - **Imperator** is the human who decides and places trades himself.
 
 ## Praetorians
 
-Praetorians receive theses for critique, and critique is their only job. A thesis the Legate does not merge gets no second pass and comes straight from the first Centurion thesis. A merged finding comes only after its second-pass thesis. They have no assumptions section.
+Praetorians receive theses for critique, and critique is their only job. A thesis the Legate does not merge gets no second pass and comes straight from the first Centurion thesis. A merged finding comes only after its second-pass thesis. On any prior price run, the Centurion has already classified it as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence. The Praetorians review that classification and state whether they agree or disagree, with counter-evidence. They have no assumptions section.
 
 They challenge an assumption that does not make sense, and why; research taken from a bad source or from anything other than an SEC filing, an ASX announcement, or a company release; and further research that contradicts the Centurion. They argue the other side of every claim. Counter-evidence is aimed at the Centurion's stated assumptions, sources, and conclusions.
 
