@@ -12,9 +12,14 @@ for _entry in (str(_REPO), str(_ROOT)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from parser import DEFAULT_RECENT_QUARTERS, _recent_periods, parse_company_facts, parse_release  # noqa: E402
+from Scouts.orders_backlog.parser import (  # noqa: E402
+    DEFAULT_RECENT_QUARTERS,
+    _recent_periods,
+    parse_company_facts,
+    parse_release,
+)
+from Scouts.orders_backlog.tags import ACTIVE_BACKLOG_TAGS, STALE_BACKLOG_TAGS  # noqa: E402
 from shared.store import connect, dedupe_figures, save_run  # noqa: E402
-from tags import ACTIVE_BACKLOG_TAGS, STALE_BACKLOG_TAGS  # noqa: E402
 
 # A latest period older than this, measured from the run date, is called out.
 DEFAULT_STALE_DAYS = 180

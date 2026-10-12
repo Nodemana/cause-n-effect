@@ -43,6 +43,18 @@ def read_keys():
     return {name: os.environ.get(name, "").strip() for name in ("FRED_API_KEY", "EIA_API_KEY")}
 
 
+def gap_reason(spec, keys):
+    """Why a catalog series with no stored observation is unavailable.
+
+    FRED and EIA are `no key` when that environment variable is unset.
+    Every other gap is `not loaded`.
+    """
+    env_name = _KEY_ENV.get(spec["provider"])
+    if env_name and not (keys or {}).get(env_name):
+        return "no key"
+    return "not loaded"
+
+
 def redact(text, secrets):
     cleaned = text or ""
     for secret in secrets:

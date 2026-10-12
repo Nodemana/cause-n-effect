@@ -205,7 +205,7 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(change.event_date, "2026-09-20")
         self.assertTrue(any("5.1" in note for note in change.notes))
 
-        from Scouts.accumulation.pipeline import figure_from_position
+        from Scouts.accumulation.scout_pipeline import figure_from_position
 
         figure = figure_from_position(
             {
@@ -243,7 +243,7 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(change.event_date, "2026-10-08")
         self.assertEqual(change.flags, [])
 
-        from Scouts.accumulation.pipeline import figure_from_position
+        from Scouts.accumulation.scout_pipeline import figure_from_position
 
         figure = figure_from_position(
             {

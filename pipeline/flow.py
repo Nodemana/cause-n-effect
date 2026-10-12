@@ -116,11 +116,12 @@ def run_pipeline(
         macro = load_macro(conn, macro_cache)
         figures = load_latest_figures(conn)
         names, _ciks = party_index(figures)
-        working = figures[: int(limit)] if limit is not None else figures
-        candidates, rejects = prefilter(conn, working)
+        candidates, rejects = prefilter(conn, figures, limit=limit)
         leads = _rate(conn, provider, budget, candidates, rejects)
         _research(conn, provider, budget, leads, names, macro)
+        leads = _drop_hard_failures(leads, rejects)
         merged = _merge(conn, provider, budget, leads, macro)
+        merged = _drop_hard_failures(merged, rejects)
         final = _final_leads(leads, merged)
         _critique(provider, budget, final)
         ranked = _rank(final)
@@ -135,15 +136,26 @@ def run_pipeline(
         "provider": provider.name,
         "tokens_used": budget.used,
         "token_budget": budget.limit,
-        "figures": len(working),
+        "figures": len(figures),
         "leads": len(leads) + len(merged),
         "rejects": len(rejects),
         "merges": len(merged),
         "rankings": len(ranked),
         "decisions": len(presented),
         "dry_run": bool(dry_run),
-        "macro": "used" if macro else "skipped",
+        "macro": _macro_log(macro, merged),
     }
+
+
+def _macro_log(macro, merged):
+    if not macro:
+        return "skipped"
+    second_pass = sum(
+        1
+        for lead in merged
+        if getattr(lead, "thesis", None) is not None and lead.thesis.pass_number == 2
+    )
+    return f"loaded (second-pass theses: {second_pass})"
 
 
 def _rate(conn, provider, budget, candidates, rejects):
@@ -200,6 +212,7 @@ def _lead_from_candidate(candidate, rating):
     lead.figure = figure
     lead.rating = rating
     lead.grade_types = [candidate.lead_type]
+    lead.parties = list(candidate.parties)
     return lead
 
 
@@ -212,6 +225,62 @@ def _research(conn, provider, budget, leads, names, macro):
             continue
         lead.thesis = _thesis_from_model(data, lead, criteria, 1, macro=None)
         _resolve_parties(lead.thesis, names)
+
+
+HARD_CRITERIA = {
+    "min_market_cap",
+    "capex_growth_yoy",
+    "raise_vs_company",
+    "backlog_qoq_growth",
+    "insider_buy_dollars",
+    "min_stake_pct",
+    "recent_window",
+}
+
+
+def _drop_hard_failures(leads, rejects):
+    kept = []
+    for lead in leads:
+        reason = _hard_grade_reason(lead)
+        if not reason:
+            kept.append(lead)
+            continue
+        parties = getattr(lead, "parties", None) or []
+        rejects.append(
+            PlannedReject(
+                lead.figure,
+                lead.lead_type,
+                "llm",
+                reason,
+                lead.rating,
+                parties,
+            )
+        )
+    return kept
+
+
+def _hard_grade_reason(lead):
+    thesis = lead.thesis
+    if thesis is None:
+        return ""
+    failed = []
+    seen = set()
+    for name, grade in thesis.grades_by_name.items():
+        if name not in HARD_CRITERIA:
+            continue
+        seen.add(name)
+        if grade.get("passed"):
+            evidence = _text(grade.get("evidence")).lower()
+            if evidence in {"", "missing", "missing evidence", "not graded"}:
+                failed.append(f"failed {name}: missing evidence")
+            continue
+        evidence = _text(grade.get("evidence")) or "missing evidence"
+        failed.append(f"failed {name}: {evidence}")
+    for criterion in thesis.criteria or []:
+        name = criterion.get("name")
+        if name in HARD_CRITERIA and name not in seen:
+            failed.append(f"failed {name}: missing evidence")
+    return "; ".join(failed)
 
 
 def _merge(conn, provider, budget, leads, macro):

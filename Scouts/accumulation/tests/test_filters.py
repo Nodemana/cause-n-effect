@@ -8,7 +8,7 @@ from pathlib import Path
 
 from Scouts.accumulation.filters import ScreenConfig, has_activist_purpose, screen
 from Scouts.accumulation.model import Position
-from Scouts.accumulation.pipeline import store_run
+from Scouts.accumulation.scout_pipeline import store_run
 
 AS_OF = date(2026, 10, 1)
 SECTORS = {"NWND": "materials", "BRMB": "health", "CPRL": "materials"}

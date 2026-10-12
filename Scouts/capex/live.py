@@ -31,8 +31,8 @@ for _entry in (str(_REPO), str(_HERE)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-import fetcher  # noqa: E402
-import pipeline  # noqa: E402
+from Scouts.capex import fetcher  # noqa: E402
+from Scouts.capex import scout_pipeline as pipeline  # noqa: E402
 from shared.store import utc_now  # noqa: E402
 
 SEC_UNIVERSE = _HERE / "universe_sec.json"

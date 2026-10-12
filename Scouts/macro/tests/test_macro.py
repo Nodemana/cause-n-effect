@@ -16,7 +16,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 
-from Scouts.macro import cache, catalog, fetcher, geopolitics, live, parsers, pipeline, store  # noqa: E402
+from Scouts.macro import cache, catalog, fetcher, geopolitics, live, parsers, scout_pipeline as pipeline, store  # noqa: E402
 from shared.nethttp import Client, EndpointError  # noqa: E402
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures"
@@ -304,8 +304,13 @@ class MacroTests(unittest.TestCase):
             parsers.parse_bls(failed)
         self.assertIn("year span", str(caught.exception))
 
-        au_cpi = parsers.parse(catalog.by_id()["AU_CPI"], (FIX / "abs_cpi.csv").read_bytes())
+        au = catalog.by_id()["AU_CPI"]
+        self.assertEqual(au["dataflow"], "ABS,CPI,1.1.0")
+        self.assertEqual(au["data_key"], "1.10001.10.50.Q")
+        self.assertIn("2011-12=100", au["unit"])
+        au_cpi = parsers.parse(au, (FIX / "abs_cpi.csv").read_bytes())
         self.assertEqual([row["obs_date"] for row in au_cpi], ["2024-03-31", "2024-09-30"])
+        self.assertGreater(au_cpi[-1]["value"], 120)
         spending = parsers.parse(catalog.by_id()["AU_GOV_SPENDING"], (FIX / "abs_gov.csv").read_bytes())
         self.assertEqual(spending[0]["value"], 170659)
         self.assertEqual(spending[0]["obs_date"], "2025-12-31")

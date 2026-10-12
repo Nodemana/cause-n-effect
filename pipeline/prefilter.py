@@ -4,6 +4,7 @@ import re
 from datetime import date
 
 from pipeline.load import as_of, classify, exchange_for, extract_cik, filing_date, period_end
+from pipeline.marketcap import criterion_threshold, resolve_market_cap
 from pipeline.names import normalise_name
 
 # Rubric and scout defaults the figures can support without a market-cap feed.
@@ -16,6 +17,10 @@ DEBT_MIN_DOLLARS = 50_000_000
 CAPEX_GROWTH_PCT = 10
 BACKLOG_GROWTH_PCT = 10
 ACCUMULATION_WINDOW_DAYS = 90
+STALE_PERIOD_DAYS = 120
+SIMILAR_VALUE_BAND = 0.20
+_SPAN_RANK = {"quarter": 0, "ttm": 1, "ytd": 2, "annual": 3, "instant": 4}
+_METRIC_LABELS = {"orders", "order", "backlog", "revenue"}
 
 _STOP_PARTIES = {
     "quarter",
@@ -101,26 +106,55 @@ class Candidate:
 def prefilter(conn, figures, limit=None):
     """Return (candidates, rejects) from the latest figures.
 
-    `limit` keeps the first N figures in ticker, type, period order before
+    `limit` keeps the first N lead figures in newest-announced order before
     the gates run. Balance-sheet tags that are not a lead type are skipped
-    and are not rejects.
+    and are not rejects, and they do not consume `limit`. Older periods and
+    extra capex spans are not rated.
     """
-    ordered = list(figures)
+    ordered = [figure for figure in figures if classify(figure.scout, figure.figure_type) is not None]
     if limit is not None:
         ordered = ordered[: int(limit)]
     by_name, cik_by_ticker = party_index(figures)
     candidates = []
     rejects = []
+    classified = []
     for figure in ordered:
         lead_type = classify(figure.scout, figure.figure_type)
         if lead_type is None:
             continue
-        parties = extract_parties(figure, lead_type, by_name, cik_by_ticker)
-        if figure.verified != 1:
+        if int(figure.verified) != 1:
+            parties = extract_parties(figure, lead_type, by_name, cik_by_ticker)
             rejects.append(
                 PlannedReject(figure, lead_type, "deterministic", "unverified figure", parties=parties)
             )
             continue
+        classified.append((figure, lead_type))
+    classified, span_dropped = _prefer_spans(classified)
+    classified, older = _latest_periods(classified)
+    for figure, lead_type in span_dropped:
+        parties = extract_parties(figure, lead_type, by_name, cik_by_ticker)
+        rejects.append(
+            PlannedReject(
+                figure,
+                lead_type,
+                "deterministic",
+                "extra span; kept the preferred span for this figure",
+                parties=parties,
+            )
+        )
+    for figure, lead_type in older:
+        parties = extract_parties(figure, lead_type, by_name, cik_by_ticker)
+        rejects.append(
+            PlannedReject(
+                figure,
+                lead_type,
+                "deterministic",
+                "older period kept for growth comparison",
+                parties=parties,
+            )
+        )
+    for figure, lead_type in classified:
+        parties = extract_parties(figure, lead_type, by_name, cik_by_ticker)
         reason, rating = _threshold(conn, figure, lead_type)
         if reason:
             rejects.append(PlannedReject(figure, lead_type, "deterministic", reason, rating, parties))
@@ -192,11 +226,6 @@ def extract_parties(figure, lead_type, by_name, cik_by_ticker):
     for role in ("supplier", "customer", "buyer"):
         for match in re.finditer(rf"(?i)\b{role}s?\s*:\s*([^;\n]+)", text):
             add(role, match.group(1))
-    if lead_type == "orders_backlog":
-        if figure.figure_type == "supplier_order":
-            add("buyer", figure.instrument)
-        elif figure.figure_type in {"customer_backlog", "backlog"}:
-            add("customer", figure.instrument)
     if lead_type == "accumulation":
         parts = (figure.period or "").split("|")
         if len(parts) >= 3:
@@ -248,11 +277,133 @@ def _threshold(conn, figure, lead_type):
         window = _outside_window(figure)
         if window:
             return window, Rating(timing="outside window", timing_rationale=window)
+    cap, cap_note = resolve_market_cap(conn, figure.ticker)
+    figure.market_cap = cap
+    threshold = criterion_threshold(conn, lead_type, "min_market_cap")
+    if threshold is not None and (cap is None or cap < threshold):
+        if cap is None:
+            return cap_note, _magnitude(cap_note)
+        reason = f"min_market_cap: {cap:g} is below {threshold:g}"
+        return reason, _magnitude(reason)
+    if lead_type == "debt_raise" and cap:
+        need = criterion_threshold(conn, lead_type, "raise_vs_company")
+        if need is not None and figure.value is not None:
+            pct = 100.0 * figure.value / cap
+            if pct < need:
+                reason = f"raise_vs_company: {pct:.1f} percent of market cap is below {need:g}"
+                return reason, _magnitude(reason)
     growth, compared = _growth_reason(conn, figure, lead_type)
     figure.prior_comparison = compared
+    if lead_type in {"capex", "orders_backlog"} and not compared:
+        label = "capex_growth_yoy" if lead_type == "capex" else "backlog_qoq_growth"
+        reason = f"{label}: no prior comparison in the figures table"
+        return reason, _magnitude(reason)
     if growth:
         return growth, _magnitude(growth)
+    figure.earlier_similar = _earlier_similar(conn, figure)
+    figure.period_age_days = _period_age_days(figure)
     return None, None
+
+
+def _prefer_spans(classified):
+    """One span per capex ticker and figure type. Quarter wins, then ttm."""
+    groups = {}
+    order = []
+    other = []
+    for figure, lead_type in classified:
+        if lead_type != "capex":
+            other.append((figure, lead_type))
+            continue
+        key = (figure.ticker, figure.figure_type)
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append((figure, lead_type))
+    kept = list(other)
+    dropped = []
+    for key in order:
+        group = groups[key]
+        ranks = [_SPAN_RANK.get(figure.instrument, 9) for figure, _lead_type in group]
+        if min(ranks) == 9:
+            kept.extend(group)
+            continue
+        best = min(ranks)
+        for figure, lead_type in group:
+            if _SPAN_RANK.get(figure.instrument, 9) == best:
+                kept.append((figure, lead_type))
+            else:
+                dropped.append((figure, lead_type))
+    return kept, dropped
+
+
+def _latest_periods(classified):
+    """Keep the latest period for each ticker, figure type, and instrument."""
+    groups = {}
+    order = []
+    for figure, lead_type in classified:
+        key = (figure.ticker, figure.figure_type, figure.instrument)
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append((figure, lead_type))
+    kept = []
+    older = []
+    for key in order:
+        group = groups[key]
+        best_end = max(_period_ordinal(figure) for figure, _lead_type in group)
+        for figure, lead_type in group:
+            if _period_ordinal(figure) == best_end:
+                kept.append((figure, lead_type))
+            else:
+                older.append((figure, lead_type))
+    return kept, older
+
+
+def _period_ordinal(figure):
+    end = period_end(figure.period)
+    if end is not None:
+        return end.toordinal()
+    filed = filing_date(figure)
+    if not filed:
+        return 0
+    try:
+        return date.fromisoformat(filed).toordinal()
+    except ValueError:
+        return 0
+
+
+def _earlier_similar(conn, figure):
+    if figure.value in (None, 0):
+        return False
+    rows = conn.execute(
+        """
+        SELECT value FROM figures
+        WHERE ticker = ? AND figure_type = ? AND instrument = ? AND figure_id != ?
+          AND value IS NOT NULL AND value != 0
+        """,
+        (figure.ticker, figure.figure_type, figure.instrument, figure.figure_id),
+    ).fetchall()
+    for row in rows:
+        gap = abs(row["value"] - figure.value) / abs(figure.value)
+        if gap <= SIMILAR_VALUE_BAND:
+            return True
+    return False
+
+
+def _period_age_days(figure):
+    end = period_end(figure.period)
+    if end is None:
+        filed = filing_date(figure)
+        if not filed:
+            return None
+        try:
+            end = date.fromisoformat(filed)
+        except ValueError:
+            return None
+    anchor = as_of(figure)
+    if anchor is None:
+        return None
+    return (anchor - end).days
 
 
 def _stake_pct(figure):
@@ -314,7 +465,7 @@ def _growth_reason(conn, figure, lead_type):
         return None, False
     growth = 100.0 * (figure.value - best[1]) / abs(best[1])
     if growth < need:
-        return f"below {label} threshold {need:g} percent", False
+        return f"below {label} threshold {need:g} percent", True
     return None, True
 
 
@@ -393,7 +544,10 @@ def _magnitude(reason):
 
 def _is_party(text):
     cleaned = (text or "").strip()
-    if len(cleaned) < 2 or cleaned.casefold() in _STOP_PARTIES:
+    folded = cleaned.casefold()
+    if len(cleaned) < 2 or folded in _STOP_PARTIES or folded in _METRIC_LABELS:
+        return False
+    if "|" in cleaned:
         return False
     if not any(char.isalpha() for char in cleaned):
         return False

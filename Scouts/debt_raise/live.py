@@ -27,8 +27,8 @@ for _entry in (str(_REPO), str(_HERE)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-import fetcher  # noqa: E402
-import pipeline  # noqa: E402
+from Scouts.debt_raise import fetcher  # noqa: E402
+from Scouts.debt_raise import scout_pipeline as pipeline  # noqa: E402
 
 UNIVERSE = _HERE / "universe_asx.json"
 DEFAULT_DB = Path("/tmp/cause-n-effect-debt-live.sqlite")

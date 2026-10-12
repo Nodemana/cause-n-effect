@@ -16,12 +16,12 @@ REPO = SCOUT.parents[1]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(SCOUT))
 
-import fetcher  # noqa: E402
-import live  # noqa: E402
-import parser  # noqa: E402
-import pipeline  # noqa: E402
+from Scouts.orders_backlog import fetcher  # noqa: E402
+from Scouts.orders_backlog import live  # noqa: E402
+from Scouts.orders_backlog import parser  # noqa: E402
+from Scouts.orders_backlog import scout_pipeline as pipeline  # noqa: E402
 from shared.store import dedupe_figures  # noqa: E402
-from tags import CUSTOMER_SECTORS, PROXY_TAGS, SUPPLIER_EQUIPMENT  # noqa: E402
+from Scouts.orders_backlog.tags import CUSTOMER_SECTORS, PROXY_TAGS, SUPPLIER_EQUIPMENT  # noqa: E402
 
 FIX = SCOUT / "fixtures"
 AMAT = {
