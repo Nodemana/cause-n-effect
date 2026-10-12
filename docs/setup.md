@@ -15,10 +15,11 @@ cause-n-effect/
     ├── orders_backlog/ # customer backlog and supplier orders, one table
     ├── debt_raise/     # use-of-proceeds gate for loans, facilities, and bonds
     ├── insider_buying/ # Form 4 and ASX Appendix 3Y open-market buys
-    └── capex/          # big spenders' capex → 2nd/3rd-tier suppliers
+    ├── capex/          # big spenders' capex → 2nd/3rd-tier suppliers
+    └── macro/          # cached official macro context; does not emit leads
 ```
 
-`Scouts/capex` pulls SEC companyfacts, EDGAR full-text capex guidance, and ASX announcements into the shared figures table. Each other scout keeps its fetcher, parser, and tests in its own folder.
+`Scouts/capex` pulls SEC companyfacts, EDGAR full-text capex guidance, and ASX announcements into the shared figures table. Each lead scout keeps its fetcher, parser, and tests in its own folder. `Scouts/macro` is documented only: a cached official dataset, with no fetcher yet.
 
 ## Environment
 
