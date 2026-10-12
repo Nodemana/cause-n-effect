@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .pipeline import refresh, risk_note_line
+from .scout_pipeline import refresh, risk_note_line
 from .store import open_db
 
 DEFAULT_DB = Path("/tmp/cause-n-effect-macro.sqlite")

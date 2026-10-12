@@ -143,8 +143,19 @@ def run_pipeline(
         "rankings": len(ranked),
         "decisions": len(presented),
         "dry_run": bool(dry_run),
-        "macro": "used" if macro else "skipped",
+        "macro": _macro_log(macro, merged),
     }
+
+
+def _macro_log(macro, merged):
+    if not macro:
+        return "skipped"
+    second_pass = sum(
+        1
+        for lead in merged
+        if getattr(lead, "thesis", None) is not None and lead.thesis.pass_number == 2
+    )
+    return f"loaded (second-pass theses: {second_pass})"
 
 
 def _rate(conn, provider, budget, candidates, rejects):

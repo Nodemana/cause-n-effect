@@ -185,17 +185,45 @@ def _macro_from_tables(conn):
         """
     ).fetchall()
     lines = []
+    present = set()
     for row in rows:
         reading = _observation_text(row["value_text"], row["value"])
         if not reading:
             continue
+        present.add(row["series_id"])
         unit = f" {row['unit']}" if row["unit"] else ""
         source = f" ({row['source']})" if row["source"] else ""
         name = row["name"] or row["series_id"]
         lines.append(f"{row['series_id']} {name}: {reading}{unit} on {row['obs_date']}{source}")
     if not lines:
         return None
-    return "Macro scout cache: " + "; ".join(lines)
+    text = "Macro scout cache: " + "; ".join(lines)
+    missing = _unavailable_note(present)
+    if missing:
+        text = f"{text}. {missing}"
+    return text
+
+
+def _unavailable_note(present_ids):
+    """Catalog series with no stored observation, grouped by source and reason."""
+    from Scouts.macro.catalog import SERIES
+    from Scouts.macro.fetcher import gap_reason, read_keys
+
+    keys = read_keys()
+    groups = {}
+    order = []
+    for spec in SERIES:
+        if spec["series_id"] in present_ids:
+            continue
+        label = f"{spec['source']} ({gap_reason(spec, keys)})"
+        if label not in groups:
+            groups[label] = []
+            order.append(label)
+        groups[label].append(spec["series_id"])
+    if not order:
+        return ""
+    parts = [f"{label}: {', '.join(groups[label])}" for label in order]
+    return "unavailable: " + "; ".join(parts)
 
 
 def _macro_tables(conn):

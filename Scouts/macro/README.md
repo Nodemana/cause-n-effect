@@ -18,7 +18,7 @@ Official free sources only. Requests go through `shared/nethttp.py` (`Client`, o
 | `RBA_CASH` | RBA cash rate target (`FIRMMCRTD` on table F1) | RBA |
 | `AU10Y` | Australian government 10-year yield (`FCMYGBAG10D` on table F2) | RBA |
 | `US_CPI` | CPI-U all items, not seasonally adjusted (`CUUR0000SA0`) | BLS |
-| `AU_CPI` | CPI all groups, eight capital cities, original, quarterly | ABS |
+| `AU_CPI` | CPI all groups, eight capital cities, original, quarterly. ABS CPI 1.1.0 (17th series), key `1.10001.10.50.Q`, index 2011-12=100. Not the rebased CPI 2.0.0 index. | ABS |
 | `WALCL` | Federal Reserve total assets, Wednesday level (QE/QT) | FRED |
 | `RBA_ASSETS` | RBA total assets (`ARBAATAW` on table A1) | RBA |
 | `IG_OAS` | ICE BofA US corporate index OAS | FRED |

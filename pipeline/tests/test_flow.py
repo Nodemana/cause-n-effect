@@ -334,6 +334,116 @@ class PipelineFlowTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_second_pass_stores_macro_context_from_the_scout_tables(self):
+        from Scouts.macro import catalog
+        from Scouts.macro import store as macro_store
+
+        saved = {name: os.environ.get(name) for name in ("FRED_API_KEY", "EIA_API_KEY")}
+        os.environ.pop("FRED_API_KEY", None)
+        os.environ.pop("EIA_API_KEY", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = str(Path(tmp) / "history.sqlite")
+                conn = macro_store.open_db(path)
+                try:
+                    save_run(
+                        conn,
+                        "capex",
+                        "2026-10-12T15:00:00Z",
+                        [
+                            _figure(
+                                "AMZN",
+                                "Amazon",
+                                "PaymentsToAcquireProductiveAssets",
+                                "quarter",
+                                "2026-07-01/2026-09-30",
+                                5_000_000_000,
+                                "5000000000 supplier: Globex Power",
+                                AMZN_URL,
+                            ),
+                            _figure(
+                                "AMZN",
+                                "Amazon",
+                                "PaymentsToAcquireProductiveAssets",
+                                "quarter",
+                                "2025-07-01/2025-09-30",
+                                1_000_000_000,
+                                "1000000000",
+                                AMZN_URL + "#prior",
+                            ),
+                            *_caps("AMZN", "GEV"),
+                        ],
+                    )
+                    save_run(
+                        conn,
+                        "orders-backlog",
+                        "2026-10-12T15:01:00Z",
+                        [
+                            _figure(
+                                "GEV",
+                                "Globex Power",
+                                "supplier_order",
+                                "Amazon",
+                                "2026-10-01",
+                                2_000_000_000,
+                                "2000000000 buyer: Amazon",
+                                GEV_URL,
+                            ),
+                            _figure(
+                                "GEV",
+                                "Globex Power",
+                                "supplier_order",
+                                "Amazon",
+                                "2026-07-03",
+                                500_000_000,
+                                "500000000",
+                                GEV_URL + "#prior",
+                            ),
+                        ],
+                    )
+                    for series_id, observations in (
+                        ("DGS10", [{"obs_date": "2026-09-01", "value": 3.9}, {"obs_date": "2026-10-01", "value": 4.2}]),
+                        ("RBA_CASH", [{"obs_date": "2026-10-08", "value": 3.6}]),
+                    ):
+                        macro_store.upsert_series(conn, catalog.by_id()[series_id])
+                        macro_store.save_observations(conn, series_id, observations, "2026-10-12T00:00:00Z")
+                    conn.commit()
+                finally:
+                    conn.close()
+                result = run_pipeline(path, provider=StubProvider(), token_budget=80000)
+                conn = connect(path)
+                try:
+                    merged = conn.execute(
+                        "SELECT macro_context FROM theses WHERE pass_number = 2"
+                    ).fetchone()
+                    first = conn.execute(
+                        "SELECT macro_context FROM theses WHERE pass_number = 1"
+                    ).fetchall()
+                finally:
+                    conn.close()
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        self.assertEqual(result["macro"], "loaded (second-pass theses: 1)")
+        context = merged["macro_context"]
+        head, _, tail = context.partition("unavailable:")
+        self.assertIn("DGS10", head)
+        self.assertIn("4.2", head)
+        self.assertIn("2026-10-01", head)
+        self.assertNotIn("2026-09-01", head)
+        self.assertIn("RBA_CASH", head)
+        self.assertIn("3.6", head)
+        self.assertNotIn("DGS10", tail)
+        self.assertIn("FRED (no key): DFF, DGS2", tail)
+        self.assertIn("EIA (no key): WTI, BRENT, HENRY_HUB", tail)
+        self.assertIn("BLS (not loaded): US_CPI", tail)
+        self.assertTrue(first)
+        for row in first:
+            self.assertIsNone(row["macro_context"])
+
     def test_token_budget_stops_before_the_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "history.sqlite")

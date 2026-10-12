@@ -27,6 +27,7 @@ class GateTests(unittest.TestCase):
         from Scouts.capex import scout_pipeline as capex
         from Scouts.debt_raise import scout_pipeline as debt
         from Scouts.insider_buying import scout_pipeline as insider
+        from Scouts.macro import scout_pipeline as macro
         from Scouts.orders_backlog import scout_pipeline as orders
 
         package = sys.modules["pipeline"]
@@ -40,6 +41,7 @@ class GateTests(unittest.TestCase):
         self.assertTrue(callable(debt.run))
         self.assertTrue(callable(insider.build_table))
         self.assertTrue(callable(orders.build_table))
+        self.assertTrue(callable(macro.refresh))
 
     def test_limit_keeps_the_newest_announced_figure(self):
         with tempfile.TemporaryDirectory() as tmp:
