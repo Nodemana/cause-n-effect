@@ -14,7 +14,9 @@ import sys
 from shared.pipeline_store import connect
 
 from pipeline.agent import AgentResultError
+from pipeline.cleanup import REASONS, cleanup_database
 from pipeline.flow import ingest_run, pipeline_status, run_pipeline
+from pipeline.prices import markit_client
 from pipeline.store import search_rejects
 from shared.nethttp import sec_client, sec_contact_email
 
@@ -30,7 +32,9 @@ def main(argv=None):
         return _ingest(parser, args)
     if args.command == "rejects":
         return _rejects(parser, args)
-    parser.error("choose run, status, ingest, or rejects")
+    if args.command == "cleanup":
+        return _cleanup(parser, args)
+    parser.error("choose run, status, ingest, rejects, or cleanup")
     return 2
 
 
@@ -70,7 +74,15 @@ def build_parser():
             "Affiliates, subsidiaries, and former parents are dropped. Only a "
             "matched SEC registrant or a company-suffix name is kept, as a whole word. "
             "A source error drops that company's parties and the contact address is not logged. "
-            "A market cap is shares outstanding times an official share-price figure. "
+            "ASX prices are fetched from the Markit company header (priceLast and marketCap are AUD; "
+            "the payload currency field is the reporting currency). "
+            "US prices are not fetched in this process. Tickers that need one are written to "
+            "data/agent_queue/<run_id>/prices/needed.json. The agent writes prices.result.json "
+            "with ticker, conid, last, top_status, and as_of. "
+            "top_status must be REALTIME or DELAYED, and as_of must be within three trading days, "
+            "or that ticker's market cap stays unverified. "
+            "A US cap is SEC shares outstanding times that price. "
+            "The sweep does not call Interactive Brokers or an unofficial price feed. "
             "The figures summary is the lead figures used after --limit. "
             "Ranking later writes every candidate thesis to "
             "data/reports/<run_id>-candidates.md and a legate_selection task. "
@@ -120,7 +132,8 @@ def build_parser():
             "A missing file or a value that breaks the output schema is an error "
             "and the stage does not advance. Valid results are stored. "
             "The next stage's task files are written. "
-            "Stages: significance, then one Centurion task per lead. "
+            "Stages: prices, when US quotes are missing, then significance, "
+            "then one Centurion task per lead. "
             "Linkable capex, orders backlog, and debt raises are one capex-chain lead. "
             "Same-ticker insider and accumulation signals inside the window are one smart-money lead. "
             "A macro lead stays separate, and its Centurion task lists related findings from those scouts. "
@@ -157,6 +170,32 @@ def build_parser():
     rejects.add_argument("--db", required=True, help="SQLite database written by pipeline run")
     rejects.add_argument("--ticker", help="Issuer ticker, for example AMZN")
     rejects.add_argument("--counterparty", help="Counterparty name or ticker, for example a supplier")
+
+    cleanup = sub.add_parser(
+        "cleanup",
+        help="Remove duplicate, superseded, implausible, and unofficial figure rows",
+        description=(
+            "Dry-run is the default and writes nothing. "
+            "--apply copies the database, then in one transaction removes "
+            "exact and near-duplicate figures (keep the earliest official source), "
+            "restated rows (keep the latest filing), implausible company-total backlogs, "
+            "10-Q prior-year comparatives, rows whose source host is not SEC, ASX, or Markit, "
+            "and orphaned leads and theses. "
+            "Each removal is written to cleanup_log. Running --apply again removes nothing."
+        ),
+    )
+    cleanup.add_argument("--db", required=True, help="SQLite database that holds scout figures")
+    mode = cleanup.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the summary without deleting rows or writing a backup (the default)",
+    )
+    mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="Back up the database, then delete the planned rows",
+    )
     return parser
 
 
@@ -164,12 +203,14 @@ def _run(parser, args):
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be a positive integer")
     shares_client = sec_client() if sec_contact_email() else None
+    markit = None if args.dry_run else markit_client()
     result = run_pipeline(
         args.db,
         dry_run=args.dry_run,
         limit=args.limit,
         macro_cache=args.macro_cache,
         shares_client=shares_client,
+        markit_client=markit,
         queue_dir=args.queue_dir,
     )
     _print_result(result)
@@ -226,6 +267,16 @@ def _print_result(result):
         "candidates",
     ):
         print(f"{key}: {result[key]}")
+
+
+def _cleanup(parser, args):
+    result = cleanup_database(args.db, apply=bool(args.apply))
+    summary = result["summary"]
+    for reason in REASONS:
+        print(f"{reason}: {summary.get(reason, 0)}")
+    print(f"backup: {result['backup'] or '-'}")
+    print(f"apply: {str(bool(args.apply)).lower()}")
+    return 0
 
 
 def _rejects(parser, args):

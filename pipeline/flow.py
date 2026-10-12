@@ -5,8 +5,9 @@ records status awaiting_agents, and returns. `ingest_run` checks result
 files and advances one judgement stage. Combining leads and a leftover Legate
 merge stay in process. Ranking writes the candidate report and one legate task.
 
-Stages: significance, then one Centurion task per lead, a leftover Legate
-merge, centurion pass 2 only for that leftover, then a Praetorian critique,
+Stages: prices (US quotes only, when a fresh official price is missing),
+significance, then one Centurion task per lead, a leftover Legate merge,
+centurion pass 2 only for that leftover, then a Praetorian critique,
 then ranking, then Legate selection. The critique lists every flaw and does
 not drop a lead. Ranking writes every candidate thesis to
 `data/reports/<run_id>-candidates.md` and a legate_selection task.
@@ -14,9 +15,9 @@ The Legate selects at most 5. Ingest writes one file per selected thesis
 under `data/reports/<run_id>/<rank>-<ticker>.md`. Linkable
 capex, orders backlog, and debt raises become one capex-chain lead before
 that Centurion. Same-ticker insider and accumulation signals inside the
-window become one smart-money lead. Macro stays a lead of its own. Market cap
-is applied in the deterministic gates from shares outstanding and an official
-share-price figure.
+window become one smart-money lead. Macro stays a lead of its own. ASX
+prices are fetched from Markit before the wait. Market cap is applied in
+the deterministic gates.
 
 A capex chain is linked from the parties named on the figures, not from a
 thesis. A leftover merge, when one still exists, uses the suppliers,
@@ -52,6 +53,14 @@ from pipeline.counterparties import enrich_leads, is_common_heading
 from pipeline.load import is_quarter_figure, load_latest_figures
 from pipeline.macro_signals import macro_candidates
 from pipeline.marketcap import UNVERIFIED
+from pipeline.prices import (
+    considered_figures,
+    ibkr_needed,
+    ingest_price_result,
+    prices_outstanding,
+    refresh_markit,
+    write_needed,
+)
 from pipeline.names import normalise_name
 from pipeline.prefilter import (
     PlannedReject,
@@ -150,13 +159,18 @@ def run_pipeline(
     macro_cache=None,
     now=None,
     shares_client=None,
+    markit_client=None,
     queue_dir=None,
 ):
     """Do the deterministic work and queue the next agent stage.
 
-    Significance tasks are written immediately. Counterparties are named
-    later, on ingest, and only when that call is given a parties client.
-    This function does not judge a lead and does not call a model.
+    ASX prices are fetched from Markit when a client is passed. US prices
+    that are missing or stale are written to prices/needed.json and the run
+    stops there. Significance tasks are written once those quotes are
+    ingested, or immediately when every US ticker already has a fresh quote.
+    Counterparties are named later, on ingest, and only when that call is
+    given a parties client. This function does not judge a lead and does not
+    call a model.
     """
     if limit is not None and int(limit) < 1:
         raise ValueError("limit must be a positive integer")
@@ -186,6 +200,9 @@ def run_pipeline(
                 macro=macro,
                 dry_run=True,
             )
+        considered = considered_figures(figures, limit)
+        refresh_markit(conn, considered, markit_client, started)
+        needed = ibkr_needed(conn, considered, started)
         state = SweepState()
         state.started = started
         state.macro = macro
@@ -195,6 +212,15 @@ def run_pipeline(
         state.limit = limit
         run_id = store.start_run(conn, started)
         state.run_id = run_id
+        if needed:
+            write_needed(queue, run_id, needed, started)
+            state.stage = "prices"
+            state.figures = len(considered)
+            store.begin_pipeline_run(conn, run_id, started, queue, "awaiting_agents", "prices")
+            save_state(state)
+            return _awaiting_result(
+                state, status="awaiting_agents", tasks=len(needed), figures=state.figures, macro=macro
+            )
         store.begin_pipeline_run(conn, run_id, started, queue, "awaiting_agents", "significance")
         tasks = _open_significance(conn, state)
         if state.finished:
@@ -237,6 +263,16 @@ def ingest_run(db_path, run_id, *, queue_dir=None, parties_client=None):
             _finish(conn, state, leads=state.leads, merged=state.merged, ranked=_ranked_from_state(state))
             return _complete_result(conn, state)
         stage = state.stage
+        if stage == "prices":
+            ingest_price_result(conn, queue, run_id, state.started)
+            tasks = _open_significance(conn, state)
+            if state.stage == "ranking":
+                return _complete_result(conn, state)
+            save_state(state)
+            store.set_pipeline_stage(conn, run_id, "awaiting_agents", state.stage)
+            return _awaiting_result(
+                state, status="awaiting_agents", tasks=tasks, figures=state.figures, macro=state.macro
+            )
         if stage not in _AGENT_STAGES:
             raise AgentResultError(f"run {run_id} is not waiting on an agent stage ({stage})")
         else:
@@ -275,16 +311,23 @@ def pipeline_status(db_path, run_id):
             raise AgentResultError(f"no pipeline run {run_id}")
         stage = row["stage"]
         queue = row["queue_dir"] or ""
-        if row["finished_at"] or stage not in _AGENT_STAGES:
+        if row["finished_at"]:
+            pending = []
+        elif stage == "prices":
+            pending = prices_outstanding(queue, run_id)
+        elif stage not in _AGENT_STAGES:
             pending = []
         else:
             pending = outstanding_tasks(queue, run_id, stage)
     finally:
         conn.close()
-    outstanding = [
-        {"lead_id": path.name[: -len(".task.json")], "stage": stage, "task": str(path)}
-        for path in pending
-    ]
+    outstanding = []
+    for path in pending:
+        if stage == "prices":
+            lead_id = "prices"
+        else:
+            lead_id = path.name[: -len(".task.json")]
+        outstanding.append({"lead_id": lead_id, "stage": stage, "task": str(path)})
     return {
         "run_id": run_id,
         "status": row["status"],

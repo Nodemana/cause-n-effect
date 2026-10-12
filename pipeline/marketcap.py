@@ -2,35 +2,68 @@
 
 Shares come from an SEC companyfacts tag already in the figures table
 (`dei:EntityCommonStockSharesOutstanding` or `CommonStockSharesOutstanding`).
-The pipeline caches that share count. An official price source is TODO.
-This module does not call an unofficial price feed, and it does not convert
-FX. Shares without an official USD price leave the cap unknown. The caller
-records that as the surviving issue "market cap unverified" instead of a
-reject. A cap that is known and below the rubric threshold is still a reject.
+The official price is a row in `prices`:
+
+- `asx_markit`: the Markit header's marketCap, in AUD. priceLast is the
+  price, also AUD. The header's currency field is not used.
+- `ibkr`: a REALTIME or DELAYED quote ingested from the agent. The cap is
+  shares times that USD price.
+
+A quote older than three trading days, or any other status, is unverified.
+This module does not call a price feed and it does not convert FX. A known
+cap below the rubric threshold is a reject. An unverified cap is the
+surviving issue "market cap unverified".
 """
 
+from pipeline.prices import STALE_AFTER_TRADING_DAYS, latest_usable_price, trading_days_old
 from shared.shares import SHARES_TYPES
-PRICE_TYPES = ("share_price", "closing_price", "stock_price")
-_OFFICIAL_TYPES = {"filing", "company_release", "asx_announcement"}
-_OFFICIAL_HOSTS = ("sec.gov", "asx.com.au", "asx.api.markitdigital.com")
+from shared.store import utc_now
 
 
 UNVERIFIED = "market cap unverified"
 
 
-def resolve_market_cap(conn, ticker):
-    """Return (usd_cap, reason).
+def resolve_market_cap(conn, ticker, now=None):
+    """Return (cap, reason).
 
-    `usd_cap` is None when shares or an official USD price are missing.
-    That reason is the surviving issue, not a reject. A known cap is
-    shares times an official USD price.
+    `cap` is None when the official price is missing, stale, or not
+    REALTIME/DELAYED, and when a US quote has no share count. A known US
+    cap is shares times the IBKR price. A known ASX cap is the Markit
+    marketCap in AUD.
     """
-    shares = _latest_value(conn, ticker, SHARES_TYPES, official_only=False)
-    price = _latest_value(conn, ticker, PRICE_TYPES, official_only=True)
-    if shares is None or price is None:
+    anchor = now or utc_now()
+    row = latest_usable_price(conn, ticker, anchor)
+    if row is None:
         return None, UNVERIFIED
-    cap = shares * price
+    if row["source"] == "asx_markit":
+        cap = float(row["market_cap"])
+        return cap, f"min_market_cap: {cap:g} AUD from ASX Markit"
+    shares = latest_shares(conn, ticker)
+    if shares is None or row["price"] is None:
+        return None, UNVERIFIED
+    cap = shares * float(row["price"])
     return cap, f"min_market_cap: {cap:g} from shares outstanding times an official price"
+
+
+def latest_shares(conn, ticker):
+    """Newest positive USD share count for this ticker, or None."""
+    placeholders = ", ".join("?" * len(SHARES_TYPES))
+    rows = conn.execute(
+        f"""
+        SELECT value, currency
+        FROM figures
+        WHERE ticker = ? AND figure_type IN ({placeholders})
+          AND value IS NOT NULL AND value > 0 AND verified = 1
+        ORDER BY COALESCE(announced_on, '') DESC, figure_id DESC
+        """,
+        (ticker, *SHARES_TYPES),
+    ).fetchall()
+    for row in rows:
+        currency = (row["currency"] or "USD").upper()
+        if currency != "USD":
+            continue
+        return float(row["value"])
+    return None
 
 
 def criterion_threshold(conn, lead_type, name):
@@ -48,30 +81,5 @@ def criterion_threshold(conn, lead_type, name):
     return float(row["threshold_value"])
 
 
-def _latest_value(conn, ticker, figure_types, official_only):
-    placeholders = ", ".join("?" * len(figure_types))
-    rows = conn.execute(
-        f"""
-        SELECT value, currency, source_type, source_url
-        FROM figures
-        WHERE ticker = ? AND figure_type IN ({placeholders})
-          AND value IS NOT NULL AND value > 0 AND verified = 1
-        ORDER BY COALESCE(announced_on, '') DESC, figure_id DESC
-        """,
-        (ticker, *figure_types),
-    ).fetchall()
-    for row in rows:
-        currency = (row["currency"] or "USD").upper()
-        if currency != "USD":
-            continue
-        if official_only and not _official(row["source_type"], row["source_url"]):
-            continue
-        return float(row["value"])
-    return None
-
-
-def _official(source_type, source_url):
-    if (source_type or "") in _OFFICIAL_TYPES:
-        return True
-    url = (source_url or "").lower()
-    return any(host in url for host in _OFFICIAL_HOSTS)
+def price_is_fresh(as_of, now):
+    return trading_days_old(as_of, now) <= STALE_AFTER_TRADING_DAYS

@@ -1,10 +1,9 @@
 """Shares outstanding from SEC companyfacts.
 
 The figure type is `dei:EntityCommonStockSharesOutstanding`. A filer that
-omits that tag falls back to `CommonStockSharesOutstanding`. The helper
-stores the share count only. An official price source is TODO: this module
-does not request or store a price, and it does not call an unofficial feed.
-Shares without that price leave market cap unverified.
+omits that tag falls back to `CommonStockSharesOutstanding`. The helper stores the share count only. An official price is applied by the
+pipeline from ASX Markit or an ingested IBKR quote. This module does not
+request or store a price, and it does not call an unofficial feed.
 
 `cache_shares_outstanding` does not open a socket. The caller passes a
 client (the pipeline CLI passes the SEC client when `SEC_CONTACT_EMAIL`

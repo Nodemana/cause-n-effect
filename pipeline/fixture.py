@@ -42,6 +42,15 @@ def run_with_fixture(db_path, *, responder=None, queue_dir=None, **kwargs):
     prompts = []
     seen = set()
     while result.get("status") == "awaiting_agents":
+        if result.get("stage") == "prices":
+            write_fixture_prices(db_path, queue_dir, result["run_id"])
+            result = ingest_run(
+                db_path,
+                result["run_id"],
+                queue_dir=queue_dir,
+                parties_client=parties_client,
+            )
+            continue
         tasks = read_tasks(queue_dir, result["run_id"], result["stage"])
         if not tasks:
             break
@@ -62,6 +71,80 @@ def run_with_fixture(db_path, *, responder=None, queue_dir=None, **kwargs):
         )
     result["prompts"] = prompts
     return result
+
+
+def write_fixture_prices(db_path, queue_dir, run_id):
+    """Write prices.result.json from official share_price figures.
+
+    Live runs do not call this. A filing, company release, or ASX announcement
+    price becomes a DELAYED quote dated on the sweep clock. Any other stored
+    price, including a media quote, is UNAVAILABLE and stays unverified.
+    """
+    from shared.pipeline_store import connect
+
+    from pipeline.prices import needed_path, result_path
+
+    needed = json.loads(needed_path(queue_dir, run_id).read_text(encoding="utf-8"))
+    as_of = str(needed.get("as_of") or "")[:10]
+    conn = connect(db_path)
+    try:
+        quotes = []
+        for item in needed.get("tickers") or []:
+            ticker = item["ticker"]
+            last = _official_share_price(conn, ticker)
+            if last is None:
+                quotes.append(
+                    {
+                        "as_of": as_of,
+                        "conid": 0,
+                        "last": None,
+                        "ticker": ticker,
+                        "top_status": "UNAVAILABLE",
+                    }
+                )
+            else:
+                quotes.append(
+                    {
+                        "as_of": as_of,
+                        "conid": 1,
+                        "last": last,
+                        "ticker": ticker,
+                        "top_status": "DELAYED",
+                    }
+                )
+    finally:
+        conn.close()
+    path = result_path(queue_dir, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(quotes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+_PRICE_TYPES = ("share_price", "closing_price", "stock_price")
+_OFFICIAL_PRICE_TYPES = {"filing", "company_release", "asx_announcement"}
+_OFFICIAL_PRICE_HOSTS = ("sec.gov", "asx.com.au", "asx.api.markitdigital.com")
+
+
+def _official_share_price(conn, ticker):
+    placeholders = ", ".join("?" * len(_PRICE_TYPES))
+    rows = conn.execute(
+        f"""
+        SELECT value, currency, source_type, source_url
+        FROM figures
+        WHERE ticker = ? AND figure_type IN ({placeholders})
+          AND value IS NOT NULL AND value > 0 AND verified = 1
+        ORDER BY COALESCE(announced_on, '') DESC, figure_id DESC
+        """,
+        (ticker, *_PRICE_TYPES),
+    ).fetchall()
+    for row in rows:
+        if (row["currency"] or "USD").upper() != "USD":
+            continue
+        source_type = row["source_type"] or ""
+        url = (row["source_url"] or "").lower()
+        if source_type in _OFFICIAL_PRICE_TYPES or any(host in url for host in _OFFICIAL_PRICE_HOSTS):
+            return float(row["value"])
+    return None
 
 
 def _field(prompt, key):

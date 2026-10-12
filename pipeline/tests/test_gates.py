@@ -227,17 +227,40 @@ class GateTests(unittest.TestCase):
                     "2026-10-12T14:30:52Z",
                     [
                         _shares("AMZN", value=1_000_000_000),
-                        _price("AMZN", value=12),
-                        _price(
-                            "AMZN",
-                            value=10,
-                            currency="EUR",
-                            instrument="eur",
-                            announced_on="2026-10-02",
-                        ),
+                        _price("AMZN", value=99),
                     ],
                 )
-                cap, reason = resolve_market_cap(conn, "AMZN")
+                from shared.pipeline_store import ensure_pipeline
+                from pipeline.prices import insert_price
+
+                ensure_pipeline(conn)
+                insert_price(
+                    conn,
+                    ticker="AMZN",
+                    exchange="US",
+                    price=12,
+                    currency="USD",
+                    market_cap=None,
+                    source="ibkr",
+                    status="DELAYED",
+                    fetched_at="2026-10-12T18:00:00Z",
+                    conid="1",
+                    as_of="2026-10-12",
+                )
+                insert_price(
+                    conn,
+                    ticker="AMZN",
+                    exchange="US",
+                    price=10,
+                    currency="EUR",
+                    market_cap=None,
+                    source="ibkr",
+                    status="DELAYED",
+                    fetched_at="2026-10-12T19:00:00Z",
+                    conid="2",
+                    as_of="2026-10-12",
+                )
+                cap, reason = resolve_market_cap(conn, "AMZN", now=SWEEP_AT)
             finally:
                 conn.close()
         self.assertEqual(cap, 12_000_000_000)
@@ -1151,15 +1174,19 @@ class GateTests(unittest.TestCase):
             path = str(Path(tmp) / "history.sqlite")
             conn = _history(path)
             try:
+                from shared.pipeline_store import ensure_pipeline
+                from pipeline.prices import refresh_markit
+
+                ensure_pipeline(conn)
                 save_run(
                     conn,
                     "capex",
                     "2026-10-12T14:30:52Z",
                     [
-                        _shares("ASX", value=1_000_000),
+                        _shares("BHP.AX", value=1_000_000),
                         _price(
-                            "ASX",
-                            value=8,
+                            "BHP.AX",
+                            value=99,
                             source_type="media",
                             source_url="https://asx.api.markitdigital.com/asx-research/1.0/file/2924-123",
                         ),
@@ -1174,15 +1201,37 @@ class GateTests(unittest.TestCase):
                         _price("WEB", value=3, source_type="media", source_url="https://example.com/quote"),
                     ],
                 )
-                markit, markit_reason = resolve_market_cap(conn, "ASX")
-                announced, announced_reason = resolve_market_cap(conn, "ANN")
-                web, web_reason = resolve_market_cap(conn, "WEB")
+
+                class Fake:
+                    def __init__(self):
+                        self.url = ""
+
+                    def json(self, url):
+                        self.url = url
+                        return {"priceLast": 8, "marketCap": 8_000_000, "currency": "USD"}
+
+                fake = Fake()
+                figure = type(
+                    "Figure",
+                    (),
+                    {"ticker": "BHP.AX", "source_type": "asx_announcement", "scout": "capex", "figure_type": "x"},
+                )()
+                refresh_markit(conn, [figure], fake, SWEEP_AT)
+                markit, markit_reason = resolve_market_cap(conn, "BHP.AX", now=SWEEP_AT)
+                announced, announced_reason = resolve_market_cap(conn, "ANN", now=SWEEP_AT)
+                web, web_reason = resolve_market_cap(conn, "WEB", now=SWEEP_AT)
+                stored = conn.execute("SELECT currency, source, price, market_cap FROM prices").fetchone()
             finally:
                 conn.close()
+        self.assertIn("/companies/BHP/header", fake.url)
+        self.assertEqual(stored["currency"], "AUD")
+        self.assertEqual(stored["source"], "asx_markit")
+        self.assertEqual(stored["price"], 8)
+        self.assertEqual(stored["market_cap"], 8_000_000)
         self.assertEqual(markit, 8_000_000)
-        self.assertIn("official price", markit_reason)
-        self.assertEqual(announced, 4_000_000_000)
-        self.assertIn("official price", announced_reason)
+        self.assertIn("AUD", markit_reason)
+        self.assertIsNone(announced)
+        self.assertEqual(announced_reason, "market cap unverified")
         self.assertIsNone(web)
         self.assertEqual(web_reason, "market cap unverified")
         cited = fixture_response(

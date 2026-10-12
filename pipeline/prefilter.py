@@ -345,7 +345,7 @@ def _threshold(conn, figure, lead_type, now=None):
     implausible = _implausible_total(conn, figure, lead_type)
     if implausible:
         return implausible, _magnitude(implausible)
-    cap, _cap_note = resolve_market_cap(conn, figure.ticker)
+    cap, _cap_note = resolve_market_cap(conn, figure.ticker, now=now)
     figure.market_cap = cap
     threshold = criterion_threshold(conn, lead_type, "min_market_cap")
     figure.market_cap_unverified = cap is None and threshold is not None

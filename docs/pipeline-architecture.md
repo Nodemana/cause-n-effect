@@ -52,7 +52,7 @@ flowchart TD
   DB -->|later scout hit near a position| ASSIGN
 ```
 
-A market cap is shares outstanding times an official USD share-price figure. Shares without that price leave the cap unverified. Significance, the Centurion passes, and the Praetorian critiques are task files for an external agent. Capex chains and smart-money leads are combined in process before the first Centurion, and a macro Centurion task includes the related findings from those leads. Legate merge of a leftover cross-group link, and ranking, stay in process. The Imperator sees the ranked list, then records an action. A later scout hit near a position the Imperator already took comes back as an update on that position. It is a new lead, not a merge into the open position.
+Before those judgements, US prices are an agent handoff (`prices/needed.json`, then `prices.result.json`) and ASX prices are fetched from the Markit company header. A US market cap is SEC shares outstanding times that price. An ASX market cap is the Markit `marketCap`, in AUD. A quote older than three trading days, or a status other than REALTIME or DELAYED, leaves the cap unverified. Significance, the Centurion passes, and the Praetorian critiques are task files for an external agent. Capex chains and smart-money leads are combined in process before the first Centurion, and a macro Centurion task includes the related findings from those leads. Legate merge of a leftover cross-group link, and ranking, stay in process. The Imperator sees the ranked list, then records an action. A later scout hit near a position the Imperator already took comes back as an update on that position. It is a new lead, not a merge into the open position.
 
 ## Scouts
 

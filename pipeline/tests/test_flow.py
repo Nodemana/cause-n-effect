@@ -19,7 +19,7 @@ if str(REPO) not in sys.path:
 from pipeline.agent import AgentResultError  # noqa: E402
 from pipeline.cli import main  # noqa: E402
 import pipeline.flow as flow  # noqa: E402
-from pipeline.fixture import fixture_response, run_with_fixture  # noqa: E402
+from pipeline.fixture import fixture_response, run_with_fixture, write_fixture_prices  # noqa: E402
 from pipeline.flow import ingest_run, pipeline_status, run_pipeline  # noqa: E402
 from shared.pipeline_store import connect, lodge_lead  # noqa: E402
 from shared.store import save_run  # noqa: E402
@@ -621,9 +621,18 @@ class PipelineFlowTests(unittest.TestCase):
                 conn.close()
             result = run_pipeline(path, queue_dir=queue)
             self.assertEqual(result["status"], "awaiting_agents")
-            self.assertEqual(result["stage"], "significance")
+            self.assertEqual(result["stage"], "prices")
             self.assertEqual(result["tokens_used"], 0)
             self.assertEqual(result["leads"], 0)
+            self.assertGreater(result["tasks"], 0)
+            needed = json.loads((Path(queue) / result["run_id"] / "prices" / "needed.json").read_text(encoding="utf-8"))
+            self.assertEqual([item["ticker"] for item in needed["tickers"]], ["MSFT"])
+            report = pipeline_status(path, result["run_id"])
+            self.assertEqual(report["outstanding"][0]["lead_id"], "prices")
+            self.assertTrue(report["outstanding"][0]["task"].endswith("needed.json"))
+            write_fixture_prices(path, queue, result["run_id"])
+            result = ingest_run(path, result["run_id"])
+            self.assertEqual(result["stage"], "significance")
             self.assertGreater(result["tasks"], 0)
             report = pipeline_status(path, result["run_id"])
             self.assertEqual(len(report["outstanding"]), result["tasks"])
@@ -676,6 +685,7 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertNotIn("LLM_MODEL", completed.stdout)
         self.assertIn("awaiting_agents", completed.stdout)
         self.assertIn("agent_queue", completed.stdout)
+        self.assertIn("needed.json", completed.stdout)
         self.assertNotIn("--max-theses", completed.stdout)
         self.assertIn("legate_selection", completed.stdout)
         self.assertIn("-candidates.md", completed.stdout)
@@ -687,6 +697,16 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertIn("data/reports", completed.stdout)
         self.assertNotIn("TODO", completed.stdout)
         self.assertNotIn("yahoo", completed.stdout.casefold())
+        cleanup_help = subprocess.run(
+            [sys.executable, "-m", "pipeline", "cleanup", "--help"],
+            cwd=REPO,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(cleanup_help.returncode, 0)
+        self.assertIn("--apply", cleanup_help.stdout)
+        self.assertIn("Dry-run", cleanup_help.stdout)
 
         def bomb(*_args, **_kwargs):
             raise AssertionError("socket opened")
@@ -707,6 +727,9 @@ class PipelineFlowTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, 0)
             with self.assertRaises(SystemExit) as caught:
                 main(["ingest", "--help"])
+            self.assertEqual(caught.exception.code, 0)
+            with self.assertRaises(SystemExit) as caught:
+                main(["cleanup", "--help"])
             self.assertEqual(caught.exception.code, 0)
         finally:
             socket.socket = real_socket
@@ -897,6 +920,9 @@ class PipelineFlowTests(unittest.TestCase):
             finally:
                 conn.close()
             result = run_pipeline(path, queue_dir=queue)
+            self.assertEqual(result["stage"], "prices")
+            write_fixture_prices(path, queue, result["run_id"])
+            result = ingest_run(path, result["run_id"])
             self.assertEqual(result["stage"], "significance")
             report = pipeline_status(path, result["run_id"])
             task = Path(report["outstanding"][0]["task"])
@@ -933,15 +959,15 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertEqual(names.count("004_lead_counterparties.sql"), 1)
         self.assertEqual(names.count("005_deal_party_role.sql"), 1)
         self.assertEqual(names.count("006_agent_handoff.sql"), 1)
+        self.assertEqual(names.count("007_prices_cleanup.sql"), 1)
         self.assertEqual(names.count("008_macro_leads.sql"), 1)
         self.assertEqual(names.count("009_praetorian_flaws.sql"), 1)
         self.assertEqual(names.count("010_legate_selection.sql"), 1)
-        self.assertNotIn("007_prices_cleanup.sql", names)
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         self.assertIn("lead_counterparties", tables)
         self.assertIn("legate_selections", tables)
-        self.assertNotIn("prices", tables)
-        self.assertNotIn("cleanup_log", tables)
+        self.assertIn("prices", tables)
+        self.assertIn("cleanup_log", tables)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}
         for name in (
             "significance_magnitude",
