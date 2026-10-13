@@ -6,6 +6,7 @@ per selected thesis at `data/reports/<run_id>/<rank>-<ticker>.md`.
 """
 
 import re
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -27,19 +28,26 @@ def reports_directory(queue_dir):
     return str(Path(queue_dir).resolve().parent / "reports")
 
 
-def write_candidates_report(state, ranked):
+def write_candidates_report(state, ranked, conn=None):
     """Write every ranked thesis, including its Praetorian flaw list."""
     ordered = sorted(ranked, key=lambda lead: lead.rank or 0)
     path = _report_path(state, "-candidates.md")
     path.parent.mkdir(parents=True, exist_ok=True)
+    prices, levels = _report_markets(conn, ordered, getattr(state, "started", None))
     path.write_text(
-        render_candidates(state.run_id, ordered, macro=getattr(state, "macro", None)),
+        render_candidates(
+            state.run_id,
+            ordered,
+            macro=getattr(state, "macro", None),
+            prices=prices,
+            levels=levels,
+        ),
         encoding="utf-8",
     )
     return path
 
 
-def write_selected_reports(state, selected):
+def write_selected_reports(state, selected, conn=None):
     """Write one markdown file for each thesis the Legate selected."""
     directory = selected_directory(state)
     if directory.exists():
@@ -53,6 +61,7 @@ def write_selected_reports(state, selected):
     directory.mkdir(parents=True, exist_ok=True)
     used = set()
     macro = getattr(state, "macro", None)
+    prices, levels = _report_markets(conn, ordered, getattr(state, "started", None))
     for lead in ordered:
         rank = getattr(lead, "pick_order", None) or lead.rank or 0
         name = f"{rank}-{_file_slug(lead)}.md"
@@ -60,7 +69,10 @@ def write_selected_reports(state, selected):
             suffix = getattr(lead, "real_id", None) or getattr(lead, "synthetic_id", None) or "thesis"
             name = f"{rank}-{_file_slug(lead)}-{suffix}.md"
         used.add(name)
-        (directory / name).write_text(render_selected(lead, macro=macro), encoding="utf-8")
+        (directory / name).write_text(
+            render_selected(lead, macro=macro, prices=prices, levels=levels),
+            encoding="utf-8",
+        )
     return directory
 
 
@@ -74,13 +86,11 @@ def _report_path(state, suffix):
     return Path(directory) / f"{state.run_id}{suffix}"
 
 
-def render_candidates(run_id, ranked, *, macro):
+def render_candidates(run_id, ranked, *, macro, prices=None, levels=None):
     count = len(ranked)
     thesis_word = "thesis" if count == 1 else "theses"
     lines = [
         f"# Candidate theses for {run_id}",
-        "",
-        f"Sweep macro context: {_text(macro) or 'none'}",
         "",
         f"{count} candidate {thesis_word}. The Legate selects at most 5.",
         "",
@@ -90,54 +100,25 @@ def render_candidates(run_id, ranked, *, macro):
         lines.append("")
         return "\n".join(lines)
     for lead in ranked:
-        lines.extend(_lead_section(lead, selection=False))
+        lines.extend(_lead_section(lead, macro=macro, prices=prices, levels=levels))
     return "\n".join(lines)
 
 
-def render_selected(lead, *, macro):
-    """One selected thesis, then the full Praetorian critique."""
-    thesis = lead.thesis
+def render_selected(lead, *, macro, prices=None, levels=None):
+    """One selected thesis: price table, bottom line, then the sections."""
     company = (lead.company or "").strip()
     shown = _display_ticker(lead)
     title = shown
     if company and company != shown:
         title = f"{shown} — {company}"
     rank = getattr(lead, "pick_order", None) or lead.rank or 0
-    price_run = _text(getattr(thesis, "price_run", None)) or "none"
     lines = [
         f"# Rank {rank}. {title}",
         "",
         f"**Lead id:** {getattr(lead, 'real_id', None) or 'none'}",
-        f"**Lead:** {lead.lead_type}",
-        f"**Scout:** {lead.source_scout}",
-        f"**Tickers:** {', '.join(_tickers(lead)) or 'none'}",
-        f"**Price run:** {price_run}",
-        f"**Legate rationale:** {_text(getattr(lead, 'selection_rationale', None)) or 'none'}",
         "",
     ]
-    lines.extend(_judgement_sections(thesis))
-    lines.extend([
-        "### Cause → effect",
-        "",
-        _cause_effect(lead),
-        "",
-        "### Evidence",
-        "",
-        _evidence_block(lead),
-        "",
-        "### Macro context",
-        "",
-        _macro_for(lead, macro),
-        "",
-        "### Price run",
-        "",
-        price_run,
-        "",
-        "### Praetorian critique",
-        "",
-        _praetorian_block(thesis),
-        "",
-    ])
+    lines.extend(_thesis_body(lead, macro=macro, prices=prices, levels=levels))
     return "\n".join(lines)
 
 
@@ -161,77 +142,77 @@ def _display_ticker(lead):
     return _text(lead.ticker)
 
 
-def _lead_section(lead, *, selection):
-    thesis = lead.thesis
+def _lead_section(lead, *, macro, prices, levels):
     company = (lead.company or "").strip()
     shown = _display_ticker(lead)
     title = shown
     if company and company != shown:
         title = f"{shown} — {company}"
-    tickers = ", ".join(_tickers(lead)) or "none"
     lines = [
         f"## Rank {lead.rank}. {title}",
         "",
         f"**Lead id:** {getattr(lead, 'real_id', None) or 'none'}",
-        f"**Lead:** {lead.lead_type}",
-        f"**Scout:** {lead.source_scout}",
-        f"**Tickers:** {tickers}",
+        "",
     ]
-    if selection:
-        lines.append(f"**Legate rationale:** {_text(getattr(lead, 'selection_rationale', None)) or 'none'}")
-    lines.extend(
-        [
-            "",
-        ]
-    )
-    lines.extend(_judgement_sections(thesis))
-    return lines + [
+    lines.extend(_thesis_body(lead, macro=macro, prices=prices, levels=levels))
+    return lines
+
+
+def _thesis_body(lead, *, macro, prices, levels):
+    thesis = lead.thesis
+    return [
+        _price_table(lead, prices or {}, levels or {}),
+        "",
+        "### Bottom line",
+        "",
+        _bottom_line(thesis),
+        "",
         "### Cause → effect",
         "",
-        _cause_effect(lead),
+        _cause_bullets(lead),
+        "",
+        "### Thesis",
+        "",
+        _thesis_prose(thesis),
         "",
         "### Evidence",
         "",
         _evidence_block(lead),
         "",
-        "### Praetorian",
-        "",
-        _praetorian_block(thesis),
-        "",
-        "### Macro context",
-        "",
-        _macro_for(lead, None),
-        "",
-    ]
-
-
-def _judgement_sections(thesis):
-    return [
-        "### Thesis",
-        "",
-        _thesis_prose(thesis),
-        "",
-        "### Recommendation",
-        "",
-        _recommendation(thesis),
-        "",
-        "### Expected return",
-        "",
-        _expected_return(thesis),
-        "",
         "### Risks",
         "",
         _risk_bullets(thesis),
-        "",
-        "### Timeframe",
-        "",
-        _timeframe(thesis),
         "",
         "### Assumptions",
         "",
         _assumption_bullets(thesis),
         "",
+        "### Praetorian critique",
+        "",
+        _praetorian_block(thesis),
+        "",
+        "### Legate rationale",
+        "",
+        _text(getattr(lead, "selection_rationale", None)) or "none",
+        "",
+        "### Macro context",
+        "",
+        _macro_for(lead, macro),
+        "",
     ]
+
+
+def _report_markets(conn, leads, as_of):
+    if conn is None:
+        return {}, {}
+    from pipeline.prices import quotes_for
+
+    tickers = []
+    series = []
+    for lead in leads:
+        tickers.extend(_stock_tickers(lead))
+        series.extend(_cause_series(lead))
+    return quotes_for(conn, tickers, as_of), series_levels(conn, series, as_of)
 
 
 def _thesis_prose(thesis):
@@ -578,14 +559,259 @@ def _evidence_links(lead):
 
 def _praetorian_block(thesis):
     review = getattr(thesis, "review", None) or {}
-    flaws = review.get("flaws") or []
+    flaws = list(review.get("flaws") or [])
     if not flaws:
         return "No flaws recorded."
-    lines = []
+    rank = {"high": 0, "moderate": 1, "low": 2}
+    flaws.sort(key=lambda item: rank.get(str(item.get("severity") or "").casefold(), 9))
+    lines = [
+        "| Severity | Flaw | Evidence |",
+        "| --- | --- | --- |",
+    ]
     for item in flaws:
-        lines.append(f"- **{item.get('severity') or 'low'}** — {_text(item.get('flaw'))}")
-        lines.append(f"  Evidence: {_text(item.get('evidence'))}")
+        lines.append(
+            "| {severity} | {flaw} | {evidence} |".format(
+                severity=_cell(item.get("severity") or "low"),
+                flaw=_cell(item.get("flaw")),
+                evidence=_cell(item.get("evidence")),
+            )
+        )
     return "\n".join(lines)
+
+
+def _price_table(lead, prices, levels):
+    rows = []
+    seen = set()
+    for series_id in _cause_series(lead):
+        if series_id in seen:
+            continue
+        seen.add(series_id)
+        rows.append(_series_row(series_id, levels.get(series_id)))
+    for ticker in _stock_tickers(lead):
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        rows.append(_quote_row(ticker, prices.get(ticker)))
+    if not rows:
+        rows.append("| n/a | n/a | n/a | n/a | n/a |")
+    header = [
+        "| Ticker | Price (as-of, currency) | YTD % | 1Y % | 52-wk range |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    return "\n".join(header + rows)
+
+
+def _quote_row(ticker, quote):
+    if not quote:
+        return f"| {_cell(ticker)} | n/a | n/a | n/a | n/a |"
+    price = _level(quote.get("price"), quote.get("currency"), quote.get("as_of"))
+    return "| {ticker} | {price} | {ytd} | {year} | {span} |".format(
+        ticker=_cell(ticker),
+        price=price,
+        ytd=_pct(quote.get("price"), quote.get("prior_year_close")),
+        year=_pct(quote.get("price"), quote.get("close_1y")),
+        span=_span(quote.get("low_52w"), quote.get("high_52w")),
+    )
+
+
+def _series_row(series_id, level):
+    if not level:
+        return f"| {_cell(series_id)} | n/a | n/a | n/a | n/a |"
+    price = _level(level.get("level"), level.get("unit"), level.get("as_of"), signed=True)
+    return "| {ticker} | {price} | {ytd} | {year} | n/a |".format(
+        ticker=_cell(series_id),
+        price=price,
+        ytd=_pct(level.get("level"), level.get("prior_year_close"), allow_negative_base=True),
+        year=_pct(level.get("level"), level.get("close_1y"), allow_negative_base=True),
+    )
+
+
+def _bottom_line(thesis):
+    risks = _bullet_items(getattr(thesis, "risks_text", None))
+    biggest = risks[0] if risks else "n/a"
+    conviction = _text(getattr(thesis, "conviction", None)) or "n/a"
+    recommendation = _recommendation(thesis)
+    if recommendation == "none":
+        recommendation = "n/a"
+    expected = _expected_return(thesis)
+    if expected == "none":
+        expected = "n/a"
+    timeframe = _timeframe(thesis)
+    if timeframe == "none":
+        timeframe = "n/a"
+    return "\n".join(
+        [
+            "> **Bottom line**",
+            f"> Recommendation: {recommendation}",
+            f"> Expected return: {expected}",
+            f"> Timeframe: {timeframe}",
+            f"> Conviction: {conviction}",
+            f"> Biggest risk: {biggest}",
+        ]
+    )
+
+
+def _cause_bullets(lead):
+    parts = [part.strip() for part in _cause_effect(lead).split("→")]
+    kept = [part for part in parts if part]
+    if not kept:
+        return "- none"
+    return "\n".join(f"- {part}" for part in kept)
+
+
+def _stock_tickers(lead):
+    series = set(_cause_series(lead))
+    return [ticker for ticker in _tickers(lead) if ticker not in series]
+
+
+def _cause_series(lead):
+    if getattr(lead, "lead_type", "") != "macro":
+        return []
+    ids = []
+    for part in re.split(r"[,;/]", _display_ticker(lead)):
+        text = part.strip().upper()
+        if _TICKER.fullmatch(text) and text not in ids:
+            ids.append(text)
+    expanded = []
+    for series_id in ids:
+        expanded.append(series_id)
+        if series_id == "BRENT-WTI":
+            for leg in ("BRENT", "WTI"):
+                if leg not in expanded:
+                    expanded.append(leg)
+    return expanded
+
+
+def series_levels(conn, series_ids, as_of):
+    """Latest macro level, prior-year close, and the close 52 weeks earlier.
+
+    Each figure is a stored observation. A missing observation stays absent.
+    """
+    wanted = []
+    for series_id in series_ids:
+        key = str(series_id or "").strip().upper()
+        if key and key not in wanted:
+            wanted.append(key)
+    if not wanted or conn is None or not _macro_tables(conn):
+        return {}
+    ceiling = str(as_of or "")[:10] or "9999-12-31"
+    found = {}
+    for series_id in wanted:
+        latest = conn.execute(
+            """
+            SELECT s.name AS name, s.unit AS unit, o.obs_date AS obs_date, o.value AS value
+            FROM macro_observations AS o
+            JOIN macro_series AS s ON s.series_id = o.series_id
+            WHERE s.series_id = ? AND o.obs_date <= ?
+            ORDER BY o.obs_date DESC
+            LIMIT 1
+            """,
+            (series_id, ceiling),
+        ).fetchone()
+        if latest is None:
+            continue
+        anchor = latest["obs_date"]
+        prior = _obs_on_or_before(conn, series_id, _prior_year_end(anchor))
+        year_ago = _obs_on_or_before(conn, series_id, _weeks_before(anchor, 52))
+        found[series_id] = {
+            "name": latest["name"],
+            "unit": latest["unit"],
+            "level": latest["value"],
+            "as_of": anchor,
+            "prior_year_close": None if prior is None else prior["value"],
+            "close_1y": None if year_ago is None else year_ago["value"],
+        }
+    return found
+
+
+def _macro_tables(conn):
+    rows = conn.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name IN ('macro_series', 'macro_observations')
+        """
+    ).fetchall()
+    found = {row["name"] for row in rows}
+    return "macro_series" in found and "macro_observations" in found
+
+
+def _obs_on_or_before(conn, series_id, day):
+    if not day:
+        return None
+    return conn.execute(
+        """
+        SELECT obs_date, value
+        FROM macro_observations
+        WHERE series_id = ? AND obs_date <= ?
+        ORDER BY obs_date DESC
+        LIMIT 1
+        """,
+        (series_id, day),
+    ).fetchone()
+
+
+def _prior_year_end(obs_date):
+    try:
+        anchor = date.fromisoformat(str(obs_date)[:10])
+    except ValueError:
+        return ""
+    return date(anchor.year - 1, 12, 31).isoformat()
+
+
+def _weeks_before(obs_date, weeks):
+    try:
+        anchor = date.fromisoformat(str(obs_date)[:10])
+    except ValueError:
+        return ""
+    return (anchor - timedelta(days=7 * int(weeks))).isoformat()
+
+
+def _level(value, currency, as_of, signed=False):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not signed and number <= 0:
+        return "n/a"
+    amount = f"{number:,.2f}"
+    unit = _text(currency)
+    when = _text(as_of)[:10]
+    label = amount if not unit else f"{amount} {unit}"
+    if not when:
+        return label
+    return f"{label} ({when})"
+
+
+def _pct(latest, base, allow_negative_base=False):
+    try:
+        latest_value = float(latest)
+        base_value = float(base)
+    except (TypeError, ValueError):
+        return "n/a"
+    if allow_negative_base:
+        if base_value == 0:
+            return "n/a"
+        change = (latest_value - base_value) / abs(base_value) * 100
+    else:
+        if base_value <= 0 or latest_value <= 0:
+            return "n/a"
+        change = (latest_value - base_value) / base_value * 100
+    return f"{change:+.1f}%"
+
+
+def _span(low, high):
+    try:
+        low_value = float(low)
+        high_value = float(high)
+    except (TypeError, ValueError):
+        return "n/a"
+    if low_value <= 0 or high_value <= 0 or low_value > high_value:
+        return "n/a"
+    return f"{low_value:,.2f}–{high_value:,.2f}"
+
+
+def _cell(value):
+    return _text(value).replace("|", "/") or "n/a"
 
 
 def _official_url(url):

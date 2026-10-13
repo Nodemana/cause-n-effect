@@ -183,6 +183,7 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None,
         "Reply with one JSON object and no other text. "
         "Keys: thesis, roi, roi_pct, timeframe_days, risks, recommendation, assumptions, "
         "suppliers, customers, buyers, price_run. "
+        "conviction is optional: one short phrase for how firmly the thesis holds, or omit it. "
         "risks and assumptions are lists of sentences. "
         "suppliers, customers, and buyers are lists of {name, ticker} "
         "taken from COUNTERPARTIES of that role, from CONSTITUENTS, and from the figure text. "

@@ -109,6 +109,7 @@ class PlannedThesis:
         self.risks_text = ""
         self.assumptions_text = ""
         self.recommendation = ""
+        self.conviction = ""
         self.roi = ""
         self.roi_pct = 0
         self.timeframe_days = None
@@ -266,9 +267,9 @@ def ingest_run(db_path, run_id, *, queue_dir=None, parties_client=None):
         if row["finished_at"]:
             state = load_state(queue, run_id)
             if _candidates_report_path(state) is None:
-                write_candidates_report(state, _ranked_from_state(state))
+                write_candidates_report(state, _ranked_from_state(state), conn)
             if _selected_report_dir(state) is None:
-                write_selected_reports(state, _selected_from_state(state))
+                write_selected_reports(state, _selected_from_state(state), conn)
             return _complete_result(conn, state)
         state = load_state(queue, run_id)
         if state.pending_persist:
@@ -966,9 +967,9 @@ def _publish_candidates(conn, state):
     final = [by_id[item] for item in state.final_ids]
     ranked = _rank(final)
     _persist(conn, state.run_id, state.judgement_rejects, state.leads, state.merged, ranked)
-    write_candidates_report(state, ranked)
+    write_candidates_report(state, ranked, conn)
     if not ranked:
-        write_selected_reports(state, [])
+        write_selected_reports(state, [], conn)
         store.complete_run(conn, state.run_id, utc_now())
         state.pending_persist = False
         state.finished = True
@@ -1036,7 +1037,7 @@ def _apply_legate_selection(conn, state, results):
         selected.append(lead)
     created = utc_now()
     store.record_selection(conn, state.run_id, picks, created)
-    write_selected_reports(state, selected)
+    write_selected_reports(state, selected, conn)
     state.pending_persist = False
     state.finished = True
     state.stage = "legate_selection"
@@ -1124,8 +1125,8 @@ def _finish(conn, state, leads, merged, ranked):
     row = store.pipeline_run(conn, state.run_id)
     if row is None or row["finished_at"] is None:
         _persist(conn, state.run_id, state.judgement_rejects, leads, merged, ranked)
-        write_candidates_report(state, ranked)
-        write_selected_reports(state, [])
+        write_candidates_report(state, ranked, conn)
+        write_selected_reports(state, [], conn)
         store.complete_run(conn, state.run_id, utc_now())
     state.pending_persist = False
     state.finished = True
@@ -1222,6 +1223,7 @@ def _thesis_from_model(data, lead, criteria, pass_number, macro):
     thesis.risks_text = "\n".join(risks)
     thesis.assumptions_text = "\n".join(f"- {item}" for item in assumptions)
     thesis.recommendation = _text(data.get("recommendation"))
+    thesis.conviction = _text(data.get("conviction"))
     thesis.roi = _text(data.get("roi"))
     thesis.roi_pct = _roi_pct(data)
     thesis.timeframe_days = _int_or_none(data.get("timeframe_days"))

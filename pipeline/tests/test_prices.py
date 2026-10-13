@@ -19,9 +19,11 @@ from pipeline.prices import (  # noqa: E402
     ingest_price_result,
     insert_price,
     markit_client,
+    parse_markit_header,
     refresh_markit,
     result_path,
     trading_days_old,
+    write_needed,
 )
 from shared.nethttp import EndpointError  # noqa: E402
 from shared.pipeline_store import connect  # noqa: E402
@@ -37,6 +39,73 @@ class PriceTests(unittest.TestCase):
 
     def tearDown(self):
         flow.utc_now = self._utc_now
+
+    def test_history_closes_are_stored_and_a_missing_close_stays_blank(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            queue = str(Path(tmp) / "agent_queue")
+            conn = connect(path)
+            conn.close()
+            run_id = "2026-10-12-prices"
+            needed = write_needed(queue, run_id, [{"exchange": "US", "ticker": "LMT"}], "2026-10-12")
+            payload = json.loads(needed.read_text(encoding="utf-8"))
+            self.assertEqual(payload["history"]["prior_year_close"], "last close of the prior calendar year")
+            self.assertIn("close_1y", payload["history"])
+            result = needed.with_name("prices.result.json")
+            result.write_text(
+                json.dumps(
+                    [
+                        {
+                            "ticker": "LMT",
+                            "conid": 1,
+                            "last": 450,
+                            "top_status": "DELAYED",
+                            "as_of": "2026-10-12",
+                            "prior_year_close": 400,
+                            "close_1y": 375,
+                            "low_52w": 360,
+                            "high_52w": 480,
+                        },
+                        {
+                            "ticker": "NOC",
+                            "conid": 2,
+                            "last": 500,
+                            "top_status": "DELAYED",
+                            "as_of": "2026-10-12",
+                        },
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            conn = connect(path)
+            try:
+                ingest_price_result(conn, queue, run_id, SWEEP_AT)
+                lmt = conn.execute(
+                    "SELECT prior_year_close, close_1y, low_52w, high_52w FROM prices WHERE ticker = 'LMT'"
+                ).fetchone()
+                noc = conn.execute(
+                    "SELECT price, prior_year_close, close_1y, low_52w, high_52w FROM prices WHERE ticker = 'NOC'"
+                ).fetchone()
+            finally:
+                conn.close()
+        self.assertEqual(lmt["prior_year_close"], 400)
+        self.assertEqual(lmt["close_1y"], 375)
+        self.assertEqual(lmt["low_52w"], 360)
+        self.assertEqual(lmt["high_52w"], 480)
+        self.assertEqual(noc["price"], 500)
+        self.assertIsNone(noc["prior_year_close"])
+        self.assertIsNone(noc["close_1y"])
+        self.assertIsNone(noc["low_52w"])
+        self.assertIsNone(noc["high_52w"])
+        header = parse_markit_header(
+            {"priceLast": 10, "marketCap": 20, "yearLow": 8, "yearHigh": 12, "currency": "USD"}
+        )
+        self.assertEqual(header["low_52w"], 8)
+        self.assertEqual(header["high_52w"], 12)
+        bare = parse_markit_header({"priceLast": 10, "marketCap": 20})
+        self.assertIsNone(bare["low_52w"])
+        self.assertIsNone(bare["high_52w"])
 
     def test_three_trading_days_skips_the_weekend(self):
         self.assertEqual(trading_days_old("2026-10-07", SWEEP_AT), 3)

@@ -79,6 +79,8 @@ def build_parser():
             "US prices are not fetched in this process. Tickers that need one are written to "
             "data/agent_queue/<run_id>/prices/needed.json. The agent writes prices.result.json "
             "with ticker, conid, last, top_status, and as_of. "
+            "It may also include prior_year_close, close_1y, low_52w, and high_52w. "
+            "A missing history field is left blank. "
             "top_status must be REALTIME or DELAYED, and as_of must be within three trading days, "
             "or that ticker's market cap stays unverified. "
             "A US cap is SEC shares outstanding times that price. "

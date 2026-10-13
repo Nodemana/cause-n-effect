@@ -251,13 +251,17 @@ def _assert_brent_report(test, report_path):
     test.assertIn(BRENT_URL, brent)
     test.assertIn("### Evidence", brent)
     test.assertIn("### Praetorian critique", brent)
-    test.assertLess(brent.find("### Price run"), brent.find("### Praetorian critique"))
+    test.assertLess(brent.find("### Bottom line"), brent.find("### Praetorian critique"))
+    test.assertLess(brent.find("| Ticker |"), brent.find("### Bottom line"))
     test.assertNotIn("Stage skipped.", brent)
-    test.assertTrue("No flaws recorded." in brent or "Evidence:" in brent)
+    test.assertTrue("No flaws recorded." in brent or "| Evidence |" in brent)
     test.assertIn("### Macro context", brent)
-    test.assertIn("**Tickers:**", brent)
-    test.assertIn("VLO", brent)
-    test.assertIn("TNKR", brent)
+    test.assertIn("| Ticker |", brent)
+    test.assertIn("| BRENT | 125.44 USD per barrel (2026-10-06) | +19.9% | n/a | n/a |", brent)
+    test.assertIn("| VLO | 10.00 USD (2026-10-12) | n/a | n/a | n/a |", brent)
+    test.assertIn("| TNKR | 10.00 USD (2026-10-12) | n/a | n/a | n/a |", brent)
+    test.assertLess(brent.find("| BRENT |"), brent.find("| VLO |"))
+    test.assertIn("| BRENT | 125.44 USD per barrel (2026-10-06) | +19.9% | n/a | n/a |", candidates)
 
 
 def _seed_related(conn):

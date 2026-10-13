@@ -33,7 +33,9 @@ BROWSER_USER_AGENT = (
 MARKIT_HEADER = "https://asx.api.markitdigital.com/asx-research/1.0/companies/{code}/header"
 USABLE_STATUS = {"REALTIME", "DELAYED"}
 STALE_AFTER_TRADING_DAYS = 3
-QUOTE_KEYS = {"ticker", "conid", "last", "top_status", "as_of"}
+QUOTE_REQUIRED = {"ticker", "conid", "last", "top_status", "as_of"}
+QUOTE_OPTIONAL = {"prior_year_close", "close_1y", "low_52w", "high_52w"}
+QUOTE_KEYS = QUOTE_REQUIRED | QUOTE_OPTIONAL
 
 
 def markit_client(retries=4, backoff_base=2.0, backoff_cap=60.0):
@@ -84,7 +86,17 @@ def parse_markit_header(payload):
     cap = data.get("marketCap")
     if not _positive(price) or not _positive(cap):
         raise ValueError("markit header is missing priceLast or marketCap")
-    return {"price": float(price), "market_cap": float(cap)}
+    low = data.get("yearLow")
+    high = data.get("yearHigh")
+    if not (_positive(low) and _positive(high) and float(low) <= float(high)):
+        low = None
+        high = None
+    return {
+        "price": float(price),
+        "market_cap": float(cap),
+        "low_52w": None if low is None else float(low),
+        "high_52w": None if high is None else float(high),
+    }
 
 
 def fetch_markit_header(client, code):
@@ -127,6 +139,8 @@ def refresh_markit(conn, figures, client, now):
             status="DELAYED",
             fetched_at=now,
             as_of=str(now)[:10],
+            low_52w=parsed.get("low_52w"),
+            high_52w=parsed.get("high_52w"),
         )
 
 
@@ -161,7 +175,17 @@ def result_path(queue_dir, run_id):
 def write_needed(queue_dir, run_id, tickers, as_of):
     path = needed_path(queue_dir, run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"as_of": as_of, "run_id": run_id, "tickers": tickers}
+    payload = {
+        "as_of": as_of,
+        "history": {
+            "close_1y": "close 52 weeks before as_of, from historical bars",
+            "high_52w": "highest price in the 52 weeks before as_of",
+            "low_52w": "lowest price in the 52 weeks before as_of",
+            "prior_year_close": "last close of the prior calendar year",
+        },
+        "run_id": run_id,
+        "tickers": tickers,
+    }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
@@ -217,6 +241,10 @@ def ingest_price_result(conn, queue_dir, run_id, now):
             fetched_at=now,
             conid=_conid_text(quote.get("conid")),
             as_of=str(as_of)[:10],
+            prior_year_close=_optional_close(quote.get("prior_year_close")),
+            close_1y=_optional_close(quote.get("close_1y")),
+            low_52w=_optional_close(quote.get("low_52w")),
+            high_52w=_optional_close(quote.get("high_52w")),
         )
 
 
@@ -233,14 +261,18 @@ def insert_price(
     fetched_at,
     conid=None,
     as_of=None,
+    prior_year_close=None,
+    close_1y=None,
+    low_52w=None,
+    high_52w=None,
 ):
     with conn:
         cursor = conn.execute(
             """
             INSERT INTO prices (
                 ticker, exchange, price, currency, market_cap, source, status,
-                fetched_at, conid, as_of
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                fetched_at, conid, as_of, prior_year_close, close_1y, low_52w, high_52w
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ticker,
@@ -253,6 +285,10 @@ def insert_price(
                 fetched_at,
                 conid,
                 as_of,
+                prior_year_close,
+                close_1y,
+                low_52w,
+                high_52w,
             ),
         )
         return cursor.lastrowid
@@ -268,7 +304,8 @@ def latest_usable_price(conn, ticker, now):
     rows = conn.execute(
         """
         SELECT price_id, ticker, exchange, price, currency, market_cap, source,
-               status, fetched_at, conid, as_of
+               status, fetched_at, conid, as_of, prior_year_close, close_1y,
+               low_52w, high_52w
         FROM prices
         WHERE ticker = ?
         ORDER BY fetched_at DESC, price_id DESC
@@ -331,7 +368,7 @@ def _parse_quotes(payload):
             errors.append(f"{label}: quote must be an object")
             continue
         extra = sorted(set(item) - QUOTE_KEYS)
-        missing = sorted(QUOTE_KEYS - set(item))
+        missing = sorted(QUOTE_REQUIRED - set(item))
         for key in extra:
             item_errors.append(f"{label}: unexpected key {key}")
         for key in missing:
@@ -347,6 +384,11 @@ def _parse_quotes(payload):
             item_errors.append(f"{label}: conid must be a string or a number")
         if "last" in item and item.get("last") is not None and not _number(item.get("last")):
             item_errors.append(f"{label}: last must be a number or null")
+        for key in sorted(QUOTE_OPTIONAL):
+            if key not in item or item.get(key) is None:
+                continue
+            if not _positive(item.get(key)):
+                item_errors.append(f"{label}: {key} must be a positive number or null")
         errors.extend(item_errors)
         if not item_errors:
             quotes.append(item)
@@ -373,3 +415,57 @@ def _number(value):
 
 def _positive(value):
     return _number(value) and float(value) > 0
+
+
+def _optional_close(value):
+    if not _positive(value):
+        return None
+    return float(value)
+
+
+def quotes_for(conn, tickers, now):
+    """Usable official quotes keyed by upper-case ticker.
+
+    A ticker with no fresh quote is omitted. The caller prints n/a.
+    """
+    found = {}
+    for ticker in tickers:
+        key = str(ticker or "").strip().upper()
+        if not key or key in found:
+            continue
+        row = _quote_row(conn, key, now)
+        if row is None:
+            continue
+        found[key] = {
+            "price": row["price"],
+            "currency": row["currency"],
+            "as_of": (row["as_of"] or str(row["fetched_at"] or "")[:10]),
+            "prior_year_close": row["prior_year_close"],
+            "close_1y": row["close_1y"],
+            "low_52w": row["low_52w"],
+            "high_52w": row["high_52w"],
+        }
+    return found
+
+
+def _quote_row(conn, ticker, now):
+    found = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'prices'"
+    ).fetchone()
+    if not found:
+        return None
+    rows = conn.execute(
+        """
+        SELECT price_id, ticker, exchange, price, currency, market_cap, source,
+               status, fetched_at, conid, as_of, prior_year_close, close_1y,
+               low_52w, high_52w
+        FROM prices
+        WHERE upper(ticker) = ?
+        ORDER BY fetched_at DESC, price_id DESC
+        """,
+        (ticker.upper(),),
+    ).fetchall()
+    for row in rows:
+        if _usable(row, now):
+            return row
+    return None

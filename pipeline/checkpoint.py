@@ -80,6 +80,7 @@ _THESIS = (
     "risks_text",
     "assumptions_text",
     "recommendation",
+    "conviction",
     "roi",
     "roi_pct",
     "timeframe_days",
