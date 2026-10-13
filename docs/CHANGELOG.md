@@ -4,7 +4,7 @@ Newest entries are first. Times are AEST (Australian Eastern Standard Time, UTC+
 
 Every pull request adds an entry at the top of this file before it merges. Each entry records the date and time, what changed, why, and the pull request number. Leave out secrets, contact addresses, and personal data.
 
-### 2026-10-13 14:04 AEST
+### 2026-10-13 14:04 AEST — [PR #34](https://github.com/Nodemana/cause-n-effect/pull/34)
 
 **What changed.** An Appendix 3Y that issues shares as director fees, as salary sacrifice, or under a plan is not an open-market buy. A notice that names more than one director is not stored as one director's open-market purchase. Each selected thesis file lists tickers only, once each. The thesis is paragraphs, followed by the recommendation, the expected return, the risks as bullets, the timeframe, and the assumptions as bullets. The macro section on that file keeps the series that match the lead.
 
