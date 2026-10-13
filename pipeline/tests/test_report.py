@@ -105,7 +105,9 @@ def _lead(summary="aircraft backlog", macro_context=_DUMP, markdown=_MARKDOWN, l
 class ReportFormatTests(unittest.TestCase):
     def test_sample_report_puts_the_price_table_and_bottom_line_first(self):
         text = render_selected(_lead(), macro=_DUMP, prices=_PRICES, levels={})
+        self.assertLess(text.find("**Signal date:**"), text.find("| Ticker |"))
         self.assertLess(text.find("| Ticker |"), text.find("### Bottom line"))
+        self.assertIn("**After the signal:** n/a", text.split("| Ticker |", 1)[0])
         self.assertNotIn("**Tickers:**", text)
         self.assertNotIn("LMT, LMT", text)
         self.assertNotIn("OVERWEIGHT", text.split("### Bottom line", 1)[0])
@@ -143,6 +145,34 @@ class ReportFormatTests(unittest.TestCase):
         self.assertNotIn("DGS10", macro)
         self.assertNotIn("RNGWHHD", macro)
         self.assertIn("\nnone\n", macro)
+
+    def test_the_signal_block_states_the_filing_date_and_the_move(self):
+        fresh = _lead()
+        fresh.signal_date = "2026-10-01"
+        fresh.days_since_signal = 11
+        text = render_selected(fresh, macro=None, prices=_PRICES, levels={})
+        head = text.split("| Ticker |", 1)[0]
+        self.assertIn("**Signal date:** 2026-10-01", head)
+        self.assertIn("**Age:** 11 days", head)
+        self.assertIn("**After the signal:** n/a", head)
+        self.assertNotIn("%", head)
+
+        faded = _lead()
+        faded.signal_date = "2026-07-23"
+        faded.days_since_signal = 81
+        faded.close_before_signal = 100
+        faded.max_runup_pct = 20
+        faded.current_vs_pre_pct = 0
+        faded.popped_and_faded = True
+        faded.move_passed = True
+        moved = render_selected(faded, macro=None, prices=_PRICES, levels={})
+        block = moved.split("| Ticker |", 1)[0]
+        self.assertIn("**Signal date:** 2026-07-23", block)
+        self.assertIn("**Age:** 81 days", block)
+        self.assertIn("close before the filing was 100.00", block)
+        self.assertIn("the peak was +20.0%", block)
+        self.assertIn("the price is now +0.0% versus that close", block)
+        self.assertIn("The pop has faded", block)
 
         oil = render_selected(
             _lead(summary="A refiner and a tanker move with the crude price."),

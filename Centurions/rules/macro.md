@@ -33,6 +33,6 @@ Observations only from the official source URLs stored on this lead. Those serie
 
 If this lead is the single new lead from a Legate merge, this is the second pass: still write one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged does not reach this pass.
 
-On that second pass, classify any prior price run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence. Note that call as a concern where relevant. There is no automatic rejection.
+On that second pass, classify any prior price run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence. Note that call as a concern where relevant. There is no automatic rejection. Use the post-signal price path on the task for that call. A price below the 52-week high does not mean the move is still ahead. If that path was not supplied, do not invent a close.
 
 On that second pass, macro context is a Centurion concern. Read the Macro scout cache when it is supplied. Do not re-pull those series. If no cache is supplied, do not invent macro conditions.

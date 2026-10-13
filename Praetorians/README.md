@@ -23,3 +23,7 @@ One JSON object:
 ```
 
 `severity` is `low`, `moderate`, or `high`. `flaw` and `evidence` are non-empty strings. An empty `flaws` list means no flaw was recorded. The lead still goes to ranking.
+
+## Staleness and price reaction
+
+Every task has this section. It carries the filing date, the age in days, the close before the filing, the peak move after the filing, the current price versus that close, and whether the pop faded. Flag a flaw at high severity when the signal is older than 42 days, or the post-signal move has already happened or faded, and say whether the move has likely passed, with those numbers. A missing number is `n/a`. Do not invent a close, and do not treat a price below the 52-week high as evidence that the move is still ahead. The lead still goes to ranking.

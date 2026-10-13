@@ -34,7 +34,7 @@ MARKIT_HEADER = "https://asx.api.markitdigital.com/asx-research/1.0/companies/{c
 USABLE_STATUS = {"REALTIME", "DELAYED"}
 STALE_AFTER_TRADING_DAYS = 3
 QUOTE_REQUIRED = {"ticker", "conid", "last", "top_status", "as_of"}
-QUOTE_OPTIONAL = {"prior_year_close", "close_1y", "low_52w", "high_52w"}
+QUOTE_OPTIONAL = {"prior_year_close", "close_1y", "low_52w", "high_52w", "closes"}
 QUOTE_KEYS = QUOTE_REQUIRED | QUOTE_OPTIONAL
 
 
@@ -172,18 +172,20 @@ def result_path(queue_dir, run_id):
     return Path(queue_dir) / run_id / "prices" / "prices.result.json"
 
 
-def write_needed(queue_dir, run_id, tickers, as_of):
+def write_needed(queue_dir, run_id, tickers, as_of, signals=None):
     path = needed_path(queue_dir, run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "as_of": as_of,
         "history": {
             "close_1y": "close 52 weeks before as_of, from historical bars",
+            "closes": "daily closes from closes_from through as_of, from historical bars",
             "high_52w": "highest price in the 52 weeks before as_of",
             "low_52w": "lowest price in the 52 weeks before as_of",
             "prior_year_close": "last close of the prior calendar year",
         },
         "run_id": run_id,
+        "signals": list(signals or []),
         "tickers": tickers,
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -246,6 +248,8 @@ def ingest_price_result(conn, queue_dir, run_id, now):
             low_52w=_optional_close(quote.get("low_52w")),
             high_52w=_optional_close(quote.get("high_52w")),
         )
+        if "closes" in quote:
+            replace_closes(conn, quote["ticker"], quote.get("closes") or [], now)
 
 
 def insert_price(
@@ -384,11 +388,13 @@ def _parse_quotes(payload):
             item_errors.append(f"{label}: conid must be a string or a number")
         if "last" in item and item.get("last") is not None and not _number(item.get("last")):
             item_errors.append(f"{label}: last must be a number or null")
-        for key in sorted(QUOTE_OPTIONAL):
+        for key in sorted(QUOTE_OPTIONAL - {"closes"}):
             if key not in item or item.get(key) is None:
                 continue
             if not _positive(item.get(key)):
                 item_errors.append(f"{label}: {key} must be a positive number or null")
+        if "closes" in item and item.get("closes") is not None:
+            item_errors.extend(_close_errors(label, item.get("closes")))
         errors.extend(item_errors)
         if not item_errors:
             quotes.append(item)
@@ -415,6 +421,71 @@ def _number(value):
 
 def _positive(value):
     return _number(value) and float(value) > 0
+
+
+def _close_errors(label, closes):
+    if not isinstance(closes, list):
+        return [f"{label}: closes must be a list"]
+    errors = []
+    for index, item in enumerate(closes):
+        prefix = f"{label}: closes[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        extra = sorted(set(item) - {"date", "close"})
+        for key in extra:
+            errors.append(f"{prefix}: unexpected key {key}")
+        if not isinstance(item.get("date"), str) or len(item.get("date") or "") < 10:
+            errors.append(f"{prefix}: date must be a YYYY-MM-DD string")
+        else:
+            try:
+                date.fromisoformat(item["date"][:10])
+            except ValueError:
+                errors.append(f"{prefix}: date must be a YYYY-MM-DD string")
+        if not _positive(item.get("close")):
+            errors.append(f"{prefix}: close must be a positive number")
+    return errors
+
+
+def replace_closes(conn, ticker, closes, fetched_at):
+    """Replace the stored daily closes for one ticker.
+
+    An empty list clears the old bars. The caller has already checked each close.
+    """
+    key = str(ticker or "").strip().upper()
+    if not key:
+        return
+    with conn:
+        conn.execute("DELETE FROM price_closes WHERE upper(ticker) = ?", (key,))
+        for item in closes or []:
+            conn.execute(
+                """
+                INSERT INTO price_closes (ticker, obs_date, close, source, fetched_at)
+                VALUES (?, ?, ?, 'ibkr', ?)
+                """,
+                (key, str(item["date"])[:10], float(item["close"]), fetched_at),
+            )
+
+
+def load_closes(conn, ticker):
+    found = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'price_closes'"
+    ).fetchone()
+    if not found:
+        return []
+    rows = conn.execute(
+        """
+        SELECT obs_date, close FROM price_closes
+        WHERE upper(ticker) = ?
+        ORDER BY obs_date
+        """,
+        (str(ticker or "").strip().upper(),),
+    ).fetchall()
+    return [{"date": row["obs_date"], "close": row["close"]} for row in rows]
+
+
+def has_closes(conn, ticker):
+    return bool(load_closes(conn, ticker))
 
 
 def _optional_close(value):

@@ -49,7 +49,7 @@ Macro context is a Centurion concern on a capex chain and on that leftover pass.
 
 ## Job
 
-1. Read the scout gate results already on the task. Do not grade the rubric again. On a second pass, classify any prior price run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence, noted as a concern where relevant.
+1. Read the scout gate results already on the task. Do not grade the rubric again. On a second pass, classify any prior price run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence, noted as a concern where relevant. Judge that from the post-signal price path on the task. A price below the 52-week high does not mean the move is still ahead. If that path was not supplied, do not invent a close.
 2. Research and write the investment thesis, including the potential ROI. On a second pass, draw the macro context from the Macro scout's cache. Work out what the spend is on, which suppliers or customers are named, whether the move looks priced in, and the risks, timeframe, and assumptions.
 3. Estimate the timeframe.
 4. Set out the risks.

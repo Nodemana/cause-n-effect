@@ -156,6 +156,13 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None,
             "with reasoning and evidence. Note that call as a concern where relevant. "
             "There is no automatic rejection. Do not invent a stock price."
         )
+    lines.extend(_price_path_lines(lead))
+    lines.append(
+        "The priced-in check uses that post-signal path, not the 52-week high. "
+        "A price below the 52-week high does not mean the move is still ahead. "
+        "When MOVE_PASSED is yes, the move has already happened or faded: set price_run to priced-in. "
+        "When the path fields are n/a, do not invent a close and do not treat the 52-week range as the check."
+    )
     if show_macro:
         if macro:
             lines.append(f"MACRO: {_one_line(macro)}")
@@ -191,21 +198,31 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None,
         "supplier or a customer. "
         "When COUNTERPARTIES is empty, the thesis says none found for the "
         "suppliers line on a capex lead and for the customers line on a backlog lead. "
-        "price_run is null when this task has no constituents. "
-        "When constituents are present, price_run is new, acceleration, or priced-in. "
+        "price_run is null when this task has no constituents and MOVE_PASSED is not yes. "
+        "When MOVE_PASSED is yes, price_run is priced-in. "
+        "When constituents are present and MOVE_PASSED is not yes, price_run is new, acceleration, or priced-in. "
         "Figures only from the source URL, the constituents, the related findings, and the fields above."
     )
     return "\n".join(lines)
 
 
-def praetorian_prompt(thesis_markdown, price_run):
-    return "\n".join(
+def praetorian_prompt(thesis_markdown, price_run, path=None):
+    lines = [
+        "TASK: praetorian",
+        f"PRICE_RUN: {price_run or 'none'}",
+        "THESIS_BEGIN",
+        thesis_markdown,
+        "THESIS_END",
+        "STALENESS AND PRICE REACTION",
+    ]
+    lines.extend(_price_path_lines(path))
+    lines.extend(
         [
-            "TASK: praetorian",
-            f"PRICE_RUN: {price_run or 'none'}",
-            "THESIS_BEGIN",
-            thesis_markdown,
-            "THESIS_END",
+            "This section is mandatory.",
+            "Flag a flaw when the signal is older than 42 days, about six weeks, "
+            "or the post-signal move has already happened or faded.",
+            "Use severity high in that case. Say whether the move has likely passed, and quote these numbers.",
+            "When a path field is n/a, say so. Do not invent a close. Do not use the 52-week high instead.",
             "Write every flaw in this thesis. Do not merge, rank, reject, or drop the lead.",
             "The lead continues to ranking whether or not this list is empty.",
             "Reply with one JSON object and no other text. Key: flaws.",
@@ -215,6 +232,53 @@ def praetorian_prompt(thesis_markdown, price_run):
             "An empty list means the thesis has no recorded flaw.",
         ]
     )
+    return "\n".join(lines)
+
+
+def _price_path_lines(source):
+    """Lines the Centurion and the Praetorian both read. Missing numbers stay n/a."""
+    if source is None:
+        source = {}
+    if not isinstance(source, dict):
+        source = {
+            "signal_date": getattr(source, "signal_date", None),
+            "days_since_signal": getattr(source, "days_since_signal", None),
+            "close_before_signal": getattr(source, "close_before_signal", None),
+            "max_runup_pct": getattr(source, "max_runup_pct", None),
+            "current_vs_pre_pct": getattr(source, "current_vs_pre_pct", None),
+            "popped_and_faded": getattr(source, "popped_and_faded", None),
+            "move_passed": getattr(source, "move_passed", None),
+        }
+
+    def raw(name):
+        value = source.get(name)
+        if value is None or value == "":
+            return "n/a"
+        return str(value)
+
+    def pct(name):
+        value = source.get(name)
+        if value is None or value == "":
+            return "n/a"
+        return f"{float(value):+.1f}"
+
+    def flag(name):
+        value = source.get(name)
+        if value is True:
+            return "yes"
+        if value is False:
+            return "no"
+        return "n/a"
+
+    return [
+        f"SIGNAL_DATE: {raw('signal_date')}",
+        f"DAYS_SINCE_SIGNAL: {raw('days_since_signal')}",
+        f"CLOSE_BEFORE_SIGNAL: {raw('close_before_signal')}",
+        f"MAX_RUNUP_PCT: {pct('max_runup_pct')}",
+        f"CURRENT_VS_PRE_PCT: {pct('current_vs_pre_pct')}",
+        f"POPPED_AND_FADED: {flag('popped_and_faded')}",
+        f"MOVE_PASSED: {flag('move_passed')}",
+    ]
 
 
 def legate_selection_prompt(candidates):
@@ -226,6 +290,8 @@ def legate_selection_prompt(candidates):
         "rationale is an object. Each key is a chosen lead id written as text. Each value is a non-empty string.",
         "An empty lead_ids array selects none, and rationale is then {}.",
         "The candidate report lists every thesis and its Praetorian flaws.",
+        "Earliness is the signal date and the post-signal price reaction, not the 52-week high.",
+        "Do not select a signal older than six weeks, or one whose post-signal move has already happened or faded, unless a newer confirming signal is also in this list.",
     ]
     for item in candidates:
         lines.extend(

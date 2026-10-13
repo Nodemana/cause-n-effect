@@ -161,6 +161,8 @@ def _lead_section(lead, *, macro, prices, levels):
 def _thesis_body(lead, *, macro, prices, levels):
     thesis = lead.thesis
     return [
+        _signal_block(lead),
+        "",
         _price_table(lead, prices or {}, levels or {}),
         "",
         "### Bottom line",
@@ -585,6 +587,42 @@ def _praetorian_block(thesis):
             )
         )
     return "\n".join(lines)
+
+
+def _signal_block(lead):
+    signal = _text(getattr(lead, "signal_date", None)) or "n/a"
+    days = getattr(lead, "days_since_signal", None)
+    age = "n/a" if days is None else f"{int(days)} days"
+    return "\n".join(
+        [
+            f"**Signal date:** {signal}",
+            f"**Age:** {age}",
+            f"**After the signal:** {_move_line(lead)}",
+        ]
+    )
+
+
+def _move_line(lead):
+    pre = getattr(lead, "close_before_signal", None)
+    runup = getattr(lead, "max_runup_pct", None)
+    current = getattr(lead, "current_vs_pre_pct", None)
+    if pre is None and runup is None and current is None:
+        return "n/a"
+    parts = []
+    if pre is not None:
+        parts.append(f"close before the filing was {float(pre):,.2f}")
+    if runup is not None:
+        parts.append(f"the peak was {float(runup):+.1f}%")
+    if current is not None:
+        parts.append(f"the price is now {float(current):+.1f}% versus that close")
+    sentence = ", ".join(parts)
+    if getattr(lead, "popped_and_faded", None) is True:
+        sentence += ". The pop has faded"
+    elif getattr(lead, "move_passed", None) is True:
+        sentence += ". The move is already in the price"
+    elif getattr(lead, "move_passed", None) is False:
+        sentence += ". The move has not passed"
+    return sentence + "."
 
 
 def _price_table(lead, prices, levels):
