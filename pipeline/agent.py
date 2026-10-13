@@ -57,6 +57,7 @@ CENTURION_SCHEMA = {
         "timeframe_days": {"type": "integer"},
         "risks": {"type": "array", "items": {"type": "string"}},
         "recommendation": {"type": "string"},
+        "conviction": {"type": "string"},
         "assumptions": {"type": "array", "items": {"type": "string"}},
         "suppliers": {"$ref": "#/definitions/party_list"},
         "customers": {"$ref": "#/definitions/party_list"},
@@ -265,11 +266,13 @@ def _validate_significance(lead_id, data):
 
 def _validate_centurion(lead_id, data):
     required = set(CENTURION_SCHEMA["required"])
-    errors = _unexpected(lead_id, data, required)
+    errors = _unexpected(lead_id, data, required | {"conviction"})
     errors.extend(_missing(lead_id, data, required))
     _string(errors, lead_id, data, "thesis")
     _string(errors, lead_id, data, "roi")
     _string(errors, lead_id, data, "recommendation")
+    if "conviction" in data and data.get("conviction") is not None and not isinstance(data.get("conviction"), str):
+        errors.append(f"{lead_id}: conviction must be a string")
     if "roi_pct" in data and not _is_number(data.get("roi_pct")):
         errors.append(f"{lead_id}: roi_pct must be a number")
     if "timeframe_days" in data and not _is_int(data.get("timeframe_days")):

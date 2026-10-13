@@ -5,8 +5,8 @@ ensure_pipeline applies shared/migrations/001_pipeline.sql, then
 004_lead_counterparties.sql, then 005_deal_party_role.sql, then
 006_agent_handoff.sql, then 007_prices_cleanup.sql, then
 008_macro_leads.sql, then 009_praetorian_flaws.sql, then
-010_legate_selection.sql, then 011_scout_rubric_gate.sql, and records each
-filename in schema_migrations.
+010_legate_selection.sql, then 011_scout_rubric_gate.sql, then
+012_price_history.sql, and records each filename in schema_migrations.
 An older leads table (no lead_id) is rebuilt and its rows are kept.
 lodge_lead, record_criterion_result, and compute_quality_score are the
 write path. quality_score is the number of criteria with passed = 1.
@@ -32,6 +32,7 @@ MIGRATIONS = (
     "009_praetorian_flaws.sql",
     "010_legate_selection.sql",
     "011_scout_rubric_gate.sql",
+    "012_price_history.sql",
 )
 
 LEAD_TYPES = (

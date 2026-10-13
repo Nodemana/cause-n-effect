@@ -28,7 +28,7 @@ Before significance, each US ticker that does not already have a fresh official 
 data/agent_queue/<pipeline_run_id>/prices/needed.json
 ```
 
-The file has `run_id`, `as_of` (the sweep clock), and `tickers` (`ticker`, `exchange`). The pipeline does not call Interactive Brokers.
+The file has `run_id`, `as_of` (the sweep clock), `tickers` (`ticker`, `exchange`), and `history`. `history` names the optional closes the report can show: `prior_year_close` (last close of the prior calendar year), `close_1y` (close 52 weeks before `as_of`), `low_52w`, and `high_52w`. Those closes come from historical bars. The pipeline does not call Interactive Brokers and does not calculate a close that was not supplied.
 
 Write one JSON list, or one JSON object when there is a single ticker, to:
 
@@ -36,7 +36,7 @@ Write one JSON list, or one JSON object when there is a single ticker, to:
 data/agent_queue/<pipeline_run_id>/prices/prices.result.json
 ```
 
-Each object is `{ticker, conid, last, top_status, as_of}`. Extra keys are rejected. `top_status` of `REALTIME` or `DELAYED`, a positive `last`, and an `as_of` within three trading days of the sweep clock are stored. Any other status, a missing price, or an older quote leaves that ticker unverified and does not block the other tickers. `ingest` then sets the US market cap to SEC shares outstanding times `last`, in USD.
+Each object requires `{ticker, conid, last, top_status, as_of}`. It may also include `prior_year_close`, `close_1y`, `low_52w`, and `high_52w`, each a positive number or null. Extra keys are rejected. `top_status` of `REALTIME` or `DELAYED`, a positive `last`, and an `as_of` within three trading days of the sweep clock are stored. Any other status, a missing price, or an older quote leaves that ticker unverified and does not block the other tickers. A missing history field does not reject the quote. The thesis file shows `n/a` for that cell. `ingest` then sets the US market cap to SEC shares outstanding times `last`, in USD.
 
 ASX tickers are not in that file. `run` requests `https://asx.api.markitdigital.com/asx-research/1.0/companies/{code}/header` with a browser User-Agent. `priceLast` and `marketCap` are AUD. The payload's `currency` field is the company's reporting currency, not the price currency. A failed header leaves that ticker unverified and the sweep continues.
 
@@ -51,7 +51,7 @@ A missing or malformed `prices.result.json` does not advance the stage.
 4. **centurion_2** — one task per leftover merged lead. A sweep with no leftover merge skips this stage.
 5. **praetorian** — one task per lead that still has a thesis (the chain or smart-money lead, a single lead, or a leftover merge). The result is a list of flaws. Each flaw has `flaw`, `severity` (`low`, `moderate`, or `high`), and `evidence`. An empty list is valid. The critique does not reject, drop, or filter a lead.
 6. **ranking** — deterministic. Score is expected return, plus growth and magnitude, minus 8 points per deterministic surviving issue (a significance soft issue, an unverified market cap, or an open backlog growth question). Praetorian flaws are not part of that count and do not remove a lead. Every ranked thesis is written to `data/reports/<run_id>-candidates.md`, with its full flaw list, and one `legate_selection` task is queued.
-7. **legate_selection** — the Legate writes `legate_selection.result.json`. `lead_ids` has at most 5 integers, each a candidate from that task. `rationale` has one non-empty string per chosen id, keyed by the id as text. `ingest` rejects a longer list, a duplicate, an unknown id, or a missing rationale, and leaves the stage where it is. A valid file writes one markdown file per selected thesis at `data/reports/<run_id>/<rank>-<ticker>.md`. The rank is the selection order. The file has the thesis (cause to effect chain, tickers, evidence links from official sources, macro context, and the price-run classification) and then the full Praetorian critique. An empty `lead_ids` array selects none and writes no thesis file.
+7. **legate_selection** — the Legate writes `legate_selection.result.json`. `lead_ids` has at most 5 integers, each a candidate from that task. `rationale` has one non-empty string per chosen id, keyed by the id as text. `ingest` rejects a longer list, a duplicate, an unknown id, or a missing rationale, and leaves the stage where it is. A valid file writes one markdown file per selected thesis at `data/reports/<run_id>/<rank>-<ticker>.md`. The rank is the selection order. Under the title, the file has a price table for every ticker, then a bottom line (recommendation, expected return, timeframe, conviction, biggest risk), then cause to effect, the thesis, evidence links from official sources, risks, assumptions, the Praetorian critique, the Legate rationale, and the macro series that match the lead. An empty `lead_ids` array selects none and writes no thesis file.
 
 A stage with nothing left to judge is skipped. The run then finishes with zero rankings and no thesis files.
 
@@ -99,7 +99,7 @@ The Centurion still writes one result file. There is no shared evidence file and
 
 ### Centurion (pass 1 and pass 2)
 
-`thesis`, `roi`, and `recommendation` are strings. `roi_pct` is a number. `timeframe_days` is an integer. `risks` and `assumptions` are arrays of strings. `suppliers`, `customers`, and `buyers` are arrays of `{name, ticker}`. `price_run` is null on a single lead. On a capex chain, a smart-money lead, and pass 2 it is `new`, `acceleration`, `priced-in`, or null. The prompt includes GATE_RESULTS from the scout gate. The result does not grade the rubric.
+`thesis`, `roi`, and `recommendation` are strings. `roi_pct` is a number. `timeframe_days` is an integer. `risks` and `assumptions` are arrays of strings. `suppliers`, `customers`, and `buyers` are arrays of `{name, ticker}`. `price_run` is null on a single lead. On a capex chain, a smart-money lead, and pass 2 it is `new`, `acceleration`, `priced-in`, or null. `conviction` is optional, one short phrase. The prompt includes GATE_RESULTS from the scout gate. The result does not grade the rubric.
 
 ### Praetorian
 
@@ -115,6 +115,6 @@ data/agent_queue/<pipeline_run_id>/legate_selection/legate_selection.result.json
 
 ## After the last stage
 
-Ranking reads the ingested expected return, timeframe, and the deterministic surviving issues. It writes `rankings` for every lead that still has a thesis. A Praetorian flaw does not remove a row from `rankings`. The same list is written to `data/reports/<run_id>-candidates.md` when the queue is `data/agent_queue` (the report directory is the queue directory's sibling `reports/`). Each section has the lead id, the thesis, the cause to effect chain, the tickers, the evidence links, the full Praetorian flaw list (severity, flaw, and evidence), and the macro context. The Legate selection then writes one file per chosen lead at `data/reports/<run_id>/<rank>-<ticker>.md`, with the rationale for each pick. The sweep does not write a decision row. `pipeline_runs.status` becomes `complete` and `stage` becomes `legate_selection`. `provider` is `agent`. Token columns stay at 0.
+Ranking reads the ingested expected return, timeframe, and the deterministic surviving issues. It writes `rankings` for every lead that still has a thesis. A Praetorian flaw does not remove a row from `rankings`. The same list is written to `data/reports/<run_id>-candidates.md` when the queue is `data/agent_queue` (the report directory is the queue directory's sibling `reports/`). Each section starts with a price table, then a bottom line, the cause to effect bullets, the thesis, the evidence links, the risks, the assumptions, the Praetorian table (severity, flaw, and evidence, high first), the Legate rationale, and the matching macro series. The Legate selection then writes one file per chosen lead at `data/reports/<run_id>/<rank>-<ticker>.md`, with the rationale for each pick. The sweep does not write a decision row. `pipeline_runs.status` becomes `complete` and `stage` becomes `legate_selection`. `provider` is `agent`. Token columns stay at 0.
 
 A judgement reject is stored with `rejection_stage` `agent`. A threshold or dedupe reject stays `deterministic` and is written by `run`, before any agent task.
