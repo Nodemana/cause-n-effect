@@ -20,10 +20,31 @@ Repeat `status` and `ingest` after each stage. The last successful `ingest` prin
 
 When `SEC_CONTACT_EMAIL` is set, `run` caches shares outstanding and `ingest` names counterparties after significance. The address is the SEC User-Agent and is not logged. A source error drops that company's parties. With the variable unset, neither step opens a socket.
 
-A market cap is shares outstanding times an official USD share-price figure already stored with the scout figures. Shares without that price leave the cap unverified.
+## Prices
+
+Before significance, each US ticker that does not already have a fresh official price is listed in:
+
+```text
+data/agent_queue/<pipeline_run_id>/prices/needed.json
+```
+
+The file has `run_id`, `as_of` (the sweep clock), and `tickers` (`ticker`, `exchange`). The pipeline does not call Interactive Brokers.
+
+Write one JSON list, or one JSON object when there is a single ticker, to:
+
+```text
+data/agent_queue/<pipeline_run_id>/prices/prices.result.json
+```
+
+Each object is `{ticker, conid, last, top_status, as_of}`. Extra keys are rejected. `top_status` of `REALTIME` or `DELAYED`, a positive `last`, and an `as_of` within three trading days of the sweep clock are stored. Any other status, a missing price, or an older quote leaves that ticker unverified and does not block the other tickers. `ingest` then sets the US market cap to SEC shares outstanding times `last`, in USD.
+
+ASX tickers are not in that file. `run` requests `https://asx.api.markitdigital.com/asx-research/1.0/companies/{code}/header` with a browser User-Agent. `priceLast` and `marketCap` are AUD. The payload's `currency` field is the company's reporting currency, not the price currency. A failed header leaves that ticker unverified and the sweep continues.
+
+A missing or malformed `prices.result.json` does not advance the stage.
 
 ## Stages
 
+0. **prices** — one `needed.json` for US tickers that need a quote. Skipped when every US ticker already has a fresh quote.
 1. **significance** — one task per figure that passed thresholds and dedupe, and one task per macro signal.
 2. **centurion_1** — one task per lead after the deterministic combine. A capex chain (capex, orders backlog, and debt where they link) is one lead. Smart money (insider and accumulation on the same ticker inside the window) is one lead. Macro stays one lead, and its task lists related findings from the other two. An unlinked figure stays a single lead.
 3. **Legate merge** — deterministic, no task file. Chain types are not merged again. A leftover cross-group link, such as capex with insider buying, becomes one merged lead.
@@ -78,7 +99,7 @@ The Centurion still writes one result file. There is no shared evidence file and
 
 ### Centurion (pass 1 and pass 2)
 
-`thesis`, `roi`, and `recommendation` are strings. `roi_pct` is a number. `timeframe_days` is an integer. `risks` and `assumptions` are arrays of strings. `grades` is an array of `{name, passed, evidence}` with `passed` true or false. `suppliers`, `customers`, and `buyers` are arrays of `{name, ticker}`. `price_run` is null on a single lead. On a capex chain, a smart-money lead, and pass 2 it is `new`, `acceleration`, `priced-in`, or null.
+`thesis`, `roi`, and `recommendation` are strings. `roi_pct` is a number. `timeframe_days` is an integer. `risks` and `assumptions` are arrays of strings. `suppliers`, `customers`, and `buyers` are arrays of `{name, ticker}`. `price_run` is null on a single lead. On a capex chain, a smart-money lead, and pass 2 it is `new`, `acceleration`, `priced-in`, or null. The prompt includes GATE_RESULTS from the scout gate. The result does not grade the rubric.
 
 ### Praetorian
 

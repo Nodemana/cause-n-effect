@@ -2,13 +2,11 @@
 
 ## Criteria
 
-- min_market_cap: market cap is at least the threshold stored on the rubric.
-- backlog_qoq_growth: disclosed backlog grew at least the threshold percent quarter over quarter.
-- disclosed_demand: the figure is disclosed backlog or a named order.
+The scout gate already applied the current fixed rubric version stored in `rubrics` and `rubric_criteria`. This lead is here because every criterion passed. The measured values are in the task under GATE_RESULTS. Do not grade them again.
 
-## Grade
-
-Grade this lead only, against each criterion above. Pass or fail, with the figure and its source.
+- min_market_cap: market cap cleared the scout gate. The threshold lives on the rubric.
+- backlog_qoq_growth: disclosed backlog growth cleared the scout gate.
+- disclosed_demand: the figure is disclosed backlog or a named order. The scout gate already checked this.
 
 ## Thesis and ROI
 
@@ -34,7 +32,7 @@ List every assumption made while researching and forming the thesis.
 
 Figures only from SEC filings, ASX announcements, and company releases.
 
-If this lead is the single new lead from a Legate merge, this is the second pass: still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged does not reach this pass.
+If this lead is the single new lead from a Legate merge, this is the second pass: still write one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged does not reach this pass.
 
 On that second pass, classify any prior price run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence. Note that call as a concern where relevant. There is no automatic rejection.
 

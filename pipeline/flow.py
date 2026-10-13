@@ -5,18 +5,22 @@ records status awaiting_agents, and returns. `ingest_run` checks result
 files and advances one judgement stage. Combining leads and a leftover Legate
 merge stay in process. Ranking writes the candidate report and one legate task.
 
-Stages: significance, then one Centurion task per lead, a leftover Legate
-merge, centurion pass 2 only for that leftover, then a Praetorian critique,
-then ranking, then Legate selection. The critique lists every flaw and does
-not drop a lead. Ranking writes every candidate thesis to
-`data/reports/<run_id>-candidates.md` and a legate_selection task.
-The Legate selects at most 5. Ingest writes one file per selected thesis
-under `data/reports/<run_id>/<rank>-<ticker>.md`. Linkable
-capex, orders backlog, and debt raises become one capex-chain lead before
-that Centurion. Same-ticker insider and accumulation signals inside the
-window become one smart-money lead. Macro stays a lead of its own. Market cap
-is applied in the deterministic gates from shares outstanding and an official
-share-price figure.
+Stages: prices (US quotes only, when the scout gate is waiting on a price),
+significance, then one Centurion task per lead, a leftover Legate merge,
+centurion pass 2 only for that leftover, then a Praetorian critique,
+then ranking, then Legate selection. The scout gate applies the fixed
+rubric before significance. A failed candidate is stored as filtered and
+is not queued. A missing or stale price is stored as needs_price. The
+critique lists every flaw and does not drop a lead. Ranking writes every
+candidate thesis to `data/reports/<run_id>-candidates.md` and a
+legate_selection task. The Legate selects at most 5. Ingest writes one
+file per selected thesis under `data/reports/<run_id>/<rank>-<ticker>.md`.
+Linkable capex, orders backlog, and debt raises become one capex-chain
+lead before that Centurion, after each component has passed its own
+rubric. Same-ticker insider and accumulation signals inside the window
+become one smart-money lead the same way. Macro stays a lead of its own
+and has no rubric gate. ASX prices are fetched from Markit before the
+gate. A US price comes from the prices handoff.
 
 A capex chain is linked from the parties named on the figures, not from a
 thesis. A leftover merge, when one still exists, uses the suppliers,
@@ -51,7 +55,14 @@ from pipeline.checkpoint import SweepState, load_state, save_state
 from pipeline.counterparties import enrich_leads, is_common_heading
 from pipeline.load import is_quarter_figure, load_latest_figures
 from pipeline.macro_signals import macro_candidates
-from pipeline.marketcap import UNVERIFIED
+from pipeline.prices import (
+    considered_figures,
+    ingest_price_result,
+    prices_outstanding,
+    refresh_markit,
+    write_needed,
+)
+from pipeline.rubric_gate import evaluate
 from pipeline.names import normalise_name
 from pipeline.prefilter import (
     PlannedReject,
@@ -150,13 +161,21 @@ def run_pipeline(
     macro_cache=None,
     now=None,
     shares_client=None,
+    markit_client=None,
     queue_dir=None,
 ):
     """Do the deterministic work and queue the next agent stage.
 
-    Significance tasks are written immediately. Counterparties are named
-    later, on ingest, and only when that call is given a parties client.
-    This function does not judge a lead and does not call a model.
+    ASX prices are fetched from Markit when a client is passed. The scout
+    gate then runs. A candidate that fails a rubric criterion is stored as
+    filtered and is not queued. A candidate that still needs an official
+    price is stored as needs_price. US names in that state are written to
+    prices/needed.json and the run stops there. Significance tasks are
+    written once those quotes are ingested, or immediately when no US
+    candidate is waiting on a price.
+    Counterparties are named later, on ingest, and only when that call is
+    given a parties client. This function does not judge a lead and does not
+    call a model.
     """
     if limit is not None and int(limit) < 1:
         raise ValueError("limit must be a positive integer")
@@ -178,14 +197,23 @@ def run_pipeline(
         names, _ciks = party_index(figures)
         if dry_run:
             candidates, _rejects, used = prefilter(conn, figures, limit=limit, now=started)
+            queued = 0
+            for candidate in candidates:
+                if evaluate(conn, candidate.figure, candidate.lead_type, now=started).status != "filtered":
+                    queued += 1
+            for candidate in macro_candidates(conn, started):
+                if not _in_flight(conn, candidate):
+                    queued += 1
             return _awaiting_result(
                 SweepState(),
                 status="dry_run",
-                tasks=len(candidates) + len(macro_candidates(conn, started)),
+                tasks=queued,
                 figures=used,
                 macro=macro,
                 dry_run=True,
             )
+        considered = considered_figures(figures, limit)
+        refresh_markit(conn, considered, markit_client, started)
         state = SweepState()
         state.started = started
         state.macro = macro
@@ -195,6 +223,16 @@ def run_pipeline(
         state.limit = limit
         run_id = store.start_run(conn, started)
         state.run_id = run_id
+        _screen(conn, state)
+        needed = _needs_price_tickers(state)
+        if needed:
+            write_needed(queue, run_id, needed, started)
+            state.stage = "prices"
+            store.begin_pipeline_run(conn, run_id, started, queue, "awaiting_agents", "prices")
+            save_state(state)
+            return _awaiting_result(
+                state, status="awaiting_agents", tasks=len(needed), figures=state.figures, macro=macro
+            )
         store.begin_pipeline_run(conn, run_id, started, queue, "awaiting_agents", "significance")
         tasks = _open_significance(conn, state)
         if state.finished:
@@ -237,6 +275,17 @@ def ingest_run(db_path, run_id, *, queue_dir=None, parties_client=None):
             _finish(conn, state, leads=state.leads, merged=state.merged, ranked=_ranked_from_state(state))
             return _complete_result(conn, state)
         stage = state.stage
+        if stage == "prices":
+            ingest_price_result(conn, queue, run_id, state.started)
+            _promote_needs_price(conn, state)
+            tasks = _open_significance(conn, state)
+            if state.stage == "ranking":
+                return _complete_result(conn, state)
+            save_state(state)
+            store.set_pipeline_stage(conn, run_id, "awaiting_agents", state.stage)
+            return _awaiting_result(
+                state, status="awaiting_agents", tasks=tasks, figures=state.figures, macro=state.macro
+            )
         if stage not in _AGENT_STAGES:
             raise AgentResultError(f"run {run_id} is not waiting on an agent stage ({stage})")
         else:
@@ -275,16 +324,23 @@ def pipeline_status(db_path, run_id):
             raise AgentResultError(f"no pipeline run {run_id}")
         stage = row["stage"]
         queue = row["queue_dir"] or ""
-        if row["finished_at"] or stage not in _AGENT_STAGES:
+        if row["finished_at"]:
+            pending = []
+        elif stage == "prices":
+            pending = prices_outstanding(queue, run_id)
+        elif stage not in _AGENT_STAGES:
             pending = []
         else:
             pending = outstanding_tasks(queue, run_id, stage)
     finally:
         conn.close()
-    outstanding = [
-        {"lead_id": path.name[: -len(".task.json")], "stage": stage, "task": str(path)}
-        for path in pending
-    ]
+    outstanding = []
+    for path in pending:
+        if stage == "prices":
+            lead_id = "prices"
+        else:
+            lead_id = path.name[: -len(".task.json")]
+        outstanding.append({"lead_id": lead_id, "stage": stage, "task": str(path)})
     return {
         "run_id": run_id,
         "status": row["status"],
@@ -390,20 +446,137 @@ def _selected_from_state(state):
     return selected
 
 
-def _open_significance(conn, state):
-    """Run the gates and queue significance, or finish when nothing remains."""
+def _screen(conn, state):
+    """Apply the rubric gate once. Filtered and needs_price leads are stored."""
+    if state.screened:
+        return
     figures = load_latest_figures(conn, as_of=state.started)
     candidates, rejects, used = prefilter(conn, figures, limit=state.limit, now=state.started)
+    state.figures = used
+    state.deterministic_rejects = len(rejects)
+    created = utc_now()
+    for planned in rejects:
+        store.insert_reject(conn, state.run_id, planned, created)
+    passed = []
+    waiting = []
+    for candidate in candidates:
+        outcome = evaluate(conn, candidate.figure, candidate.lead_type, now=state.started)
+        candidate.gate_results = outcome.results
+        existing = store.screened_lead_for_figure(conn, candidate.figure.figure_id)
+        if existing is not None and existing["status"] == "filtered" and outcome.status == "filtered":
+            continue
+        if existing is not None and outcome.status == "pass":
+            store.delete_screened_lead(conn, existing["lead_id"])
+            passed.append(candidate)
+            continue
+        if existing is not None:
+            store.update_screened_lead(
+                conn,
+                existing["lead_id"],
+                outcome,
+                state.run_id,
+                candidate.figure.source_url or None,
+                created,
+            )
+            candidate.screen_lead_id = existing["lead_id"]
+            if outcome.status == "filtered":
+                _record_filter(conn, state, candidate, outcome, created)
+            else:
+                waiting.append(candidate)
+            continue
+        if outcome.status == "pass":
+            passed.append(candidate)
+            continue
+        lead_id = store.insert_screened_lead(conn, state.run_id, candidate, outcome, created)
+        candidate.screen_lead_id = lead_id
+        if outcome.status == "filtered":
+            _record_filter(conn, state, candidate, outcome, created)
+        else:
+            waiting.append(candidate)
     for candidate in macro_candidates(conn, state.started):
         if _in_flight(conn, candidate):
             continue
-        candidates.append(candidate)
-    state.candidates = candidates
-    state.figures = used
-    state.deterministic_rejects = len(rejects)
-    for planned in rejects:
-        store.insert_reject(conn, state.run_id, planned, utc_now())
-    if not candidates:
+        candidate.gate_results = []
+        passed.append(candidate)
+    state.candidates = passed
+    state.waiting = waiting
+    state.screened = True
+
+
+def _promote_needs_price(conn, state):
+    """Re-gate leads that were waiting on a price. A pass joins the queue."""
+    created = utc_now()
+    still = []
+    for candidate in list(state.waiting or []):
+        outcome = evaluate(conn, candidate.figure, candidate.lead_type, now=state.started)
+        candidate.gate_results = outcome.results
+        lead_id = getattr(candidate, "screen_lead_id", None)
+        if outcome.status == "pass":
+            if lead_id is not None:
+                store.delete_screened_lead(conn, lead_id)
+            candidate.screen_lead_id = None
+            state.candidates.append(candidate)
+            continue
+        if lead_id is not None:
+            store.update_screened_lead(
+                conn,
+                lead_id,
+                outcome,
+                state.run_id,
+                candidate.figure.source_url or None,
+                created,
+            )
+        if outcome.status == "filtered":
+            _record_filter(conn, state, candidate, outcome, created)
+            continue
+        still.append(candidate)
+    state.waiting = still
+    needed = _needs_price_tickers(state)
+    if needed and state.queue_dir and state.run_id:
+        write_needed(state.queue_dir, state.run_id, needed, state.started)
+
+
+def _record_filter(conn, state, candidate, outcome, created):
+    reason = "; ".join(
+        f"{item['name']}: {item.get('evidence') or 'fail'}"
+        for item in outcome.results
+        if not item.get("passed") and not item.get("needs_price")
+    ) or "filtered"
+    store.insert_reject(
+        conn,
+        state.run_id,
+        PlannedReject(
+            candidate.figure,
+            candidate.lead_type,
+            "deterministic",
+            reason,
+            Rating(magnitude="small", magnitude_rationale=reason),
+            candidate.parties,
+        ),
+        created,
+    )
+    state.deterministic_rejects += 1
+
+
+def _needs_price_tickers(state):
+    from pipeline.load import exchange_for
+
+    needed = []
+    seen = set()
+    for candidate in state.waiting or []:
+        figure = candidate.figure
+        ticker = figure.ticker
+        if not ticker or ticker in seen or exchange_for(figure) == "ASX":
+            continue
+        seen.add(ticker)
+        needed.append({"exchange": "US", "ticker": ticker})
+    needed.sort(key=lambda item: item["ticker"])
+    return needed
+
+
+def _open_significance(conn, state):
+    """Queue significance for candidates that passed the scout gate."""
+    if not state.candidates:
         _finish(conn, state, leads=[], merged=[], ranked=[])
         return 0
     state.stage = "significance"
@@ -479,7 +652,7 @@ def _write_centurion_tasks(conn, state, leads, pass_number, stage):
                 "pass_number": pass_number,
                 "figure_ids": list(lead.figure_ids),
                 "counterparties": list(lead.counterparties or []),
-                "criteria": criteria,
+                "gate_results": list(getattr(lead, "gate_results", None) or []),
                 "constituents": constituents or [],
                 "related_findings": related or [],
             },
@@ -563,7 +736,6 @@ def _apply_centurion_1(conn, state, results):
         macro = state.macro if lead.source_scout == "capex_chain" else None
         lead.thesis = _thesis_from_model(data, lead, criteria, 1, macro=macro)
         _resolve_parties(lead.thesis, state.names)
-    state.leads = _drop_hard_failures(state.leads, state.judgement_rejects)
     merged = _merge(conn, state.leads, state.macro)
     state.merged = merged
     if merged:
@@ -582,7 +754,6 @@ def _apply_centurion_2(conn, state, results):
         criteria = store.criteria_for(conn, lead.grade_types)
         lead.thesis = _thesis_from_model(data, lead, criteria, 2, macro=state.macro)
         _resolve_parties(lead.thesis, state.names)
-    state.merged = _drop_hard_failures(state.merged, state.judgement_rejects)
     _queue_praetorian(conn, state)
 
 
@@ -684,93 +855,10 @@ def _lead_from_candidate(candidate, rating):
     lead.rating = rating
     lead.grade_types = [candidate.lead_type]
     lead.parties = list(candidate.parties)
-    lead.market_cap_unverified = bool(getattr(figure, "market_cap_unverified", False))
-    lead.growth_unverified = bool(getattr(figure, "growth_unverified", False))
+    lead.gate_results = list(getattr(candidate, "gate_results", None) or [])
+    lead.market_cap_unverified = False
+    lead.growth_unverified = False
     return lead
-
-
-HARD_CRITERIA = {
-    "min_market_cap",
-    "capex_growth_yoy",
-    "raise_vs_company",
-    "backlog_qoq_growth",
-    "insider_buy_dollars",
-    "min_stake_pct",
-    "recent_window",
-}
-
-
-def _drop_hard_failures(leads, rejects):
-    kept = []
-    for lead in leads:
-        reason = _hard_grade_reason(lead)
-        if not reason:
-            kept.append(lead)
-            continue
-        parties = getattr(lead, "parties", None) or []
-        rejects.append(
-            PlannedReject(
-                lead.figure,
-                lead.lead_type,
-                _JUDGEMENT_STAGE,
-                reason,
-                lead.rating,
-                parties,
-            )
-        )
-    return kept
-
-
-def _hard_grade_reason(lead):
-    thesis = lead.thesis
-    if thesis is None:
-        return ""
-    failed = []
-    seen = set()
-    for name, grade in thesis.grades_by_name.items():
-        if name not in HARD_CRITERIA:
-            continue
-        seen.add(name)
-        if _unverified_grade(lead, name, grade.get("evidence")):
-            continue
-        if _open_growth_grade(lead, name, grade.get("evidence")):
-            continue
-        if grade.get("passed"):
-            evidence = _text(grade.get("evidence")).lower()
-            if evidence in {"", "missing", "missing evidence", "not graded"}:
-                failed.append(f"failed {name}: missing evidence")
-            continue
-        evidence = _text(grade.get("evidence")) or "missing evidence"
-        failed.append(f"failed {name}: {evidence}")
-    for criterion in thesis.criteria or []:
-        name = criterion.get("name")
-        if name in HARD_CRITERIA and name not in seen:
-            if _unverified_grade(lead, name, "") or _open_growth_grade(lead, name, ""):
-                continue
-            failed.append(f"failed {name}: missing evidence")
-    return "; ".join(failed)
-
-
-def _open_growth_grade(lead, name, evidence):
-    """A large order with no stored prior is a surviving issue, not a hard reject."""
-    if name != "backlog_qoq_growth" or not getattr(lead, "growth_unverified", False):
-        return False
-    text = _text(evidence).lower()
-    if text in {"", "missing", "missing evidence", "not graded"}:
-        return True
-    return "no prior" in text
-
-
-def _unverified_grade(lead, name, evidence):
-    """An unknown market cap is a surviving issue, not a hard reject."""
-    if not getattr(lead, "market_cap_unverified", False):
-        return False
-    if name not in {"min_market_cap", "raise_vs_company"}:
-        return False
-    text = _text(evidence).lower()
-    if text in {"", "market cap unverified", UNVERIFIED}:
-        return True
-    return UNVERIFIED in text
 
 
 def _merge(conn, leads, macro):
@@ -800,15 +888,13 @@ def _merge(conn, leads, macro):
         lead.counterparties = _merged_counterparties(members)
         lead.link_kind = kind
         lead.summary = _rationale(kind, members)
-        lead.market_cap_unverified = bool(
-            getattr(primary, "market_cap_unverified", False)
-            or getattr(primary.figure, "market_cap_unverified", False)
-        )
-        lead.growth_unverified = any(
-            getattr(member, "growth_unverified", False)
-            or getattr(member.figure, "growth_unverified", False)
-            for member in members
-        )
+        lead.market_cap_unverified = False
+        lead.growth_unverified = False
+        gate_results = []
+        for member in members:
+            for item in getattr(member, "gate_results", None) or []:
+                gate_results.append(item)
+        lead.gate_results = gate_results
         issues = []
         for member in members:
             issue = getattr(member, "significance_issue", None)
@@ -958,15 +1044,11 @@ def _apply_legate_selection(conn, state, results):
 
 
 def _deterministic_notes(lead):
-    """Soft gates recorded on the thesis. Praetorian flaws are not in this list."""
+    """Soft significance notes recorded on the thesis. Praetorian flaws are not in this list."""
     notes = []
-    if getattr(lead, "market_cap_unverified", False):
-        notes.append(UNVERIFIED)
     issue = getattr(lead, "significance_issue", None)
     if issue:
         notes.append(issue)
-    if getattr(lead, "growth_unverified", False):
-        notes.append("no prior comparison in the figures table")
     return notes
 
 
@@ -1061,11 +1143,17 @@ def _persist(conn, run_id, rejects, leads, merged, ranked):
         id_map[lead.synthetic_id] = lead.real_id
         if lead.thesis is not None:
             lead.real_thesis_id = store.insert_thesis(conn, run_id, lead.real_id, lead.thesis, created)
+        store.record_gate_results(
+            conn, lead.real_id, getattr(lead, "gate_results", None), run_id, lead.source_url, created
+        )
     for lead in merged:
         lead.real_id = store.insert_lead(conn, run_id, lead, created)
         id_map[lead.synthetic_id] = lead.real_id
         if lead.thesis is not None:
             lead.real_thesis_id = store.insert_thesis(conn, run_id, lead.real_id, lead.thesis, created)
+        store.record_gate_results(
+            conn, lead.real_id, getattr(lead, "gate_results", None), run_id, lead.source_url, created
+        )
         evidence = json.dumps(_evidence(lead.members, id_map), sort_keys=True)
         lead.real_merge_id = store.insert_merge(
             conn,
@@ -1195,17 +1283,9 @@ def _named_sentence(label, items):
 
 
 def _render(data, thesis, assumptions, risks):
-    grade_lines = []
-    for name, grade in thesis.grades_by_name.items():
-        mark = "pass" if grade.get("passed") else "fail"
-        grade_lines.append(f"- {name}: {mark}. {_text(grade.get('evidence'))}")
     assumption_lines = "\n".join(f"- {item}" for item in assumptions) or "- none stated"
     return "\n".join(
         [
-            "## Grade",
-            "",
-            "\n".join(grade_lines),
-            "",
             "## Thesis",
             "",
             _text(data.get("thesis")),
@@ -1214,7 +1294,7 @@ def _render(data, thesis, assumptions, risks):
             "",
             "## Recommendation",
             "",
-            f"Where to put the money: {thesis.recommendation}",
+            f"Recommendation: {thesis.recommendation}",
             f"Expected return: {thesis.roi}",
             f"Risks: {'; '.join(risks)}",
             f"Timeframe: {thesis.timeframe_days} days",

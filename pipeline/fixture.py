@@ -42,6 +42,15 @@ def run_with_fixture(db_path, *, responder=None, queue_dir=None, **kwargs):
     prompts = []
     seen = set()
     while result.get("status") == "awaiting_agents":
+        if result.get("stage") == "prices":
+            write_fixture_prices(db_path, queue_dir, result["run_id"])
+            result = ingest_run(
+                db_path,
+                result["run_id"],
+                queue_dir=queue_dir,
+                parties_client=parties_client,
+            )
+            continue
         tasks = read_tasks(queue_dir, result["run_id"], result["stage"])
         if not tasks:
             break
@@ -62,6 +71,80 @@ def run_with_fixture(db_path, *, responder=None, queue_dir=None, **kwargs):
         )
     result["prompts"] = prompts
     return result
+
+
+def write_fixture_prices(db_path, queue_dir, run_id):
+    """Write prices.result.json from official share_price figures.
+
+    Live runs do not call this. A filing, company release, or ASX announcement
+    price becomes a DELAYED quote dated on the sweep clock. Any other stored
+    price, including a media quote, is UNAVAILABLE and stays unverified.
+    """
+    from shared.pipeline_store import connect
+
+    from pipeline.prices import needed_path, result_path
+
+    needed = json.loads(needed_path(queue_dir, run_id).read_text(encoding="utf-8"))
+    as_of = str(needed.get("as_of") or "")[:10]
+    conn = connect(db_path)
+    try:
+        quotes = []
+        for item in needed.get("tickers") or []:
+            ticker = item["ticker"]
+            last = _official_share_price(conn, ticker)
+            if last is None:
+                quotes.append(
+                    {
+                        "as_of": as_of,
+                        "conid": 0,
+                        "last": None,
+                        "ticker": ticker,
+                        "top_status": "UNAVAILABLE",
+                    }
+                )
+            else:
+                quotes.append(
+                    {
+                        "as_of": as_of,
+                        "conid": 1,
+                        "last": last,
+                        "ticker": ticker,
+                        "top_status": "DELAYED",
+                    }
+                )
+    finally:
+        conn.close()
+    path = result_path(queue_dir, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(quotes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+_PRICE_TYPES = ("share_price", "closing_price", "stock_price")
+_OFFICIAL_PRICE_TYPES = {"filing", "company_release", "asx_announcement"}
+_OFFICIAL_PRICE_HOSTS = ("sec.gov", "asx.com.au", "asx.api.markitdigital.com")
+
+
+def _official_share_price(conn, ticker):
+    placeholders = ", ".join("?" * len(_PRICE_TYPES))
+    rows = conn.execute(
+        f"""
+        SELECT value, currency, source_type, source_url
+        FROM figures
+        WHERE ticker = ? AND figure_type IN ({placeholders})
+          AND value IS NOT NULL AND value > 0 AND verified = 1
+        ORDER BY COALESCE(announced_on, '') DESC, figure_id DESC
+        """,
+        (ticker, *_PRICE_TYPES),
+    ).fetchall()
+    for row in rows:
+        if (row["currency"] or "USD").upper() != "USD":
+            continue
+        source_type = row["source_type"] or ""
+        url = (row["source_url"] or "").lower()
+        if source_type in _OFFICIAL_PRICE_TYPES or any(host in url for host in _OFFICIAL_PRICE_HOSTS):
+            return float(row["value"])
+    return None
 
 
 def _field(prompt, key):
@@ -241,7 +324,6 @@ def _centurion(prompt):
     ticker = _field(prompt, "TICKER")
     constituents = _constituents(prompt)
     suppliers, customers, buyers = _parties(prompt, constituents)
-    grades = _grades(prompt)
     value = _optional_float(_field(prompt, "VALUE")) or 0
     if constituents:
         roi = max(_expected_return(item.get("lead_type") or lead_type, _constituent_value(item, value)) for item in constituents)
@@ -256,8 +338,6 @@ def _centurion(prompt):
     assumptions = [
         "The figures used here are the ones stored from the filing or the announcement.",
     ]
-    if not _field(prompt, "MARKET_CAP"):
-        assumptions.insert(0, "market cap unverified")
     macro = _field(prompt, "MACRO")
     if macro and macro != "none":
         assumptions.append(f"Macro context used: {macro}")
@@ -291,61 +371,11 @@ def _centurion(prompt):
         "risks": risks,
         "recommendation": where,
         "assumptions": assumptions,
-        "grades": grades,
         "suppliers": suppliers,
         "customers": customers,
         "buyers": buyers,
         "price_run": price_run,
     }
-
-
-def _grades(prompt):
-    market = _optional_float(_field(prompt, "MARKET_CAP"))
-    value = _optional_float(_field(prompt, "VALUE"))
-    grades = []
-    for line in _block(prompt, "CRITERIA").splitlines():
-        line = line.strip()
-        if not line.startswith("- "):
-            continue
-        parts = [part.strip() for part in line[2:].split(" | ")]
-        name = parts[0] if parts else ""
-        if not name:
-            continue
-        threshold = _optional_float(parts[1]) if len(parts) > 1 else None
-        if "market_cap" in name:
-            if market is None:
-                passed = False
-                evidence = "market cap unverified"
-            elif threshold is not None and market >= threshold:
-                passed = True
-                evidence = "shares outstanding times an official price"
-            else:
-                passed = False
-                evidence = "market cap is below the threshold"
-        elif name == "raise_vs_company":
-            if market is None:
-                passed = False
-                evidence = "market cap unverified"
-            elif value is not None and threshold is not None and (100.0 * value / market) >= threshold:
-                passed = True
-                evidence = "the raise clears the percent of the official market cap"
-            else:
-                passed = False
-                evidence = "the raise is below the percent of market cap"
-        elif "growth" in name:
-            growth_text = _field(prompt, "GROWTH_TEXT")
-            passed = "PRIOR_COMPARISON: yes" in prompt
-            if passed and growth_text:
-                evidence = growth_text
-            elif passed:
-                evidence = "prior comparison in the figures table"
-            else:
-                evidence = "no prior comparison in the figures table"
-        else:
-            passed = True
-            evidence = "the stored figure is an official-source row"
-        grades.append({"name": name, "passed": passed, "evidence": evidence})
-    return grades
 
 
 def _parties(prompt, constituents):

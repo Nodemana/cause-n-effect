@@ -304,7 +304,17 @@ def _seed_related(conn):
                 2_000_000_000,
                 "tanker newbuild",
                 "https://www.sec.gov/Archives/edgar/data/103501/tnkr.htm",
-            )
+            ),
+            _figure(
+                "TNKR",
+                "Nordic Tankers",
+                "customer_backlog",
+                "RevenueRemainingPerformanceObligation",
+                "2026-06-30",
+                40_000_000,
+                "40000000",
+                "https://www.sec.gov/Archives/edgar/data/103501/tnkr-prior.htm",
+            ),
         ],
     )
     save_run(

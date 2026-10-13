@@ -45,7 +45,6 @@ CENTURION_SCHEMA = {
         "risks",
         "recommendation",
         "assumptions",
-        "grades",
         "suppliers",
         "customers",
         "buyers",
@@ -59,19 +58,6 @@ CENTURION_SCHEMA = {
         "risks": {"type": "array", "items": {"type": "string"}},
         "recommendation": {"type": "string"},
         "assumptions": {"type": "array", "items": {"type": "string"}},
-        "grades": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["name", "passed", "evidence"],
-                "properties": {
-                    "name": {"type": "string", "minLength": 1},
-                    "passed": {"type": "boolean"},
-                    "evidence": {"type": "string"},
-                },
-            },
-        },
         "suppliers": {"$ref": "#/definitions/party_list"},
         "customers": {"$ref": "#/definitions/party_list"},
         "buyers": {"$ref": "#/definitions/party_list"},
@@ -148,7 +134,6 @@ _SIGNIFICANCE_ENUMS = {
 
 _PRICE_RUNS = ("new", "acceleration", "priced-in")
 _PARTY_KEYS = {"name", "ticker"}
-_GRADE_KEYS = {"name", "passed", "evidence"}
 
 
 class AgentResultError(RuntimeError):
@@ -293,24 +278,6 @@ def _validate_centurion(lead_id, data):
         errors.append(f"{lead_id}: timeframe_days must be zero or positive")
     _string_list(errors, lead_id, data, "risks")
     _string_list(errors, lead_id, data, "assumptions")
-    if "grades" in data:
-        grades = data["grades"]
-        if not isinstance(grades, list):
-            errors.append(f"{lead_id}: grades must be a list")
-        else:
-            for index, grade in enumerate(grades):
-                prefix = f"{lead_id}: grades[{index}]"
-                if not isinstance(grade, dict):
-                    errors.append(f"{prefix} must be an object")
-                    continue
-                errors.extend(_unexpected(prefix, grade, _GRADE_KEYS))
-                errors.extend(_missing(prefix, grade, _GRADE_KEYS))
-                if "name" in grade and (not isinstance(grade.get("name"), str) or not grade["name"].strip()):
-                    errors.append(f"{prefix}: name must be a non-empty string")
-                if "passed" in grade and not isinstance(grade.get("passed"), bool):
-                    errors.append(f"{prefix}: passed must be true or false")
-                if "evidence" in grade and not isinstance(grade.get("evidence"), str):
-                    errors.append(f"{prefix}: evidence must be a string")
     for role in ("suppliers", "customers", "buyers"):
         _party_list(errors, lead_id, data, role)
     if "price_run" in data and data["price_run"] is not None and data["price_run"] not in _PRICE_RUNS:

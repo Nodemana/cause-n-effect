@@ -3,8 +3,9 @@
 ensure_pipeline applies shared/migrations/001_pipeline.sql, then
 002_lead_pipeline.sql, then 003_holder_role.sql, then
 004_lead_counterparties.sql, then 005_deal_party_role.sql, then
-006_agent_handoff.sql, then 008_macro_leads.sql, then
-009_praetorian_flaws.sql, then 010_legate_selection.sql, and records each
+006_agent_handoff.sql, then 007_prices_cleanup.sql, then
+008_macro_leads.sql, then 009_praetorian_flaws.sql, then
+010_legate_selection.sql, then 011_scout_rubric_gate.sql, and records each
 filename in schema_migrations.
 An older leads table (no lead_id) is rebuilt and its rows are kept.
 lodge_lead, record_criterion_result, and compute_quality_score are the
@@ -26,9 +27,11 @@ MIGRATIONS = (
     "004_lead_counterparties.sql",
     "005_deal_party_role.sql",
     "006_agent_handoff.sql",
+    "007_prices_cleanup.sql",
     "008_macro_leads.sql",
     "009_praetorian_flaws.sql",
     "010_legate_selection.sql",
+    "011_scout_rubric_gate.sql",
 )
 
 LEAD_TYPES = (
@@ -48,6 +51,8 @@ STATUSES = (
     "position",
     "closed",
     "rejected",
+    "filtered",
+    "needs_price",
 )
 _SCOUT_ALIASES = {
     "capex": "capex",
@@ -64,7 +69,7 @@ _LEAD_INSERT = """
     INSERT INTO leads (
         lead_type, ticker, exchange, company, source_scout, run_id, source_url,
         summary, status, parent_position_id, priority, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'fresh', ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -97,12 +102,12 @@ def ensure_pipeline(conn):
             _rename_legacy_leads(conn)
         path = HERE / "migrations" / name
         # 006 rebuilds lead_rejects while lead_reject_counterparties still
-        # references it. 008 rebuilds leads and rubrics. Foreign keys are
+        # references it. 008 and 011 rebuild leads. Foreign keys are
         # off only for those scripts.
-        if name in {"006_agent_handoff.sql", "008_macro_leads.sql"}:
+        if name in {"006_agent_handoff.sql", "008_macro_leads.sql", "011_scout_rubric_gate.sql"}:
             conn.execute("PRAGMA foreign_keys = OFF")
         conn.executescript(path.read_text(encoding="utf-8"))
-        if name in {"006_agent_handoff.sql", "008_macro_leads.sql"}:
+        if name in {"006_agent_handoff.sql", "008_macro_leads.sql", "011_scout_rubric_gate.sql"}:
             conn.execute("PRAGMA foreign_keys = ON")
         with conn:
             if name == MIGRATION_NAME:
@@ -128,14 +133,17 @@ def lodge_lead(
     parent_position_id=None,
     priority=None,
     created_at=None,
+    status="fresh",
 ):
-    """Insert one fresh lead. parent_position_id flags an update to a position.
+    """Insert one lead. parent_position_id flags an update to a position.
 
     The parent row must already have status acted or position. Figure ids are
     stored in lead_figures. Returns the new lead_id.
     """
     if lead_type not in LEAD_TYPES:
         raise ValueError(f"lead_type must be one of {', '.join(LEAD_TYPES)}")
+    if status not in STATUSES:
+        raise ValueError(f"status must be one of {', '.join(STATUSES)}")
     ticker = _required_text(ticker, "ticker")
     exchange = _required_text(exchange, "exchange")
     source_scout = _required_text(source_scout, "source_scout")
@@ -156,6 +164,7 @@ def lodge_lead(
                 run_id,
                 source_url,
                 summary,
+                status,
                 parent_position_id,
                 priority,
                 when,
@@ -179,6 +188,9 @@ def record_criterion_result(
     evidence=None,
     source_url=None,
     assessed_at=None,
+    measured_value=None,
+    rubric_id=None,
+    rubric_version=None,
 ):
     """Upsert one yes/no result and recompute quality_score. Returns the score."""
     lead_id = _required_int(lead_id, "lead_id")
@@ -190,16 +202,31 @@ def record_criterion_result(
         conn.execute(
             """
             INSERT INTO lead_criteria_results (
-                lead_id, criterion_id, passed, evidence, source_url, assessed_by, assessed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                lead_id, criterion_id, passed, evidence, source_url, assessed_by, assessed_at,
+                measured_value, rubric_id, rubric_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(lead_id, criterion_id) DO UPDATE SET
                 passed = excluded.passed,
                 evidence = excluded.evidence,
                 source_url = excluded.source_url,
                 assessed_by = excluded.assessed_by,
-                assessed_at = excluded.assessed_at
+                assessed_at = excluded.assessed_at,
+                measured_value = excluded.measured_value,
+                rubric_id = excluded.rubric_id,
+                rubric_version = excluded.rubric_version
             """,
-            (lead_id, criterion_id, bit, evidence, source_url, assessed_by, when),
+            (
+                lead_id,
+                criterion_id,
+                bit,
+                evidence,
+                source_url,
+                assessed_by,
+                when,
+                measured_value,
+                rubric_id,
+                rubric_version,
+            ),
         )
         return _write_quality_score(conn, lead_id)
 
@@ -284,6 +311,7 @@ def _copy_legacy_leads(conn):
                     row["run_id"],
                     None,
                     _legacy_summary(row["rationale"], row["status"]),
+                    "fresh",
                     None,
                     row["rank"],
                     when,
