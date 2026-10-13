@@ -116,11 +116,11 @@ class ReportFormatTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertTrue(all(pos > 0 for pos in positions))
         bottom = text.split("### Bottom line", 1)[1].split("### Cause", 1)[0]
-        self.assertIn("> Recommendation: Overweight the supplier on the disclosed backlog.", bottom)
-        self.assertIn("> Expected return: 18%", bottom)
-        self.assertIn("> Timeframe: 180 days", bottom)
-        self.assertIn("> Conviction: The backlog is already in the filing.", bottom)
-        self.assertIn("> Biggest risk: Budget delay", bottom)
+        self.assertIn("> - **Recommendation:** Overweight the supplier on the disclosed backlog.", bottom)
+        self.assertIn("> - **Expected return:** 18%", bottom)
+        self.assertIn("> - **Timeframe:** 180 days", bottom)
+        self.assertIn("> - **Conviction:** The backlog is already in the filing.", bottom)
+        self.assertIn("> - **Biggest risk:** Budget delay", bottom)
         cause = text.split("### Cause → effect", 1)[1].split("### Thesis", 1)[0]
         self.assertIn("- Supplier (backlog) LMT", cause)
         self.assertNotIn("→", cause)
@@ -258,12 +258,91 @@ class ReportFormatTests(unittest.TestCase):
         self.assertNotIn("Expected return:", thesis)
         self.assertNotIn("Risks:", thesis)
         self.assertNotIn("Timeframe:", thesis)
-        self.assertIn("> Recommendation: Overweight the supplier on the disclosed backlog.", text)
-        self.assertIn("> Expected return: 18%", text)
-        self.assertIn("> Timeframe: 180 days", text)
-        self.assertIn("> Conviction: n/a", text)
+        self.assertIn("> - **Recommendation:** Overweight the supplier on the disclosed backlog.", text)
+        self.assertIn("> - **Expected return:** 18%", text)
+        self.assertIn("> - **Timeframe:** 180 days", text)
+        self.assertIn("> - **Conviction:** n/a", text)
         self.assertIn("### Risks\n\n- Budget delay\n- Program cut", text)
         self.assertIn("- Filings stay the source.", text)
+
+
+class PhoneLayoutTests(unittest.TestCase):
+    def test_multiline_risks_keep_semicolons_inside_one_item(self):
+        from pipeline.report import _bullet_items
+
+        items = _bullet_items("Spread mean-reverts; arbitrage closes it.\nShares near highs.")
+        self.assertEqual(items, ["Spread mean-reverts; arbitrage closes it.", "Shares near highs."])
+        self.assertEqual(_bullet_items("a; b"), ["a", "b"])
+
+    def test_long_thesis_breaks_at_section_labels(self):
+        from types import SimpleNamespace
+        from pipeline.report import _thesis_prose
+
+        thesis = SimpleNamespace(markdown="## Thesis\n\nCause: x. Effect: y. Priced-in check: z. Conclusion: w.")
+        self.assertEqual(_thesis_prose(thesis).split("\n\n"), ["Cause: x.", "Effect: y.", "Priced-in check: z.", "Conclusion: w."])
+
+    def test_macro_named_tickers_need_a_stored_quote(self):
+        from types import SimpleNamespace
+        from pipeline.report import _price_table
+
+        lead = SimpleNamespace(
+            lead_type="macro", ticker="BRENT", members=[], related_findings=[],
+            thesis=SimpleNamespace(recommendation="Winners: VLO (US refiners). Losers: UAL.", suppliers=[], customers=[], buyers=[]),
+        )
+        prices = {"VLO": {"price": 436.0, "currency": "USD", "as_of": "2026-10-12", "prior_year_close": 162.79, "close_1y": 161.41, "low_52w": 155.29, "high_52w": 449.77}}
+        table = _price_table(lead, prices, {})
+        self.assertIn("| VLO | 436.00 USD (2026-10-12) | +167.8% | +170.1% | 155.29–449.77 |", table)
+        self.assertIn("| WTI |", table)
+        self.assertNotIn("| UAL |", table)
+        self.assertNotIn("| US |", table)
+
+    def test_macro_cause_is_plain_english(self):
+        from pipeline.report import _cause_bullets
+
+        lead = _lead(summary="", lead_type="macro")
+        lead.ticker = "BRENT"
+        lead.company = "Brent"
+        lead.summary = (
+            "macro_level BRENT 125.44 on 2026-10-06 "
+            "source https://www.eia.gov/dnav/pet/pet_pri_spt_s1_d.htm; "
+            "1m_pct 22.6917; 3m_pct 74.7562; z_score 2.7281; "
+            "reasons 1m_pct 3m_pct z_score 2026-10-06"
+        )
+        lead.related_findings = [
+            {
+                "ticker": "VLO",
+                "company": "Gulf Refining",
+                "lead_type": "capex",
+                "source_url": "https://www.sec.gov/Archives/edgar/data/103500/vlo.htm",
+            }
+        ]
+        cause = _cause_bullets(lead)
+        self.assertIn("- Brent was 125.44 on 2026-10-06 ([source](https://www.eia.gov/dnav/pet/pet_pri_spt_s1_d.htm)).", cause)
+        self.assertIn("- Up 22.7% over one month.", cause)
+        self.assertIn("- Up 74.8% over three months.", cause)
+        self.assertIn("- 2.7 standard deviations above its prior-year average.", cause)
+        self.assertIn("the one-month move, the three-month move, and an unusual move versus the prior year", cause)
+        self.assertNotIn("1m_pct", cause)
+        self.assertNotIn("z_score", cause)
+        self.assertNotIn("macro_level", cause)
+        self.assertIn("- Gulf Refining VLO capex", cause)
+
+        spread = _lead(summary="", lead_type="macro")
+        spread.ticker = "BRENT-WTI"
+        spread.company = "Brent minus WTI"
+        spread.summary = (
+            "macro_spread BRENT 125.44 on 2026-10-06 source https://www.eia.gov/dnav/pet/pet_pri_spt_s1_d.htm; "
+            "WTI 96.24 on 2026-10-06 source https://www.eia.gov/dnav/pet/pet_pri_spt_s1_d.htm; "
+            "spread 29.2000; range_low 1.5000; range_high 8.2500; "
+            "reasons spread_outside_1y_range 2026-10-06"
+        )
+        spread.related_findings = []
+        text = _cause_bullets(spread)
+        self.assertIn("- Brent was 125.44 on 2026-10-06", text)
+        self.assertIn("- WTI was 96.24 on 2026-10-06", text)
+        self.assertIn("- Brent minus WTI was 29.20, outside its prior-year range of 1.50 to 8.25.", text)
+        self.assertNotIn("range_low", text)
+        self.assertNotIn("macro_spread", text)
 
 
 if __name__ == "__main__":
