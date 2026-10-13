@@ -4,7 +4,7 @@ Newest entries are first. Times are AEST (Australian Eastern Standard Time, UTC+
 
 Every pull request adds an entry at the top of this file before it merges. Each entry records the date and time, what changed, why, and the pull request number. Leave out secrets, contact addresses, and personal data.
 
-### 2026-10-13 14:26 AEST
+### 2026-10-13 14:26 AEST — [PR #35](https://github.com/Nodemana/cause-n-effect/pull/35)
 
 **What changed.** Each thesis file opens with a price table for every ticker in that thesis, including the other side of the idea. The columns are the ticker, the official price with its date and currency, the change versus the last close of the prior calendar year, the change versus the close 52 weeks earlier, and the 52-week range. A US price still comes from the agent handoff. That handoff now also asks for the prior-year close, the close from 52 weeks earlier, and the 52-week low and high, from historical bars. An ASX price still comes from the Markit header. When that header includes a 52-week low and high, those are stored. A missing figure is shown as n/a. The report does not fill one in. A macro lead also lists its cause series, such as Brent or WTI, with the latest stored level and the same year-to-date and one-year changes from the macro cache. Under the table, a short bottom line gives the recommendation, the expected return, the timeframe, the conviction, and the biggest risk. The rest of the file is the cause and effect, the thesis, the evidence, the risks, the assumptions, the Praetorian critique in a table with high severity first, the Legate rationale, and the macro series that match the lead.
 
