@@ -1282,13 +1282,29 @@ def _named_sentence(label, items):
     return f"{label}: none found."
 
 
+def _paragraphs(value):
+    text = str(value or "").replace("\r\n", "\n").strip()
+    blocks = []
+    current = []
+    for line in text.split("\n"):
+        if line.strip():
+            current.append(line.strip())
+            continue
+        if current:
+            blocks.append(" ".join(" ".join(current).split()))
+            current = []
+    if current:
+        blocks.append(" ".join(" ".join(current).split()))
+    return "\n\n".join(blocks)
+
+
 def _render(data, thesis, assumptions, risks):
     assumption_lines = "\n".join(f"- {item}" for item in assumptions) or "- none stated"
     return "\n".join(
         [
             "## Thesis",
             "",
-            _text(data.get("thesis")),
+            _paragraphs(data.get("thesis")),
             "",
             f"Source: {thesis.source_url}",
             "",

@@ -28,7 +28,7 @@ The debt scout also drops a USD raise below 50,000,000 before the rubric runs. T
 
 - **min_market_cap.** Market cap is at least 300,000,000 USD.
 - **insider_buy_dollars.** The open-market purchase is at least 10,000 USD.
-- **open_market.** The purchase is an open-market buy, not a grant, a gift, or an option exercise.
+- **open_market.** The purchase is an open-market buy, not a grant, a gift, an option exercise, a director-fee or salary-sacrifice issue, or a plan issue. A notice that names more than one director is not one open-market buy.
 
 ## Orders backlog
 

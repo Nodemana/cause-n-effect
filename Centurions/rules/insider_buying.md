@@ -6,7 +6,7 @@ The scout gate already applied the current fixed rubric version stored in `rubri
 
 - min_market_cap: market cap cleared the scout gate. The threshold lives on the rubric.
 - insider_buy_dollars: open-market purchase dollars cleared the scout gate.
-- open_market: the purchase is an open-market buy, not a grant, a gift, or an option exercise. The scout gate already checked this.
+- open_market: the purchase is an open-market buy, not a grant, a gift, an option exercise, a director-fee or salary-sacrifice issue, or a plan issue. A notice that names more than one director is not one open-market buy. The scout gate already checked this.
 
 ## Thesis and ROI
 

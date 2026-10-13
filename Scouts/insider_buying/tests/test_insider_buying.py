@@ -248,6 +248,66 @@ Nature of change:
         self.assertIn("ambiguous_item", table["review"][0]["flags"])
         self.assertEqual(table["review"][0]["insider"], "Bramble Holt")
 
+    def test_fee_plan_and_multiple_directors_fail_open_market(self):
+        fee_plan = (FIX / "asx_3y_fee_plan.txt").read_text(encoding="utf-8")
+        salary = """Appendix 3Y
+Name of entity: Northwind Grid Limited
+Name of Director: Copperline Reed
+Position: Chief Executive Officer
+Date of change: 02/04/2026
+Number acquired: 1200
+Value/Consideration: A$24,000
+Nature of change: On-market purchase under a salary-sacrifice arrangement
+"""
+        directors = [
+            "Susan Corlett",
+            "Xi Xi",
+            "Denise McComish",
+            "Jacqueline McGill",
+            "James McClements",
+            "Zimi Meka",
+        ]
+        blocks = []
+        for name in directors:
+            blocks.append(
+                f"""Appendix 3Y
+Name of entity: Mineral Resources Limited
+Name of Director: {name}
+Position: Non-Executive Director
+Date of change: 01/10/2026
+Number acquired: 800
+Value/Consideration: A$40,000
+Nature of change: On-market issue of shares in lieu of director fees
+"""
+            )
+        combined = "\n".join(blocks)
+        table = pipeline.build_table([
+            {"source": "asx", "body": fee_plan, "url": "https://asx.api.markitdigital.com/asx-research/1.0/file/min-fees", "filing_date": "2026-10-02", "ticker": "MIN.AX", "company": "Mineral Resources Limited"},
+            {"source": "asx", "body": salary, "url": "https://asx.api.markitdigital.com/asx-research/1.0/file/salary", "filing_date": "2026-04-02", "ticker": "NWT.AX", "company": "Northwind Grid Limited"},
+            {"source": "asx", "body": combined, "url": "https://asx.api.markitdigital.com/asx-research/1.0/file/min-six", "filing_date": "2026-10-02", "ticker": "MIN.AX", "company": "Mineral Resources Limited"},
+        ])
+        self.assertEqual(table["records"], [])
+        self.assertEqual(table["figures"], [])
+        parsed = parser.parse_3y(fee_plan, "https://asx.api.markitdigital.com/asx-research/1.0/file/min-fees", "2026-10-02", "MIN.AX", company="Mineral Resources Limited")
+        self.assertTrue(parsed)
+        self.assertTrue(all(not row["open_market"] for row in parsed))
+        self.assertFalse(any(row["value"] == 240000 and row["open_market"] for row in parsed))
+        self.assertNotEqual(parsed[0]["insider"], "Susan Corlett")
+        notes = " ".join(parsed[0]["notes"])
+        self.assertIn("more than one director", notes)
+        self.assertIn("director fee, salary sacrifice, or plan issue", notes)
+        for name in directors:
+            self.assertIn(name, notes)
+        salary_rows = parser.parse_3y(salary, "https://asx.api.markitdigital.com/asx-research/1.0/file/salary", "2026-04-02", "NWT.AX")
+        self.assertEqual(len(salary_rows), 1)
+        self.assertFalse(salary_rows[0]["open_market"])
+        self.assertIn("director fee, salary sacrifice, or plan issue", salary_rows[0]["notes"])
+        six = parser.parse_3y(combined, "https://asx.api.markitdigital.com/asx-research/1.0/file/min-six", "2026-10-02", "MIN.AX")
+        self.assertEqual(len(six), 6)
+        self.assertEqual([row["insider"] for row in six], directors)
+        self.assertTrue(all(not row["open_market"] for row in six))
+        self.assertTrue(all(row["value"] == 40000 for row in six))
+
     def test_fetcher_uses_the_client_and_refuses_other_hosts(self):
         body = (FIX / "sec_form4_ceo.xml").read_text(encoding="utf-8")
         index = json.loads((FIX / "sec_index.json").read_text(encoding="utf-8"))

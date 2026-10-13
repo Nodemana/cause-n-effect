@@ -20,7 +20,19 @@ from pipeline.prefilter import _stake_pct
 _PRICE_CRITERIA = {"min_market_cap", "raise_vs_company"}
 _OFFICIAL_TYPES = {"filing", "company_release", "asx_announcement", "xbrl_company_facts"}
 _NOT_OPEN_MARKET = re.compile(
-    r"\b(grant|gift|option exercise|exercise of options?|awarded)\b",
+    r"("
+    r"\b(grant|gift|option exercise|exercise of options?|awarded)\b"
+    r"|directors?'\s+fees?"
+    r"|director'?s?\s+fees?"
+    r"|salary[\s-]sacrifice"
+    r"|fee[\s-]plan"
+    r"|in lieu of"
+    r"|as part of director"
+    r"|\bshare\s+plan\b"
+    r"|\brights\s+plan\b"
+    r"|\bequity\s+plan\b"
+    r"|\bplan\b"
+    r")",
     re.IGNORECASE,
 )
 _CEASING = re.compile(r"\bceas", re.IGNORECASE)
@@ -195,7 +207,7 @@ def _open_market(figure, criterion, cap, cap_note, now):
     _ = (criterion, cap, cap_note, now)
     blob = _blob(figure)
     if _NOT_OPEN_MARKET.search(blob):
-        return False, "not open market", "grant, gift, or option exercise", False
+        return False, "not open market", "not a discretionary open-market buy", False
     return True, "open market", "open-market purchase", False
 
 
