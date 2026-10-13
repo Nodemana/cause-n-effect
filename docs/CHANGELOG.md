@@ -4,7 +4,7 @@ Newest entries are first. Times are AEST (Australian Eastern Standard Time, UTC+
 
 Every pull request adds an entry at the top of this file before it merges. Each entry records the date and time, what changed, why, and the pull request number. Leave out secrets, contact addresses, and personal data.
 
-### 2026-10-13 14:34 AEST — Thesis files read cleanly on a phone
+### 2026-10-13 14:34 AEST — [PR #36](https://github.com/Nodemana/cause-n-effect/pull/36)
 
 **What changed.** The Bottom line box puts each field on its own line. A risk or assumption that contains a semicolon stays one bullet. A long thesis paragraph is broken up at its Cause, Effect, Priced-in check and Conclusion labels. A Brent or WTI thesis shows both legs of the spread in the price table. Winners and losers named in a macro recommendation (for example VLO or UAL) get a price row when an official quote is stored for them. A word that only looks like a ticker never gets a row. The Cause to effect section of a macro thesis states the move in sentences: the level and its date, the one-month and three-month change, how far the print sits from its prior-year average, and, for the Brent-WTI spread, that the spread is outside its prior-year range. The stored figure is unchanged.
 
