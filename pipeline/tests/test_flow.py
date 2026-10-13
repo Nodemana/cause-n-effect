@@ -963,6 +963,7 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertEqual(names.count("008_macro_leads.sql"), 1)
         self.assertEqual(names.count("009_praetorian_flaws.sql"), 1)
         self.assertEqual(names.count("010_legate_selection.sql"), 1)
+        self.assertEqual(names.count("011_scout_rubric_gate.sql"), 1)
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         self.assertIn("lead_counterparties", tables)
         self.assertIn("legate_selections", tables)

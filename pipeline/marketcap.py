@@ -10,9 +10,9 @@ The official price is a row in `prices`:
   shares times that USD price.
 
 A quote older than three trading days, or any other status, is unverified.
-This module does not call a price feed and it does not convert FX. A known
-cap below the rubric threshold is a reject. An unverified cap is the
-surviving issue "market cap unverified".
+This module does not call a price feed and it does not convert FX. The
+scout gate treats a missing or stale price as needs_price. A known cap
+below the rubric threshold fails min_market_cap.
 """
 
 from pipeline.prices import STALE_AFTER_TRADING_DAYS, latest_usable_price, trading_days_old

@@ -258,25 +258,96 @@ def insert_thesis(conn, run_id, lead_id, thesis, written_at):
             ),
         )
         thesis_id = cursor.lastrowid
-    for criterion in thesis.criteria:
-        grade = thesis.grades_by_name.get(criterion["name"])
-        if grade is None:
-            passed = 0
-            evidence = "not graded"
-        else:
-            passed = 1 if grade.get("passed") else 0
-            evidence = grade.get("evidence")
+    return thesis_id
+
+
+def record_gate_results(conn, lead_id, results, run_id, source_url, assessed_at):
+    """Store one scout-gate row per criterion. Replaces any earlier rows for those criteria."""
+    for item in results or []:
         record_criterion_result(
             conn,
             lead_id,
-            criterion["criterion_id"],
-            passed,
+            item["criterion_id"],
+            1 if item.get("passed") else 0,
             run_id,
-            evidence=evidence,
-            source_url=thesis.source_url,
-            assessed_at=written_at,
+            evidence=item.get("evidence"),
+            source_url=source_url,
+            assessed_at=assessed_at,
+            measured_value=item.get("measured_value"),
+            rubric_id=item.get("rubric_id"),
+            rubric_version=item.get("rubric_version"),
         )
-    return thesis_id
+
+
+def screened_lead_for_figure(conn, figure_id):
+    """The filtered or needs_price lead already stored for this figure, if any."""
+    if figure_id is None:
+        return None
+    return conn.execute(
+        """
+        SELECT leads.lead_id, leads.status
+        FROM lead_figures AS link
+        JOIN leads ON leads.lead_id = link.lead_id
+        WHERE link.figure_id = ? AND leads.status IN ('filtered', 'needs_price')
+        ORDER BY leads.lead_id DESC
+        LIMIT 1
+        """,
+        (figure_id,),
+    ).fetchone()
+
+
+def insert_screened_lead(conn, run_id, candidate, outcome, created_at):
+    """Store a filtered or needs_price lead and its criterion rows."""
+    from pipeline.prefilter import candidate_exchange
+
+    figure = candidate.figure
+    names = []
+    for item in outcome.results:
+        if item.get("needs_price"):
+            names.append(f"{item['name']}: needs price")
+        elif not item.get("passed"):
+            names.append(f"{item['name']}: {item.get('evidence') or 'fail'}")
+    summary = "; ".join(names) or outcome.status
+    lead_id = lodge_lead(
+        conn,
+        candidate.lead_type,
+        figure.ticker,
+        candidate_exchange(candidate),
+        figure.scout,
+        run_id,
+        figure_ids=[figure.figure_id],
+        company=figure.company,
+        source_url=figure.source_url or None,
+        summary=summary,
+        created_at=created_at,
+        status=outcome.status,
+    )
+    record_gate_results(conn, lead_id, outcome.results, run_id, figure.source_url or None, created_at)
+    return lead_id
+
+
+def update_screened_lead(conn, lead_id, outcome, run_id, source_url, created_at):
+    names = []
+    for item in outcome.results:
+        if item.get("needs_price"):
+            names.append(f"{item['name']}: needs price")
+        elif not item.get("passed"):
+            names.append(f"{item['name']}: {item.get('evidence') or 'fail'}")
+    summary = "; ".join(names) or outcome.status
+    with conn:
+        conn.execute(
+            "UPDATE leads SET status = ?, summary = ?, updated_at = ? WHERE lead_id = ?",
+            (outcome.status, summary, created_at, lead_id),
+        )
+        conn.execute("DELETE FROM lead_criteria_results WHERE lead_id = ?", (lead_id,))
+    record_gate_results(conn, lead_id, outcome.results, run_id, source_url, created_at)
+
+
+def delete_screened_lead(conn, lead_id):
+    with conn:
+        conn.execute("DELETE FROM lead_criteria_results WHERE lead_id = ?", (lead_id,))
+        conn.execute("DELETE FROM lead_counterparties WHERE lead_id = ?", (lead_id,))
+        conn.execute("DELETE FROM leads WHERE lead_id = ?", (lead_id,))
 
 
 def insert_merge(conn, run_id, survivor_id, constituent_ids, rationale, evidence_refs, created_at):

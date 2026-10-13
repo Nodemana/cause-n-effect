@@ -131,7 +131,7 @@ class GateTests(unittest.TestCase):
                         FROM leads AS l
                         JOIN lead_figures AS link ON link.lead_id = l.lead_id
                         JOIN figures AS f ON f.figure_id = link.figure_id
-                        WHERE l.ticker = 'CAT'
+                        WHERE l.ticker = 'CAT' AND l.status NOT IN ('filtered', 'needs_price')
                         """
                     )
                 ]
@@ -179,42 +179,43 @@ class GateTests(unittest.TestCase):
                     "SELECT ticker, reason FROM lead_rejects WHERE rejection_stage = 'deterministic'"
                 ):
                     reasons.setdefault(row["ticker"], []).append(row["reason"])
-                leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
-                carried = {
-                    row["ticker"]: row
+                statuses = {
+                    row["ticker"]: row["status"]
+                    for row in conn.execute("SELECT ticker, status FROM leads")
+                }
+                ranked = {
+                    row["ticker"]
                     for row in conn.execute(
                         """
-                        SELECT l.ticker, t.thesis_text, t.assumptions,
-                               t.assumptions AS assumptions_that_fail,
-                               k.surviving_issues,
-                               k.surviving_issues AS ranked_issues
-                        FROM leads AS l
-                        JOIN theses AS t ON t.lead_id = l.lead_id
-                        JOIN rankings AS k ON k.lead_id = l.lead_id
-                        WHERE l.ticker IN ('NONE', 'SHR')
+                        SELECT l.ticker FROM rankings AS k
+                        JOIN leads AS l ON l.lead_id = k.lead_id
+                        """
+                    )
+                }
+                theses = {
+                    row["ticker"]
+                    for row in conn.execute(
+                        """
+                        SELECT l.ticker FROM theses AS t
+                        JOIN leads AS l ON l.lead_id = t.lead_id
                         """
                     )
                 }
             finally:
                 conn.close()
         self.assertTrue(any("capex_growth_yoy" in reason and "below" in reason for reason in reasons["FLAT"]))
-        self.assertTrue(any("is below" in reason for reason in reasons["SMALL"]))
-        self.assertNotIn("FLAT", leads)
-        self.assertNotIn("SMALL", leads)
+        self.assertTrue(any("min_market_cap" in reason and "below" in reason for reason in reasons["SMALL"]))
+        self.assertEqual(statuses["FLAT"], "filtered")
+        self.assertEqual(statuses["SMALL"], "filtered")
         self.assertTrue(any("older period" in reason for reason in reasons["NONE"]))
         self.assertTrue(any("older period" in reason for reason in reasons["SHR"]))
         self.assertFalse(any("unverified" in reason or "official price" in reason for reason in reasons["NONE"]))
         self.assertFalse(any("official price" in reason or "unverified" in reason for reason in reasons["SHR"]))
         self.assertFalse(any("is below" in reason for reason in reasons["NONE"] + reasons["SHR"]))
-        self.assertIn("NONE", leads)
-        self.assertIn("SHR", leads)
-        for ticker in ("NONE", "SHR"):
-            row = carried[ticker]
-            self.assertIn("market cap unverified", row["thesis_text"])
-            self.assertIn("market cap unverified", row["assumptions"])
-            self.assertIn("market cap unverified", row["assumptions_that_fail"])
-            self.assertGreaterEqual(row["surviving_issues"], 1)
-            self.assertGreaterEqual(row["ranked_issues"], 1)
+        self.assertEqual(statuses["NONE"], "needs_price")
+        self.assertEqual(statuses["SHR"], "needs_price")
+        self.assertFalse(ranked & {"FLAT", "SMALL", "NONE", "SHR"})
+        self.assertFalse(theses & {"FLAT", "SMALL", "NONE", "SHR"})
 
     def test_market_cap_is_shares_times_an_official_price(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -406,26 +407,34 @@ class GateTests(unittest.TestCase):
                     [
                         _figure("AMZN", "Amazon", "quarter", "2026-07-01/2026-09-30", 5_000_000_000),
                         _other_capex(_figure("AMZN", "Amazon", "quarter", "2025-07-01/2025-09-30", 1_000_000_000)),
-                        *_caps("AMZN"),
+                        _shares("AMZN", value=1_000),
+                        _price("AMZN", value=10),
                     ],
                 )
             finally:
                 conn.close()
-            run_with_fixture(path, responder=_fail_market_cap)
+            run_with_fixture(path)
             conn = connect(path)
             try:
                 rows = conn.execute(
                     "SELECT rejection_stage, reason FROM lead_rejects WHERE ticker = 'AMZN'"
                 ).fetchall()
                 ranked = conn.execute("SELECT COUNT(*) FROM rankings").fetchone()[0]
-                leads = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
+                status = conn.execute(
+                    "SELECT status FROM leads WHERE ticker = 'AMZN'"
+                ).fetchone()
+                tasks = conn.execute(
+                    "SELECT COUNT(*) FROM theses"
+                ).fetchone()[0]
             finally:
                 conn.close()
-        failed = [row for row in rows if "failed min_market_cap" in row["reason"]]
+        failed = [row for row in rows if "min_market_cap" in (row["reason"] or "")]
         self.assertEqual(len(failed), 1)
-        self.assertEqual(failed[0]["rejection_stage"], "agent")
+        self.assertEqual(failed[0]["rejection_stage"], "deterministic")
+        self.assertIn("below", failed[0]["reason"])
         self.assertEqual(ranked, 0)
-        self.assertEqual(leads, 0)
+        self.assertEqual(status["status"], "filtered")
+        self.assertEqual(tasks, 0)
 
     def test_latest_run_supersedes_and_a_scoped_run_covers_only_its_tickers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -552,7 +561,10 @@ class GateTests(unittest.TestCase):
             conn = connect(path)
             try:
                 lead = conn.execute(
-                    "SELECT significance_novelty FROM leads WHERE ticker = 'AMZN'"
+                    """
+                    SELECT significance_novelty FROM leads
+                    WHERE ticker = 'AMZN' AND status NOT IN ('filtered', 'needs_price')
+                    """
                 ).fetchone()
                 reasons = [
                     row["reason"]
@@ -684,7 +696,12 @@ class GateTests(unittest.TestCase):
                     FROM lead_rejects
                     """
                 ).fetchall()
-                leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
+                leads = {
+                    row["ticker"]
+                    for row in conn.execute(
+                        "SELECT ticker FROM leads WHERE status NOT IN ('filtered', 'needs_price')"
+                    )
+                }
                 kept = conn.execute(
                     """
                     SELECT l.significance_timing, t.assumptions AS assumptions_that_fail,
@@ -934,12 +951,22 @@ class GateTests(unittest.TestCase):
                 prices = conn.execute(
                     "SELECT COUNT(*) FROM figures WHERE ticker = 'NCP' AND figure_type = 'share_price'"
                 ).fetchone()[0]
+                waiting = conn.execute(
+                    """
+                    SELECT l.status
+                    FROM leads AS l
+                    JOIN lead_figures AS link ON link.lead_id = l.lead_id
+                    JOIN figures AS f ON f.figure_id = link.figure_id
+                    WHERE l.ticker = 'NCP'
+                      AND f.figure_type = 'PaymentsToAcquireProductiveAssets'
+                      AND f.period = '2026-07-01/2026-09-30'
+                    """
+                ).fetchone()
                 thesis = conn.execute(
                     """
-                    SELECT t.thesis_text, t.assumptions AS assumptions_that_fail, k.surviving_issues
+                    SELECT t.thesis_id
                     FROM leads AS l
                     JOIN theses AS t ON t.lead_id = l.lead_id
-                    JOIN rankings AS k ON k.lead_id = l.lead_id
                     WHERE l.ticker = 'NCP'
                     """
                 ).fetchone()
@@ -948,9 +975,8 @@ class GateTests(unittest.TestCase):
         self.assertEqual(len(stored), 1)
         self.assertEqual(stored[0]["value"], 54_000_000)
         self.assertEqual(prices, 0)
-        self.assertIn("market cap unverified", thesis["thesis_text"])
-        self.assertIn("market cap unverified", thesis["assumptions_that_fail"])
-        self.assertGreaterEqual(thesis["surviving_issues"], 1)
+        self.assertEqual(waiting["status"], "needs_price")
+        self.assertIsNone(thesis)
 
     def test_companyfacts_404_skips_that_ticker_and_the_run_continues(self):
         from shared.nethttp import EndpointError
@@ -1022,9 +1048,20 @@ class GateTests(unittest.TestCase):
                         """
                     )
                 }
+                waiting = conn.execute(
+                    """
+                    SELECT l.status
+                    FROM leads AS l
+                    JOIN lead_figures AS link ON link.lead_id = l.lead_id
+                    JOIN figures AS f ON f.figure_id = link.figure_id
+                    WHERE l.ticker = 'CINT'
+                      AND f.figure_type = 'PaymentsToAcquireProductiveAssets'
+                      AND f.period = '2026-07-01/2026-09-30'
+                    """
+                ).fetchone()
                 thesis = conn.execute(
                     """
-                    SELECT t.thesis_text FROM leads AS l
+                    SELECT t.thesis_id FROM leads AS l
                     JOIN theses AS t ON t.lead_id = l.lead_id
                     WHERE l.ticker = 'CINT'
                     """
@@ -1032,8 +1069,8 @@ class GateTests(unittest.TestCase):
             finally:
                 conn.close()
         self.assertEqual(stored, {"NCP"})
-        self.assertIsNotNone(thesis)
-        self.assertIn("market cap unverified", thesis["thesis_text"])
+        self.assertEqual(waiting["status"], "needs_price")
+        self.assertIsNone(thesis)
 
     def test_capex_yoy_matches_span_and_period_end_not_the_label(self):
         self.assertEqual(period_span_days("from 2025-07-01 to 2025-09-30"), 91)
@@ -1073,7 +1110,16 @@ class GateTests(unittest.TestCase):
             run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
-                leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
+                leads = {
+                    row["ticker"]
+                    for row in conn.execute(
+                        "SELECT ticker FROM leads WHERE status NOT IN ('filtered', 'needs_price')"
+                    )
+                }
+                statuses = {
+                    row["ticker"]: row["status"]
+                    for row in conn.execute("SELECT ticker, status FROM leads")
+                }
                 reasons = {
                     row["ticker"]: row["reason"]
                     for row in conn.execute(
@@ -1088,6 +1134,7 @@ class GateTests(unittest.TestCase):
                 conn.close()
         self.assertIn("HIT", leads)
         self.assertNotIn("MISS", leads)
+        self.assertEqual(statuses["MISS"], "filtered")
         self.assertIn("MISS", reasons)
         self.assertIn("capex_growth_yoy", reasons["MISS"])
 
@@ -1136,38 +1183,49 @@ class GateTests(unittest.TestCase):
             run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
-                leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
+                leads = {
+                    row["ticker"]
+                    for row in conn.execute(
+                        "SELECT ticker FROM leads WHERE status NOT IN ('filtered', 'needs_price')"
+                    )
+                }
+                statuses = {
+                    row["ticker"]: row["status"]
+                    for row in conn.execute("SELECT ticker, status FROM leads")
+                }
                 reasons = {}
                 for row in conn.execute("SELECT ticker, rejection_stage, reason FROM lead_rejects"):
                     reasons.setdefault(row["ticker"], []).append(row)
-                large = conn.execute(
-                    """
-                    SELECT t.thesis_text, t.assumptions AS assumptions_that_fail,
-                           k.surviving_issues, k.rank
-                    FROM leads AS l
-                    JOIN theses AS t ON t.lead_id = l.lead_id
-                    JOIN rankings AS k ON k.lead_id = l.lead_id
-                    WHERE l.ticker = 'LARGE'
-                    """
-                ).fetchone()
+                ranked = {
+                    row["ticker"]
+                    for row in conn.execute(
+                        """
+                        SELECT l.ticker FROM rankings AS k
+                        JOIN leads AS l ON l.lead_id = k.lead_id
+                        """
+                    )
+                }
             finally:
                 conn.close()
         self.assertIn("QTR", leads)
         self.assertIn("YAG", leads)
         self.assertNotIn("FACTS", leads)
+        self.assertEqual(statuses["FACTS"], "filtered")
         self.assertTrue(any("below" in row["reason"] and "backlog_qoq_growth" in row["reason"] for row in reasons["FACTS"]))
-        self.assertIn("LARGE", leads)
+        self.assertNotIn("LARGE", leads)
+        self.assertEqual(statuses["LARGE"], "filtered")
+        self.assertNotIn("LARGE", ranked)
+        self.assertTrue(
+            any("no prior comparison" in row["reason"] for row in reasons["LARGE"])
+        )
         self.assertNotIn("SMALL", leads)
+        self.assertEqual(statuses["SMALL"], "filtered")
         self.assertTrue(
             any(
                 row["rejection_stage"] == "deterministic" and "no prior comparison" in row["reason"]
                 for row in reasons["SMALL"]
             )
         )
-        self.assertIn("no prior comparison", large["thesis_text"])
-        self.assertIn("no prior", large["assumptions_that_fail"])
-        self.assertGreaterEqual(large["surviving_issues"], 1)
-        self.assertGreaterEqual(large["rank"], 1)
 
     def test_markitdigital_is_an_official_asx_source(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1342,22 +1400,19 @@ class GateTests(unittest.TestCase):
             ],
         )
         self.assertIn("Jun-Aug 2026 $28.5B vs Jun-Aug 2025 $8.5B, +235%", quoted["thesis"])
-        growth_grade = next(item for item in quoted["grades"] if item["name"] == "capex_growth_yoy")
-        self.assertTrue(growth_grade["passed"])
-        self.assertEqual(growth_grade["evidence"], "Jun-Aug 2026 $28.5B vs Jun-Aug 2025 $8.5B, +235%")
+        self.assertNotIn("grades", quoted)
         unknown_cap = centurion(
             "debt_raise",
             "400000000",
             extra=[
-                "CRITERIA_BEGIN",
-                "- raise_vs_company | 5 | percent | raise versus the company",
-                "CRITERIA_END",
+                "GATE_RESULTS_BEGIN",
+                "raise_vs_company | pass | 8 percent | 1 | clears the scout gate",
+                "GATE_RESULTS_END",
             ],
             market_cap="",
         )
-        raise_grade = next(item for item in unknown_cap["grades"] if item["name"] == "raise_vs_company")
-        self.assertFalse(raise_grade["passed"])
-        self.assertEqual(raise_grade["evidence"], "market cap unverified")
+        self.assertNotIn("grades", unknown_cap)
+        self.assertNotIn("market cap unverified", " ".join(unknown_cap["assumptions"]))
         merged = centurion(
             "capex",
             "5000000000",
@@ -1576,7 +1631,16 @@ class GateTests(unittest.TestCase):
             run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
-                leads = {row["ticker"] for row in conn.execute("SELECT ticker FROM leads")}
+                leads = {
+                    row["ticker"]
+                    for row in conn.execute(
+                        "SELECT ticker FROM leads WHERE status NOT IN ('filtered', 'needs_price')"
+                    )
+                }
+                statuses = {
+                    row["ticker"]: row["status"]
+                    for row in conn.execute("SELECT ticker, status FROM leads")
+                }
                 reasons = {}
                 for row in conn.execute(
                     """
@@ -1590,6 +1654,8 @@ class GateTests(unittest.TestCase):
         self.assertIn("TTM", leads)
         self.assertNotIn("FLAT", leads)
         self.assertNotIn("NONE", leads)
+        self.assertEqual(statuses["FLAT"], "filtered")
+        self.assertEqual(statuses["NONE"], "filtered")
         self.assertTrue(any("capex_growth_yoy" in reason and "below" in reason for reason in reasons["FLAT"]))
         self.assertTrue(any("no prior comparison" in reason for reason in reasons["NONE"]))
 
@@ -1614,6 +1680,25 @@ class GateTests(unittest.TestCase):
                 )
             finally:
                 conn.close()
+            from pipeline.prices import insert_price
+
+            priced = connect(path)
+            try:
+                for ticker in ("MIN.AX", "ZZZ.AX"):
+                    insert_price(
+                        priced,
+                        ticker=ticker,
+                        exchange="ASX",
+                        price=10,
+                        currency="AUD",
+                        market_cap=10_000_000_000,
+                        source="asx_markit",
+                        status="DELAYED",
+                        fetched_at=SWEEP_AT,
+                        as_of="2026-10-12",
+                    )
+            finally:
+                priced.close()
             run_with_fixture(path, now=SWEEP_AT)
             conn = connect(path)
             try:
@@ -1669,7 +1754,7 @@ class GateTests(unittest.TestCase):
                     [
                         _figure("ORCL", "Oracle", "quarter", "2026-06-01/2026-08-31", 28_500_000_000),
                         _figure("ORCL", "Oracle", "quarter", "2025-06-01/2025-08-31", 8_500_000_000),
-                        *_caps("ORCL", "PET"),
+                        *_caps("ORCL", "PET", "BIG"),
                     ],
                 )
                 save_run(
@@ -1808,36 +1893,27 @@ class GateTests(unittest.TestCase):
             try:
                 grade = conn.execute(
                     """
-                    SELECT r.passed, r.evidence, t.thesis_text,
-                           t.assumptions AS assumptions_that_fail, k.surviving_issues
+                    SELECT l.status, r.passed, r.evidence
                     FROM leads AS l
                     JOIN lead_criteria_results AS r ON r.lead_id = l.lead_id
                     JOIN rubric_criteria AS c ON c.criterion_id = r.criterion_id
-                    JOIN theses AS t ON t.lead_id = l.lead_id
-                    JOIN rankings AS k ON k.lead_id = l.lead_id
                     WHERE l.ticker = 'DEBT' AND c.name = 'raise_vs_company'
                     """
                 ).fetchone()
+                ranked = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM rankings AS k
+                    JOIN leads AS l ON l.lead_id = k.lead_id
+                    WHERE l.ticker = 'DEBT'
+                    """
+                ).fetchone()[0]
             finally:
                 conn.close()
         self.assertIsNotNone(grade)
+        self.assertEqual(grade["status"], "needs_price")
         self.assertEqual(grade["passed"], 0)
-        self.assertEqual(grade["evidence"], "market cap unverified")
-        self.assertIn("raise_vs_company: fail. market cap unverified", grade["thesis_text"])
-        self.assertNotIn("raise_vs_company: pass", grade["thesis_text"])
-        self.assertIn("market cap unverified", grade["assumptions_that_fail"])
-        self.assertGreaterEqual(grade["surviving_issues"], 1)
-
-
-def _fail_market_cap(task):
-    data = fixture_response(task["prompt"])
-    if "TASK: centurion" not in task["prompt"]:
-        return data
-    for grade in data.get("grades") or []:
-        if grade.get("name") == "min_market_cap":
-            grade["passed"] = False
-            grade["evidence"] = "market cap is not in the stored figure"
-    return data
+        self.assertIn("price missing", grade["evidence"])
+        self.assertEqual(ranked, 0)
 
 
 def _history(path):

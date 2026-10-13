@@ -4,6 +4,12 @@ Newest entries are first. Times are AEST (Australian Eastern Standard Time, UTC+
 
 Every pull request adds an entry at the top of this file before it merges. Each entry records the date and time, what changed, why, and the pull request number. Leave out secrets, contact addresses, and personal data.
 
+### 2026-10-13 09:15 AEST — [PR #33](https://github.com/Nodemana/cause-n-effect/pull/33)
+
+**What changed.** Scouts test every rubric criterion in code before a candidate is handed to significance or the Centurions. The checks are market cap, capex growth, an official source, backlog growth, disclosed demand, the raise versus the company, specific proceeds, insider purchase dollars, an open-market purchase, stake percent, the recent filing window, and whether a notice is ceasing. A candidate proceeds only when every criterion for its lead type passes. Each pass or fail is stored with the measured value and the rubric id and version. A failed candidate is stored with status filtered and the failing criteria, and it is not queued. If the official price is missing or stale, the candidate waits with status needs_price. A US name in that state is listed in prices/needed.json. The gate does not guess a price. A capex chain and a smart-money lead are gated on each component. Macro leads are unchanged. Centurion tasks no longer ask for a grade against the rubric. The task includes the gate results. The Centurion writes the judgement: what the spend is on, suppliers and customers, whether a move is priced in, the thesis, the ROI, the risks, the timeframe, the assumptions, and a recommendation. `docs/rubric.md` lists the version 1 thresholds. Those numbers live in the rubrics tables. A change needs a new version.
+
+**Why.** Those checks are numbers and pass/fail facts. Running them in the scout keeps that work off the Centurions.
+
 ### 2026-10-13 08:30 AEST — [PR #31](https://github.com/Nodemana/cause-n-effect/pull/31)
 
 **What changed.** After the Legate selects, ingest writes one markdown file per selected thesis at `data/reports/<run>/<rank>-<ticker>.md`. The rank is the selection order. The file has the thesis: the cause to effect chain, the tickers, evidence links from official sources, the macro context, and the price-run classification. The full Praetorian critique follows, with every flaw, its severity, and its evidence. The combined final report is gone. The sweep no longer writes a decision row, and the pipeline has no broker order call.

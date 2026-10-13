@@ -28,19 +28,18 @@ Path: `Centurions/rules/<lead_type>.md` (for example `Centurions/rules/capex.md`
 
 ## What each rules file contains
 
-1. The criteria for that lead type.
-2. Instructions to grade this lead against those criteria.
-3. Instructions to research this lead and write an investment thesis on how a return can actually be achieved, including the potential ROI. The capex file tells the Centurion to name what the spending is on and which suppliers. The orders_backlog file tells the Centurion to name which customers the orders came from.
-4. Instructions to estimate the timeframe: how long the thesis should take to play out.
-5. Instructions to set out the risks.
-6. Instructions to close with one recommendation and a full list of assumptions.
-7. Instructions for a second pass: if this lead is the single new lead the Legate formed from a merge, still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list, and include a priced-in check and the macro context from the Macro scout's cache. A lead that was not merged is not sent back.
+1. The criteria for that lead type. The scout gate already applied them. The task carries the pass results.
+2. Instructions to research this lead and write an investment thesis on how a return can actually be achieved, including the potential ROI. The capex file tells the Centurion to name what the spending is on and which suppliers. The orders_backlog file tells the Centurion to name which customers the orders came from.
+3. Instructions to estimate the timeframe: how long the thesis should take to play out.
+4. Instructions to set out the risks.
+5. Instructions to close with one recommendation and a full list of assumptions.
+6. Instructions for a second pass: if this lead is the single new lead the Legate formed from a merge, still write one thesis, one ROI, one set of risks, one timeframe, and one assumptions list, and include a priced-in check and the macro context from the Macro scout's cache. A lead that was not merged is not sent back.
 
 Figures come only from official sources: SEC filings, ASX announcements, and company releases.
 
 ## Capex chain, smart money, and a leftover second pass
 
-A capex chain is one Centurion task. The constituents are the spender, the supplier backlog, and the funding raise. Smart money is one task for the Form 4 and the 13D/13G or ASX 604 on that ticker. The Centurion still writes one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. On a chain it classifies any prior price run and reads the macro cache.
+A capex chain is one Centurion task. The constituents are the spender, the supplier backlog, and the funding raise. Each constituent passed its own rubric at the scout gate before the chain was formed. Smart money is one task for the Form 4 and the 13D/13G or ASX 604 on that ticker, after each of those passed its own rubric. The Centurion still writes one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. On a chain it classifies any prior price run and reads the macro cache.
 
 A leftover cross-group link, after those theses exist, can still be merged. The link has to be traceable official-source evidence, stored in `legate_merges.rationale`. A sector match is not enough. The Centurion does not make that merge. Only that leftover comes back for a second pass. A lead that was not merged gets no second pass and goes straight to the Praetorians.
 
@@ -50,8 +49,8 @@ Macro context is a Centurion concern on a capex chain and on that leftover pass.
 
 ## Job
 
-1. Grade this lead against the criteria in its rules file. On a second pass, grade each constituent type's criteria once, and classify any prior price run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence, noted as a concern where relevant.
-2. Research and write the investment thesis, including the potential ROI. On a second pass, draw the macro context from the Macro scout's cache.
+1. Read the scout gate results already on the task. Do not grade the rubric again. On a second pass, classify any prior price run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with reasoning and evidence, noted as a concern where relevant.
+2. Research and write the investment thesis, including the potential ROI. On a second pass, draw the macro context from the Macro scout's cache. Work out what the spend is on, which suppliers or customers are named, whether the move looks priced in, and the risks, timeframe, and assumptions.
 3. Estimate the timeframe.
 4. Set out the risks.
 5. List every assumption made while researching and forming the thesis.
@@ -79,11 +78,9 @@ The Assumptions section lists every assumption made while researching and formin
 
 ## Criteria
 
+The scout gate already applied the current fixed rubric. The measured values are on the task. Do not grade them again.
+
 - ...
-
-## Grade
-
-Grade this lead only, against each criterion above. Pass or fail, with the figure and its source.
 
 ## Thesis and ROI
 
@@ -110,7 +107,7 @@ List every assumption made while researching and forming the thesis.
 
 Figures only from SEC filings, ASX announcements, and company releases.
 
-If this lead is the single new lead from a Legate merge, this is the second, fresh full pass: still write one grade, one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged does not reach this pass.
+If this lead is the single new lead from a Legate merge, this is the second, fresh full pass: still write one thesis, one ROI, one set of risks, one timeframe, and one assumptions list. A lead that was not merged does not reach this pass.
 
 That second pass includes a priced-in check on any prior price run. The Centurion makes the call first, classifying the run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with its reasoning and evidence. It notes that call as a concern where relevant. There is no automatic rejection. The stock price and past performance come from quote data. The Praetorians then write every flaw in the thesis, including any objection to that classification, as flaw, severity, and evidence. The lead stays in ranking.
 
@@ -120,8 +117,6 @@ On this second pass, macro context is a Centurion concern. Read the Macro scout'
 ## Expected output
 
 ```markdown
-## Grade
-
 ## Thesis
 
 ## Price run (second pass only)
@@ -136,7 +131,7 @@ From the Macro scout cache:
 
 ## Recommendation
 
-Where to put the money:
+Recommendation:
 Expected return:
 Risks:
 Timeframe:

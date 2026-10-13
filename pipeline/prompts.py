@@ -106,14 +106,33 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None,
             )
         )
     lines.append("COUNTERPARTIES_END")
-    lines.append("CRITERIA_BEGIN")
-    for criterion in criteria:
-        threshold = criterion.get("threshold_value")
-        unit = criterion.get("threshold_unit") or ""
+    lines.append("GATE_RESULTS_BEGIN")
+    gate_results = list(getattr(lead, "gate_results", None) or [])
+    if not gate_results:
+        lines.append("none")
+    for item in gate_results:
+        version = item.get("rubric_version")
+        version_text = "" if version is None else str(version)
         lines.append(
-            f"- {criterion['name']} | {_number(threshold)} | {unit} | {_one_line(criterion['description'])}"
+            " | ".join(
+                (
+                    str(item.get("name") or ""),
+                    "pass" if item.get("passed") else "fail",
+                    _one_line(item.get("measured_value")),
+                    version_text,
+                    _one_line(item.get("evidence")),
+                )
+            )
         )
-    lines.append("CRITERIA_END")
+    lines.append("GATE_RESULTS_END")
+    if lead.lead_type == "macro":
+        lines.append("Macro leads are not rubric-gated. Do not grade a rubric.")
+    else:
+        lines.append(
+            "The scout gate already applied the fixed rubric version stored in rubrics. "
+            "Every GATE_RESULTS line passed. Do not grade those criteria again."
+        )
+    _ = criteria
     lines.append("RULES_BEGIN")
     seen = []
     for lead_type in lead.grade_types:
@@ -128,7 +147,8 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None,
         lines.append("CONSTITUENTS_END")
         lines.append(
             "This lead joins the constituents into one finding. "
-            "Still write one grade, one thesis, one ROI, one set of risks, one timeframe, "
+            "Each constituent already passed its own rubric. "
+            "Still write one thesis, one ROI, one set of risks, one timeframe, "
             "and one assumptions list."
         )
         lines.append(
@@ -162,8 +182,7 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None,
     lines.append(
         "Reply with one JSON object and no other text. "
         "Keys: thesis, roi, roi_pct, timeframe_days, risks, recommendation, assumptions, "
-        "grades, suppliers, customers, buyers, price_run. "
-        "grades is a list of {name, passed, evidence}. "
+        "suppliers, customers, buyers, price_run. "
         "risks and assumptions are lists of sentences. "
         "suppliers, customers, and buyers are lists of {name, ticker} "
         "taken from COUNTERPARTIES of that role, from CONSTITUENTS, and from the figure text. "
