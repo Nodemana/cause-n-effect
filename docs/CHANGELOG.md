@@ -4,6 +4,12 @@ Newest entries are first. Times are AEST (Australian Eastern Standard Time, UTC+
 
 Every pull request adds an entry at the top of this file before it merges. Each entry records the date and time, what changed, why, and the pull request number. Leave out secrets, contact addresses, and personal data.
 
+### 2026-10-13 15:18 AEST
+
+**What changed.** Each lead stores the filing or release date. The US price handoff also asks for daily closes from five trading days before that date through the sweep. The pipeline stores the age in days, the close before the filing, the peak move after it, the current price versus that close, and whether the pop faded. A missing bar stays blank. The thesis file shows the filing date, the age, and that move above the price table. The priced-in check uses that path. A price below the 52-week high does not by itself mean the move is still ahead. Praetorians must write a high flaw when the filing is older than six weeks or the move has already happened or faded, and say whether the move has likely passed, with the numbers. They still do not drop the lead. The Legate is told not to pick a stale signal unless a newer confirming signal is in the same list.
+
+**Why.** A Lockheed Martin thesis was built on a quarterly filing from 23 July 2026. The stock jumped about 14 percent that week, peaked about 20 percent higher in mid-August, then gave the gain back. The sweep still called the move not priced in, because it only compared the price with the 52-week high.
+
 ### 2026-10-13 14:34 AEST — [PR #36](https://github.com/Nodemana/cause-n-effect/pull/36)
 
 **What changed.** The Bottom line box puts each field on its own line. A risk or assumption that contains a semicolon stays one bullet. A long thesis paragraph is broken up at its Cause, Effect, Priced-in check and Conclusion labels. A Brent or WTI thesis shows both legs of the spread in the price table. Winners and losers named in a macro recommendation (for example VLO or UAL) get a price row when an official quote is stored for them. A word that only looks like a ticker never gets a row. The Cause to effect section of a macro thesis states the move in sentences: the level and its date, the one-month and three-month change, how far the print sits from its prior-year average, and, for the Brent-WTI spread, that the spread is outside its prior-year range. The stored figure is unchanged.

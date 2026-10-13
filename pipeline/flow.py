@@ -31,6 +31,7 @@ priced-in, and includes macro text only when a macro cache is present.
 
 import json
 import math
+from datetime import date
 from pathlib import Path
 
 from shared.pipeline_store import connect
@@ -57,11 +58,15 @@ from pipeline.load import is_quarter_figure, load_latest_figures
 from pipeline.macro_signals import macro_candidates
 from pipeline.prices import (
     considered_figures,
+    has_closes,
     ingest_price_result,
+    latest_usable_price,
+    load_closes,
     prices_outstanding,
     refresh_markit,
     write_needed,
 )
+from pipeline.signal_path import assess, window_start
 from pipeline.rubric_gate import evaluate
 from pipeline.names import normalise_name
 from pipeline.prefilter import (
@@ -225,9 +230,9 @@ def run_pipeline(
         run_id = store.start_run(conn, started)
         state.run_id = run_id
         _screen(conn, state)
-        needed = _needs_price_tickers(state)
+        needed, signals = _price_request(conn, state)
         if needed:
-            write_needed(queue, run_id, needed, started)
+            write_needed(queue, run_id, needed, started, signals)
             state.stage = "prices"
             store.begin_pipeline_run(conn, run_id, started, queue, "awaiting_agents", "prices")
             save_state(state)
@@ -532,9 +537,9 @@ def _promote_needs_price(conn, state):
             continue
         still.append(candidate)
     state.waiting = still
-    needed = _needs_price_tickers(state)
+    needed, signals = _price_request(conn, state)
     if needed and state.queue_dir and state.run_id:
-        write_needed(state.queue_dir, state.run_id, needed, state.started)
+        write_needed(state.queue_dir, state.run_id, needed, state.started, signals)
 
 
 def _record_filter(conn, state, candidate, outcome, created):
@@ -559,20 +564,82 @@ def _record_filter(conn, state, candidate, outcome, created):
     state.deterministic_rejects += 1
 
 
-def _needs_price_tickers(state):
+def _price_request(conn, state):
+    """US tickers that need a last price, or a passed name with no daily closes.
+
+    Macro leads are not stocks. ASX daily bars are not on this handoff.
+    """
     from pipeline.load import exchange_for
 
-    needed = []
-    seen = set()
-    for candidate in state.waiting or []:
-        figure = candidate.figure
-        ticker = figure.ticker
-        if not ticker or ticker in seen or exchange_for(figure) == "ASX":
-            continue
-        seen.add(ticker)
-        needed.append({"exchange": "US", "ticker": ticker})
-    needed.sort(key=lambda item: item["ticker"])
-    return needed
+    tickers = []
+    signals = []
+    seen = {}
+    groups = [(state.waiting or [], True), (state.candidates or [], False)]
+    for group, need_last in groups:
+        for candidate in group:
+            if getattr(candidate, "lead_type", "") == "macro":
+                continue
+            figure = candidate.figure
+            ticker = (getattr(figure, "ticker", None) or "").strip()
+            if not ticker or exchange_for(figure) == "ASX":
+                continue
+            signal = _signal_day(getattr(figure, "announced_on", None))
+            current = seen.get(ticker)
+            if current is not None:
+                if signal and (not current["signal_date"] or signal < current["signal_date"]):
+                    current["signal_date"] = signal
+                    current["closes_from"] = window_start(signal)
+                continue
+            lacks_path = bool(signal) and not has_closes(conn, ticker)
+            if not need_last and not lacks_path:
+                continue
+            item = {
+                "closes_from": window_start(signal) if signal else None,
+                "exchange": "US",
+                "signal_date": signal,
+                "ticker": ticker,
+            }
+            seen[ticker] = item
+            tickers.append({"exchange": "US", "ticker": ticker})
+            signals.append(item)
+    tickers.sort(key=lambda item: item["ticker"])
+    signals.sort(key=lambda item: item["ticker"])
+    return tickers, signals
+
+
+def _signal_day(value):
+    text = str(value or "")[:10]
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return None
+    return text
+
+
+def _attach_path(conn, lead, as_of):
+    ticker = _text(getattr(lead, "ticker", "")).split(",")[0].strip()
+    closes = load_closes(conn, ticker) if ticker else []
+    quote = latest_usable_price(conn, ticker, as_of) if ticker else None
+    current = float(quote["price"]) if quote is not None else None
+    path = assess(getattr(lead, "signal_date", None), as_of, closes, current)
+    lead.days_since_signal = path["days_since_signal"]
+    lead.close_before_signal = path["close_before_signal"]
+    lead.max_runup_pct = path["max_runup_pct"]
+    lead.current_vs_pre_pct = path["current_vs_pre_pct"]
+    lead.popped_and_faded = path["popped_and_faded"]
+    lead.move_passed = path["move_passed"]
+
+
+def _path_view(lead):
+    return {
+        "signal_date": getattr(lead, "signal_date", None),
+        "days_since_signal": getattr(lead, "days_since_signal", None),
+        "close_before_signal": getattr(lead, "close_before_signal", None),
+        "max_runup_pct": getattr(lead, "max_runup_pct", None),
+        "current_vs_pre_pct": getattr(lead, "current_vs_pre_pct", None),
+        "popped_and_faded": getattr(lead, "popped_and_faded", None),
+        "move_passed": getattr(lead, "move_passed", None),
+    }
 
 
 def _open_significance(conn, state):
@@ -629,6 +696,7 @@ def _write_centurion_tasks(conn, state, leads, pass_number, stage):
         constituents = [_constituent_payload(member) for member in lead.members] if lead.members else None
         related = lead.related_findings if lead.lead_type == "macro" else None
         macro_context = state.macro if show_macro else None
+        _attach_path(conn, lead, state.started)
         prompt = centurion_prompt(
             lead,
             criteria,
@@ -664,11 +732,12 @@ def _write_centurion_tasks(conn, state, leads, pass_number, stage):
     return count
 
 
-def _write_praetorian_tasks(state, leads):
+def _write_praetorian_tasks(conn, state, leads):
     rules = PRAETORIAN_RULES.read_text(encoding="utf-8")
     count = 0
     for lead in leads:
-        prompt = praetorian_prompt(lead.thesis.markdown, lead.thesis.price_run)
+        _attach_path(conn, lead, state.started)
+        prompt = praetorian_prompt(lead.thesis.markdown, lead.thesis.price_run, path=_path_view(lead))
         _write_judgement_task(
             state,
             "praetorian",
@@ -776,7 +845,7 @@ def _queue_praetorian(conn, state):
     if not final:
         _queue_ranking(conn, state)
         return
-    _write_praetorian_tasks(state, final)
+    _write_praetorian_tasks(conn, state, final)
     state.stage = "praetorian"
 
 
@@ -859,6 +928,7 @@ def _lead_from_candidate(candidate, rating):
     lead.gate_results = list(getattr(candidate, "gate_results", None) or [])
     lead.market_cap_unverified = False
     lead.growth_unverified = False
+    lead.signal_date = _signal_day(getattr(figure, "announced_on", None))
     return lead
 
 
@@ -891,6 +961,8 @@ def _merge(conn, leads, macro):
         lead.summary = _rationale(kind, members)
         lead.market_cap_unverified = False
         lead.growth_unverified = False
+        dates = [day for day in (_signal_day(getattr(member, "signal_date", None)) for member in members) if day]
+        lead.signal_date = min(dates) if dates else None
         gate_results = []
         for member in members:
             for item in getattr(member, "gate_results", None) or []:
@@ -1142,6 +1214,7 @@ def _persist(conn, run_id, rejects, leads, merged, ranked):
     for lead in leads:
         lead.real_id = store.insert_lead(conn, run_id, lead, created)
         id_map[lead.synthetic_id] = lead.real_id
+        store.record_price_path(conn, lead.real_id, lead, created)
         if lead.thesis is not None:
             lead.real_thesis_id = store.insert_thesis(conn, run_id, lead.real_id, lead.thesis, created)
         store.record_gate_results(
@@ -1150,6 +1223,7 @@ def _persist(conn, run_id, rejects, leads, merged, ranked):
     for lead in merged:
         lead.real_id = store.insert_lead(conn, run_id, lead, created)
         id_map[lead.synthetic_id] = lead.real_id
+        store.record_price_path(conn, lead.real_id, lead, created)
         if lead.thesis is not None:
             lead.real_thesis_id = store.insert_thesis(conn, run_id, lead.real_id, lead.thesis, created)
         store.record_gate_results(

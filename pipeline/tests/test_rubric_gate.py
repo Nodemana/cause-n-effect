@@ -103,7 +103,11 @@ class RubricGateTests(unittest.TestCase):
             self.assertEqual(waiting.status, "needs_price")
             self.assertTrue(any(item["needs_price"] and item["name"] == "min_market_cap" for item in waiting.results))
             self.assertEqual(result["stage"], "prices")
-            self.assertEqual([item["ticker"] for item in needed["tickers"]], ["WAIT"])
+            self.assertEqual([item["ticker"] for item in needed["tickers"]], ["PASS", "WAIT"])
+            signals = {item["ticker"]: item for item in needed["signals"]}
+            self.assertEqual(signals["PASS"]["signal_date"], "2026-10-01")
+            self.assertEqual(signals["PASS"]["closes_from"], "2026-09-24")
+            self.assertEqual(signals["WAIT"]["signal_date"], "2026-10-01")
             self.assertEqual(rows["FLAT"]["status"], "filtered")
             self.assertEqual(rows["WAIT"]["status"], "needs_price")
             self.assertNotIn("PASS", rows)

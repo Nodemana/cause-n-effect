@@ -334,6 +334,8 @@ def _centurion(prompt):
         roi = _expected_return(lead_type, value)
         timeframe = _TIMEFRAME.get(lead_type, 180)
         price_run = None
+    if _field(prompt, "MOVE_PASSED") == "yes":
+        price_run = "priced-in"
     risks = _risks(lead_type, price_run)
     assumptions = [
         "The figures used here are the ones stored from the filing or the announcement.",
@@ -625,4 +627,35 @@ def _praetorian(prompt):
                 "evidence": "The thesis states that the market cap is unverified.",
             }
         )
+    if _stale_or_passed(prompt):
+        flaws.append(
+            {
+                "flaw": "Staleness and price reaction: the move has likely passed.",
+                "severity": "high",
+                "evidence": _path_evidence(prompt),
+            }
+        )
     return {"flaws": flaws}
+
+
+def _stale_or_passed(prompt):
+    days = _field(prompt, "DAYS_SINCE_SIGNAL")
+    try:
+        stale = int(days) > 42
+    except ValueError:
+        stale = False
+    return stale or _field(prompt, "MOVE_PASSED") == "yes" or _field(prompt, "POPPED_AND_FADED") == "yes"
+
+
+def _path_evidence(prompt):
+    names = (
+        "SIGNAL_DATE",
+        "DAYS_SINCE_SIGNAL",
+        "CLOSE_BEFORE_SIGNAL",
+        "MAX_RUNUP_PCT",
+        "CURRENT_VS_PRE_PCT",
+        "POPPED_AND_FADED",
+        "MOVE_PASSED",
+    )
+    parts = [f"{name} {_field(prompt, name) or 'n/a'}" for name in names]
+    return "; ".join(parts)

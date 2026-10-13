@@ -74,6 +74,13 @@ _LEAD = (
     "real_merge_id",
     "pick_order",
     "selection_rationale",
+    "signal_date",
+    "days_since_signal",
+    "close_before_signal",
+    "max_runup_pct",
+    "current_vs_pre_pct",
+    "popped_and_faded",
+    "move_passed",
 )
 _THESIS = (
     "markdown",

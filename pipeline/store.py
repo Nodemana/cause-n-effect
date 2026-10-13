@@ -193,6 +193,10 @@ def insert_lead(conn, run_id, planned, created_at):
                 lead_id,
             ),
         )
+        conn.execute(
+            "UPDATE leads SET signal_date = ? WHERE lead_id = ?",
+            (getattr(planned, "signal_date", None), lead_id),
+        )
         for party in getattr(planned, "counterparties", None) or []:
             name = (party.get("name") or "").strip()
             role = (party.get("role") or "").strip()
@@ -216,6 +220,50 @@ def insert_lead(conn, run_id, planned, created_at):
                 ),
             )
     return lead_id
+
+
+def record_price_path(conn, lead_id, lead, recorded_at):
+    """Store the computed path. A missing number is stored as null."""
+
+    def bit(value):
+        if value is True:
+            return 1
+        if value is False:
+            return 0
+        return None
+
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO lead_price_paths (
+                lead_id, signal_date, days_since_signal, close_before_signal,
+                max_runup_pct, current_vs_pre_pct, popped_and_faded, move_passed,
+                as_of, computed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(lead_id) DO UPDATE SET
+                signal_date = excluded.signal_date,
+                days_since_signal = excluded.days_since_signal,
+                close_before_signal = excluded.close_before_signal,
+                max_runup_pct = excluded.max_runup_pct,
+                current_vs_pre_pct = excluded.current_vs_pre_pct,
+                popped_and_faded = excluded.popped_and_faded,
+                move_passed = excluded.move_passed,
+                as_of = excluded.as_of,
+                computed_at = excluded.computed_at
+            """,
+            (
+                lead_id,
+                getattr(lead, "signal_date", None),
+                getattr(lead, "days_since_signal", None),
+                getattr(lead, "close_before_signal", None),
+                getattr(lead, "max_runup_pct", None),
+                getattr(lead, "current_vs_pre_pct", None),
+                bit(getattr(lead, "popped_and_faded", None)),
+                bit(getattr(lead, "move_passed", None)),
+                None,
+                recorded_at,
+            ),
+        )
 
 
 def set_status(conn, lead_id, status, priority=None):

@@ -107,6 +107,144 @@ class PriceTests(unittest.TestCase):
         self.assertIsNone(bare["low_52w"])
         self.assertIsNone(bare["high_52w"])
 
+    def test_daily_closes_are_stored_and_a_bad_bar_rejects_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "history.sqlite")
+            queue = str(Path(tmp) / "agent_queue")
+            conn = connect(path)
+            conn.close()
+            run_id = "2026-10-12-closes"
+            needed = write_needed(
+                queue,
+                run_id,
+                [{"exchange": "US", "ticker": "LMT"}],
+                "2026-10-12",
+                signals=[
+                    {
+                        "closes_from": "2026-07-16",
+                        "exchange": "US",
+                        "signal_date": "2026-07-23",
+                        "ticker": "LMT",
+                    }
+                ],
+            )
+            payload = json.loads(needed.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["history"]["closes"],
+                "daily closes from closes_from through as_of, from historical bars",
+            )
+            self.assertEqual(payload["signals"][0]["closes_from"], "2026-07-16")
+            result = needed.with_name("prices.result.json")
+            bars = [
+                {"date": "2026-07-22", "close": 100},
+                {"date": "2026-08-14", "close": 120},
+            ]
+            result.write_text(
+                json.dumps(
+                    [
+                        {
+                            "ticker": "LMT",
+                            "conid": 1,
+                            "last": 100,
+                            "top_status": "DELAYED",
+                            "as_of": "2026-10-12",
+                            "closes": bars,
+                        }
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            conn = connect(path)
+            try:
+                ingest_price_result(conn, queue, run_id, SWEEP_AT)
+                stored = [
+                    (row["obs_date"], row["close"])
+                    for row in conn.execute(
+                        "SELECT obs_date, close FROM price_closes WHERE ticker = 'LMT' ORDER BY obs_date"
+                    )
+                ]
+                quote = conn.execute("SELECT price FROM prices WHERE ticker = 'LMT'").fetchone()
+                result.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "ticker": "LMT",
+                                "conid": 1,
+                                "last": 100,
+                                "top_status": "DELAYED",
+                                "as_of": "2026-10-12",
+                                "closes": [{"date": "2026-07-22", "close": 0}],
+                            }
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(AgentResultError):
+                    ingest_price_result(conn, queue, run_id, SWEEP_AT)
+                result.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "ticker": "LMT",
+                                "conid": 1,
+                                "last": 100,
+                                "top_status": "DELAYED",
+                                "as_of": "2026-10-12",
+                                "closes": [{"date": "2026-07-22", "close": 100, "volume": 1}],
+                            }
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(AgentResultError):
+                    ingest_price_result(conn, queue, run_id, SWEEP_AT)
+                after_bad = conn.execute("SELECT COUNT(*) FROM price_closes").fetchone()[0]
+                result.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "ticker": "LMT",
+                                "conid": 1,
+                                "last": 101,
+                                "top_status": "DELAYED",
+                                "as_of": "2026-10-12",
+                            }
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                ingest_price_result(conn, queue, run_id, SWEEP_AT)
+                kept = conn.execute("SELECT COUNT(*) FROM price_closes").fetchone()[0]
+                result.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "ticker": "LMT",
+                                "conid": 1,
+                                "last": 101,
+                                "top_status": "DELAYED",
+                                "as_of": "2026-10-12",
+                                "closes": [],
+                            }
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                ingest_price_result(conn, queue, run_id, SWEEP_AT)
+                cleared = conn.execute("SELECT COUNT(*) FROM price_closes").fetchone()[0]
+            finally:
+                conn.close()
+        self.assertEqual(stored, [("2026-07-22", 100), ("2026-08-14", 120)])
+        self.assertEqual(quote["price"], 100)
+        self.assertEqual(after_bad, 2)
+        self.assertEqual(kept, 2)
+        self.assertEqual(cleared, 0)
+
     def test_three_trading_days_skips_the_weekend(self):
         self.assertEqual(trading_days_old("2026-10-07", SWEEP_AT), 3)
         self.assertEqual(trading_days_old("2026-10-06", SWEEP_AT), 4)

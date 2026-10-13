@@ -76,6 +76,9 @@ class PipelineFlowTests(unittest.TestCase):
             self.assertIn("### Thesis", report)
             self.assertIn("### Cause → effect", report)
             self.assertIn("| Ticker |", report)
+            self.assertIn("**Signal date:** 2026-10-01", report)
+            self.assertIn("**Age:** 11 days", report)
+            self.assertIn("**After the signal:** n/a", report)
             self.assertIn("### Evidence", report)
             self.assertIn("### Praetorian", report)
             self.assertIn("### Praetorian", candidates)
@@ -90,7 +93,9 @@ class PipelineFlowTests(unittest.TestCase):
             amzn = next(path for path in files if path.name == "1-AMZN.md").read_text(encoding="utf-8")
             self.assertIn("### Macro context\n\nnone\n", amzn)
             self.assertIn("### Bottom line", amzn)
+            self.assertLess(amzn.find("**Signal date:**"), amzn.find("| Ticker |"))
             self.assertLess(amzn.find("| Ticker |"), amzn.find("### Bottom line"))
+            self.assertIn("**Age:** 11 days", amzn)
 
             conn = connect(path)
             try:
@@ -967,10 +972,13 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertEqual(names.count("010_legate_selection.sql"), 1)
         self.assertEqual(names.count("011_scout_rubric_gate.sql"), 1)
         self.assertEqual(names.count("012_price_history.sql"), 1)
+        self.assertEqual(names.count("013_signal_path.sql"), 1)
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         self.assertIn("lead_counterparties", tables)
         self.assertIn("legate_selections", tables)
         self.assertIn("prices", tables)
+        self.assertIn("price_closes", tables)
+        self.assertIn("lead_price_paths", tables)
         self.assertIn("cleanup_log", tables)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}
         for name in (
@@ -982,6 +990,7 @@ class PipelineFlowTests(unittest.TestCase):
             "significance_attention_rationale",
             "significance_timing",
             "significance_timing_rationale",
+            "signal_date",
         ):
             self.assertIn(name, columns)
         indexes = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
@@ -1057,6 +1066,26 @@ class PipelineFlowTests(unittest.TestCase):
         self.assertIn("what the spending is actually on", chain_prompt)
         self.assertIn("which customers placed the orders", chain_prompt)
         self.assertIn("MACRO: none", chain_prompt)
+        self.assertIn("SIGNAL_DATE: 2026-10-01", chain_prompt)
+        self.assertIn("DAYS_SINCE_SIGNAL: 11", chain_prompt)
+        self.assertIn("52-week high", chain_prompt)
+        legate = next(prompt for prompt in prompts if prompt.startswith("TASK: legate_selection"))
+        self.assertIn("six weeks", legate)
+        self.assertIn("confirming signal", legate)
+        praetorian = next(prompt for prompt in prompts if prompt.startswith("TASK: praetorian"))
+        self.assertIn("STALENESS AND PRICE REACTION", praetorian)
+        path_row = conn.execute(
+            """
+            SELECT signal_date, days_since_signal, max_runup_pct
+            FROM lead_price_paths
+            WHERE lead_id = (
+                SELECT lead_id FROM leads WHERE source_scout = 'capex_chain'
+            )
+            """
+        ).fetchone()
+        self.assertEqual(path_row["signal_date"], "2026-10-01")
+        self.assertEqual(path_row["days_since_signal"], 11)
+        self.assertIsNone(path_row["max_runup_pct"])
         self.assertIn("\nPASS: 1\n", chain_prompt)
         insider = next(prompt for prompt in prompts if "\nPASS: 1\n" in prompt and "LEAD_TYPE: insider_buying" in prompt)
         self.assertNotIn("CONSTITUENTS_BEGIN", insider)

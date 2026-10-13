@@ -193,6 +193,9 @@ def _fill_group(lead, primary, members, synthetic_id):
     lead.parent_position_id = None
     lead.market_cap_unverified = False
     lead.growth_unverified = False
+    dates = [getattr(member, "signal_date", None) for member in members]
+    dates = [day for day in dates if day]
+    lead.signal_date = min(dates) if dates else None
     gate_results = []
     for member in members:
         for item in getattr(member, "gate_results", None) or []:
