@@ -4,7 +4,7 @@ Newest entries are first. Times are AEST (Australian Eastern Standard Time, UTC+
 
 Every pull request adds an entry at the top of this file before it merges. Each entry records the date and time, what changed, why, and the pull request number. Leave out secrets, contact addresses, and personal data.
 
-### 2026-10-13 15:18 AEST
+### 2026-10-13 15:18 AEST — [PR #37](https://github.com/Nodemana/cause-n-effect/pull/37)
 
 **What changed.** Each lead stores the filing or release date. The US price handoff also asks for daily closes from five trading days before that date through the sweep. The pipeline stores the age in days, the close before the filing, the peak move after it, the current price versus that close, and whether the pop faded. A missing bar stays blank. The thesis file shows the filing date, the age, and that move above the price table. The priced-in check uses that path. A price below the 52-week high does not by itself mean the move is still ahead. Praetorians must write a high flaw when the filing is older than six weeks or the move has already happened or faded, and say whether the move has likely passed, with the numbers. They still do not drop the lead. The Legate is told not to pick a stale signal unless a newer confirming signal is in the same list.
 
