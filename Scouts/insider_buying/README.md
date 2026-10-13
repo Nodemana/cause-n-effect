@@ -14,7 +14,7 @@ Insider, role, whether they are the CEO, company, ticker, shares, price, value, 
 
 ## Filters/rules
 
-Open-market purchases only. Form 4 keeps transaction code `P` marked acquired. Appendix 3Y keeps on-market acquisitions. Sales, option exercises, grants, and gifts are excluded, as are off-market 3Y changes. The default minimum value is 10,000 in the transaction's own currency, with no FX conversion. A cluster is a different insider at the same company within 7 days. Missing prices, unparseable dates, joint owners, equity swaps, and amounts that disagree are flagged for the Legate and are not included.
+Open-market purchases only. Form 4 keeps transaction code `P` marked acquired. Appendix 3Y keeps on-market acquisitions. Sales, option exercises, grants, gifts, and off-market 3Y changes are excluded. A director-fee issue, a salary-sacrifice issue, or a plan issue is not an open-market buy. A notice that names more than one director is not one open-market buy. The default minimum value is 10,000 in the transaction's own currency, with no FX conversion. A cluster is a different insider at the same company within 7 days. Missing prices, unparseable dates, joint owners, equity swaps, and amounts that disagree are flagged for the Legate and are not included.
 
 ## Significance
 

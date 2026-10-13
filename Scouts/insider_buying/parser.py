@@ -3,7 +3,9 @@
 Form 4 code P is the purchase code this scout keeps. The SEC definition of P
 is an open-market or private purchase; the filing does not split those.
 Appendix 3Y keeps on-market acquisitions only. Sales, grants, gifts, option
-exercises, and off-market changes are left unmarked so the filter can drop them.
+exercises, off-market changes, director-fee and salary-sacrifice issues, plan
+issues, and a notice that names more than one director are left unmarked so
+the filter can drop them.
 """
 
 import html
@@ -22,6 +24,22 @@ from Scouts.insider_buying.model import record
 
 _ON_MARKET = re.compile(r"(?<![a-z])on[-\s]?market", re.I)
 _OFF_MARKET = re.compile(r"(?<![a-z])off[-\s]?market", re.I)
+_FEE_OR_PLAN = re.compile(
+    r"("
+    r"directors?'\s+fees?"
+    r"|director'?s?\s+fees?"
+    r"|salary[\s-]sacrifice"
+    r"|fee[\s-]plan"
+    r"|in lieu of"
+    r"|as part of director"
+    r"|\bshare\s+plan\b"
+    r"|\brights\s+plan\b"
+    r"|\bequity\s+plan\b"
+    r"|\bplan\b"
+    r")",
+    re.I,
+)
+_DIRECTOR_LABEL = re.compile(r"^Name of Director\s*[:.]?\s*(.*)$", re.I)
 _MONEY = re.compile(
     r"(?P<cur>A\$|US\$|AUD|USD|\$)?\s*(?P<num>\d[\d,]*(?:\.\d+)?)",
     re.I,
@@ -74,10 +92,32 @@ def parse_3y(text, source_url, filing_date, ticker, company=None):
     raw = text or ""
     if not raw.strip():
         return [_shell("asx", "3Y", source_url, filing_date, ticker, ["unparseable"], ["empty Appendix 3Y"], company=company)]
+    directors = _director_names(raw)
+    reasons = _not_open_market_reasons(raw, directors)
+    notices = _separate_director_notices(raw)
+    if len(notices) > 1:
+        rows = []
+        for notice in notices:
+            director, entity, position, parts = _3y_parts(notice)
+            for part in parts:
+                rows.append(
+                    _3y_row(
+                        part, director, entity or company, position, ticker, source_url, filing_date,
+                        block_reasons=reasons, directors=directors,
+                    )
+                )
+        return rows
     director, entity, position, parts = _3y_parts(raw)
+    if len(directors) > 1:
+        director = None
     rows = []
     for part in parts:
-        rows.append(_3y_row(part, director, entity or company, position, ticker, source_url, filing_date))
+        rows.append(
+            _3y_row(
+                part, director, entity or company, position, ticker, source_url, filing_date,
+                block_reasons=reasons, directors=directors,
+            )
+        )
     return rows
 
 
@@ -218,7 +258,7 @@ def _form4_row(node, owner, company, ticker, form, source_url, filing_date, shar
     )
 
 
-def _3y_row(part, director, company, header_title, ticker, source_url, filing_date):
+def _3y_row(part, director, company, header_title, ticker, source_url, filing_date, block_reasons=None, directors=None):
     flags = []
     notes = []
     if not director:
@@ -266,6 +306,18 @@ def _3y_row(part, director, company, header_title, ticker, source_url, filing_da
         flags.append("ambiguous_item")
         notes.append("both acquired and disposed")
         open_market = False
+    for reason in block_reasons or []:
+        if reason not in notes:
+            notes.append(reason)
+        open_market = False
+    named = [name for name in (directors or []) if name]
+    if len(named) > 1:
+        listing = "directors named: " + "; ".join(named)
+        if listing not in notes:
+            notes.append(listing)
+    if (block_reasons or len(named) > 1) and "ambiguous_item" not in flags and "unparseable" not in flags:
+        flags.append("ambiguous_item")
+        notes.append("not a discretionary open-market buy")
     title = _label(part, "Position") or _label(part, "Officer title") or header_title or ""
     role = "director"
     if title:
@@ -438,6 +490,64 @@ def _3y_parts(text):
     position = _label(header, "Position") or _label(text, "Position") or _label(header, "Officer title") or ""
     bodies = [chunk for chunk in chunks[1:] if chunk.strip()] or [text]
     return director, entity, position, bodies
+
+
+def _director_names(text):
+    names = []
+    lines = (text or "").splitlines()
+    index = 0
+    while index < len(lines):
+        match = _DIRECTOR_LABEL.match(lines[index].strip())
+        index += 1
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if not value:
+            while index < len(lines):
+                follow = lines[index].strip()
+                index += 1
+                if not follow:
+                    continue
+                if re.match(r"^[A-Za-z].{0,80}:\s*", follow):
+                    value = ""
+                else:
+                    value = follow
+                break
+        for part in re.split(r"\s*(?:,|;|\band\b)\s*", value, flags=re.I):
+            name = part.strip(" .")
+            if not name or name.casefold() in {"nil", "n/a", "none", "-"}:
+                continue
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def _not_open_market_reasons(text, directors):
+    reasons = []
+    if len(directors) > 1:
+        reasons.append("notice names more than one director")
+    blob = " ".join(_notice_lines(text))
+    if _FEE_OR_PLAN.search(blob):
+        reasons.append("director fee, salary sacrifice, or plan issue")
+    return reasons
+
+
+def _separate_director_notices(text):
+    """One notice per director when each block has its own date of change."""
+    parts = re.split(r"(?=^Name of Director\b)", text or "", flags=re.I | re.M)
+    if len(parts) < 3:
+        return [text]
+    preamble = parts[0]
+    sections = []
+    for part in parts[1:]:
+        if not part.strip():
+            continue
+        if not re.search(r"^Date of change\b", part, flags=re.I | re.M):
+            return [text]
+        sections.append(preamble + "\n" + part)
+    if len(sections) < 2:
+        return [text]
+    return sections
 
 
 def _notice_lines(text):

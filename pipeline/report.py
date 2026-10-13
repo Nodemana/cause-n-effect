@@ -98,9 +98,10 @@ def render_selected(lead, *, macro):
     """One selected thesis, then the full Praetorian critique."""
     thesis = lead.thesis
     company = (lead.company or "").strip()
-    title = f"{lead.ticker}"
-    if company and company != lead.ticker:
-        title = f"{lead.ticker} — {company}"
+    shown = _display_ticker(lead)
+    title = shown
+    if company and company != shown:
+        title = f"{shown} — {company}"
     rank = getattr(lead, "pick_order", None) or lead.rank or 0
     price_run = _text(getattr(thesis, "price_run", None)) or "none"
     lines = [
@@ -113,10 +114,9 @@ def render_selected(lead, *, macro):
         f"**Price run:** {price_run}",
         f"**Legate rationale:** {_text(getattr(lead, 'selection_rationale', None)) or 'none'}",
         "",
-        "### Thesis",
-        "",
-        _thesis_paragraph(thesis),
-        "",
+    ]
+    lines.extend(_judgement_sections(thesis))
+    lines.extend([
         "### Cause → effect",
         "",
         _cause_effect(lead),
@@ -127,7 +127,7 @@ def render_selected(lead, *, macro):
         "",
         "### Macro context",
         "",
-        _text(getattr(thesis, "macro_context", None)) or _text(macro) or "none",
+        _macro_for(lead, macro),
         "",
         "### Price run",
         "",
@@ -137,25 +137,37 @@ def render_selected(lead, *, macro):
         "",
         _praetorian_block(thesis),
         "",
-    ]
+    ])
     return "\n".join(lines)
 
 
 def _file_slug(lead):
-    ticker = _text(lead.ticker).upper()
-    if _TICKER.fullmatch(ticker):
-        return ticker
+    shown = _display_ticker(lead)
+    if _TICKER.fullmatch(shown):
+        return shown
     raw = _text(lead.company) or _text(lead.lead_type) or "thesis"
     slug = re.sub(r"[^A-Za-z0-9]+", "-", raw).strip("-").lower()
     return (slug[:40] or "thesis")
 
 
+def _display_ticker(lead):
+    parts = []
+    for part in re.split(r"[,;/]", _text(lead.ticker)):
+        text = part.strip().upper()
+        if _TICKER.fullmatch(text) and text not in parts:
+            parts.append(text)
+    if parts:
+        return ", ".join(parts)
+    return _text(lead.ticker)
+
+
 def _lead_section(lead, *, selection):
     thesis = lead.thesis
     company = (lead.company or "").strip()
-    title = f"{lead.ticker}"
-    if company and company != lead.ticker:
-        title = f"{lead.ticker} — {company}"
+    shown = _display_ticker(lead)
+    title = shown
+    if company and company != shown:
+        title = f"{shown} — {company}"
     tickers = ", ".join(_tickers(lead)) or "none"
     lines = [
         f"## Rank {lead.rank}. {title}",
@@ -172,11 +184,8 @@ def _lead_section(lead, *, selection):
             "",
         ]
     )
+    lines.extend(_judgement_sections(thesis))
     return lines + [
-        "### Thesis",
-        "",
-        _thesis_paragraph(thesis),
-        "",
         "### Cause → effect",
         "",
         _cause_effect(lead),
@@ -191,24 +200,145 @@ def _lead_section(lead, *, selection):
         "",
         "### Macro context",
         "",
-        _text(getattr(thesis, "macro_context", None)) or "none",
+        _macro_for(lead, None),
         "",
     ]
 
 
-def _thesis_paragraph(thesis):
-    text = _text(getattr(thesis, "markdown", None))
-    marker = "## Thesis"
-    if marker not in text:
-        return text or "none"
-    body = text.split(marker, 1)[1].lstrip("\n")
+def _judgement_sections(thesis):
+    return [
+        "### Thesis",
+        "",
+        _thesis_prose(thesis),
+        "",
+        "### Recommendation",
+        "",
+        _recommendation(thesis),
+        "",
+        "### Expected return",
+        "",
+        _expected_return(thesis),
+        "",
+        "### Risks",
+        "",
+        _risk_bullets(thesis),
+        "",
+        "### Timeframe",
+        "",
+        _timeframe(thesis),
+        "",
+        "### Assumptions",
+        "",
+        _assumption_bullets(thesis),
+        "",
+    ]
+
+
+def _thesis_prose(thesis):
+    raw = str(getattr(thesis, "markdown", None) or "").replace("\r\n", "\n")
+    if "## Thesis" in raw:
+        body = raw.split("## Thesis", 1)[1]
+    else:
+        body = raw
+    body = re.split(r"\n(?:##\s+\S|Source:)", body, maxsplit=1)[0]
+    flattened = " ".join(body.split())
+    if "## Recommendation" in flattened or "Expected return:" in flattened:
+        body = re.split(
+            r"##\s+Recommendation|Expected return:|Risks:|Timeframe:|##\s+Assumptions",
+            body,
+            maxsplit=1,
+        )[0]
+    paragraphs = []
+    for block in re.split(r"\n\s*\n", body.strip()):
+        line = " ".join(block.split())
+        if line:
+            paragraphs.append(line)
+    return "\n\n".join(paragraphs) or "none"
+
+
+def _recommendation(thesis):
+    text = _text(getattr(thesis, "recommendation", None))
+    if text:
+        return text
+    return _markdown_field(thesis, "Recommendation:") or "none"
+
+
+def _expected_return(thesis):
+    text = _text(getattr(thesis, "roi", None))
+    if text:
+        return text
+    return _markdown_field(thesis, "Expected return:") or "none"
+
+
+def _risk_bullets(thesis):
+    items = _bullet_items(getattr(thesis, "risks_text", None))
+    if not items:
+        items = _bullet_items(_markdown_field(thesis, "Risks:"))
+    if not items:
+        return "- none"
+    return "\n".join(f"- {item}" for item in items)
+
+
+def _assumption_bullets(thesis):
+    items = _bullet_items(getattr(thesis, "assumptions_text", None))
+    if not items:
+        items = _bullet_items(_markdown_after(thesis, "## Assumptions"))
+    if not items:
+        return "- none"
+    return "\n".join(f"- {item}" for item in items)
+
+
+def _timeframe(thesis):
+    days = getattr(thesis, "timeframe_days", None)
+    if days is None or days == "":
+        raw = _markdown_field(thesis, "Timeframe:")
+        return raw or "none"
+    return f"{int(days)} days"
+
+
+def _bullet_items(value):
+    items = []
+    for line in str(value or "").replace("\r\n", "\n").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("- "):
+            line = line[2:].strip()
+        elif line.startswith("-"):
+            line = line[1:].strip()
+        if ";" in line and not line.startswith("http"):
+            for part in line.split(";"):
+                part = part.strip()
+                if part:
+                    items.append(part)
+            continue
+        if line:
+            items.append(line)
+    return items
+
+
+def _markdown_field(thesis, label):
+    raw = " ".join(str(getattr(thesis, "markdown", None) or "").split())
+    match = re.search(
+        rf"{re.escape(label)}\s*(.+?)(?=\s+(?:##\s+\S|Source:|Recommendation:|Expected return:|Risks:|Timeframe:)|$)",
+        raw,
+    )
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
+def _markdown_after(thesis, heading):
+    raw = str(getattr(thesis, "markdown", None) or "").replace("\r\n", "\n")
+    if heading not in raw:
+        return ""
+    body = raw.split(heading, 1)[1]
     kept = []
     for line in body.splitlines():
-        if line.startswith("## ") or line.startswith("Source:"):
+        if line.startswith("## "):
             break
         kept.append(line)
-    paragraph = "\n".join(kept).strip()
-    return paragraph or "none"
+    return "\n".join(kept)
 
 
 def _cause_effect(lead):
@@ -243,7 +373,8 @@ def _cause_effect(lead):
                 if piece:
                     effects.append(piece)
         recommendation = _text(getattr(thesis, "recommendation", None))
-        if recommendation and recommendation.upper() != (lead.ticker or "").upper():
+        shown = _display_ticker(lead)
+        if recommendation and recommendation.upper() != shown.upper() and recommendation.upper() != (lead.ticker or "").upper():
             effects.append(f"recommendation {recommendation}")
     if effects:
         return start + " → " + " → ".join(effects)
@@ -253,9 +384,10 @@ def _cause_effect(lead):
 def _step(lead):
     label = _step_label(lead)
     company = _text(lead.company)
-    if company == _text(lead.ticker):
+    ticker = _display_ticker(lead)
+    if company == ticker or company == _text(lead.ticker):
         company = ""
-    piece = " ".join(part for part in (label, lead.ticker, company) if part)
+    piece = " ".join(part for part in (label, ticker, company) if part)
     url = _text(lead.source_url)
     if _official_url(url):
         piece = f"{piece} ({url})"
@@ -291,22 +423,120 @@ def _tickers(lead):
     found = []
 
     def add(value):
-        text = _text(value).upper()
-        if text and text not in found:
-            found.append(text)
+        for part in re.split(r"[,;/]", _text(value)):
+            text = part.strip().upper()
+            if _TICKER.fullmatch(text) and text not in found:
+                found.append(text)
 
     add(lead.ticker)
     for member in getattr(lead, "members", None) or []:
         add(member.ticker)
     thesis = lead.thesis
     if thesis is not None:
-        add(getattr(thesis, "recommendation", None))
         for role in ("suppliers", "customers", "buyers"):
             for item in getattr(thesis, role) or []:
                 add(item.get("ticker"))
     for item in getattr(lead, "related_findings", None) or []:
         add(item.get("ticker"))
     return found
+
+
+def _macro_for(lead, fallback):
+    thesis = getattr(lead, "thesis", None)
+    raw = str(getattr(thesis, "macro_context", None) or "").strip()
+    if not raw:
+        raw = str(fallback or "").strip()
+    if not raw:
+        return "none"
+    if not _is_catalog_dump(raw):
+        return _paragraphs(raw) or "none"
+    segments = _macro_segments(raw)
+    relevant = _relevant_series(lead, segments)
+    kept = []
+    for segment in segments:
+        series_id = segment.split()[0].upper() if segment.split() else ""
+        if series_id in relevant:
+            kept.append(segment)
+    if not kept:
+        return "none"
+    return "\n".join(f"- {item}" for item in kept)
+
+
+def _is_catalog_dump(text):
+    folded = text.lstrip().casefold()
+    return folded.startswith("macro scout cache:") or "unavailable:" in folded
+
+
+def _macro_segments(text):
+    body = text.strip()
+    if body.casefold().startswith("macro scout cache:"):
+        body = body.split(":", 1)[1].strip()
+    cut = body.casefold().find("unavailable:")
+    if cut != -1:
+        body = body[:cut].rstrip(" .;")
+    return [part.strip() for part in body.split(";") if part.strip()]
+
+
+def _relevant_series(lead, segments):
+    from pipeline.scout_groups import _relevance_rules
+
+    rules = _relevance_rules()
+    blob = _lead_blob(lead)
+    ticker = _text(getattr(lead, "ticker", "")).upper()
+    ticker_ids = {part.strip() for part in re.split(r"[,;/]", ticker) if part.strip()}
+    matched = set()
+    for segment in segments:
+        series_id = segment.split()[0].upper() if segment.split() else ""
+        if not series_id:
+            continue
+        keywords = rules.get(series_id)
+        if series_id in ticker_ids:
+            matched.add(series_id)
+            continue
+        if keywords is None:
+            if series_id.casefold() in blob:
+                matched.add(series_id)
+            continue
+        if any(word.casefold() in blob for word in keywords if word):
+            matched.add(series_id)
+    return matched
+
+
+def _lead_blob(lead):
+    thesis = getattr(lead, "thesis", None)
+    chunks = [
+        getattr(lead, "ticker", ""),
+        getattr(lead, "company", ""),
+        getattr(lead, "summary", ""),
+        getattr(lead, "lead_type", ""),
+        _thesis_prose(thesis) if thesis is not None else "",
+        getattr(thesis, "recommendation", "") if thesis is not None else "",
+    ]
+    for member in getattr(lead, "members", None) or []:
+        chunks.append(getattr(member, "ticker", ""))
+        chunks.append(getattr(member, "company", ""))
+        chunks.append(getattr(member, "summary", ""))
+    if thesis is not None:
+        for role in ("suppliers", "customers", "buyers"):
+            for item in getattr(thesis, role) or []:
+                if isinstance(item, dict):
+                    chunks.append(item.get("name"))
+                    chunks.append(item.get("ticker"))
+    for item in getattr(lead, "related_findings", None) or []:
+        chunks.append(item.get("company"))
+        chunks.append(item.get("ticker"))
+        chunks.append(item.get("lead_type"))
+    return " ".join(str(chunk or "") for chunk in chunks).casefold()
+
+
+def _paragraphs(value):
+    text = str(value or "").replace("\r\n", "\n").strip()
+    blocks = []
+    for block in re.split(r"\n\s*\n", text):
+        line = " ".join(block.split())
+        if line:
+            blocks.append(line)
+    return "\n\n".join(blocks)
 
 
 def _evidence_block(lead):
@@ -327,17 +557,17 @@ def _evidence_links(lead):
         seen.add(url)
         found.append((url, _text(label) or "source"))
 
-    add(lead.source_url, lead.ticker or "source")
+    add(lead.source_url, _display_ticker(lead) or "source")
     figure = getattr(lead, "figure", None)
     if figure is not None:
-        add(getattr(figure, "source_url", None), f"{lead.ticker} {getattr(figure, 'figure_type', '')}".strip())
+        add(getattr(figure, "source_url", None), f"{_display_ticker(lead)} {getattr(figure, 'figure_type', '')}".strip())
     for member in getattr(lead, "members", None) or []:
-        add(member.source_url, f"{member.ticker} {member.lead_type}".strip())
+        add(member.source_url, f"{_display_ticker(member)} {member.lead_type}".strip())
         member_figure = getattr(member, "figure", None)
         if member_figure is not None:
             add(
                 getattr(member_figure, "source_url", None),
-                f"{member.ticker} {getattr(member_figure, 'figure_type', '')}".strip(),
+                f"{_display_ticker(member)} {getattr(member_figure, 'figure_type', '')}".strip(),
             )
     for item in getattr(lead, "related_findings", None) or []:
         add(item.get("source_url"), f"{item.get('ticker') or ''} {item.get('lead_type') or ''}".strip())
