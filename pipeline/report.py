@@ -211,6 +211,7 @@ def _report_markets(conn, leads, as_of):
     series = []
     for lead in leads:
         tickers.extend(_stock_tickers(lead))
+        tickers.extend(_named_tickers(lead))
         series.extend(_cause_series(lead))
     return quotes_for(conn, tickers, as_of), series_levels(conn, series, as_of)
 
@@ -232,8 +233,11 @@ def _thesis_prose(thesis):
     paragraphs = []
     for block in re.split(r"\n\s*\n", body.strip()):
         line = " ".join(block.split())
-        if line:
-            paragraphs.append(line)
+        # A long single block reads badly on a phone. Start a new paragraph
+        # at the thesis's own section labels.
+        for piece in re.split(r"\s+(?=(?:Effect|Priced-in check|Conclusion):)", line):
+            if piece:
+                paragraphs.append(piece)
     return "\n\n".join(paragraphs) or "none"
 
 
@@ -279,7 +283,11 @@ def _timeframe(thesis):
 
 def _bullet_items(value):
     items = []
-    for line in str(value or "").replace("\r\n", "\n").splitlines():
+    lines = str(value or "").replace("\r\n", "\n").splitlines()
+    # A multi-line value already has one item per line. Only a legacy
+    # single-line value joined with semicolons is split on them.
+    legacy = len([line for line in lines if line.strip()]) == 1
+    for line in lines:
         line = line.strip()
         if not line:
             continue
@@ -287,7 +295,7 @@ def _bullet_items(value):
             line = line[2:].strip()
         elif line.startswith("-"):
             line = line[1:].strip()
-        if ";" in line and not line.startswith("http"):
+        if legacy and ";" in line and not line.startswith("http"):
             for part in line.split(";"):
                 part = part.strip()
                 if part:
@@ -592,6 +600,11 @@ def _price_table(lead, prices, levels):
             continue
         seen.add(ticker)
         rows.append(_quote_row(ticker, prices.get(ticker)))
+    for ticker in _named_tickers(lead):
+        if ticker in seen or ticker not in prices:
+            continue
+        seen.add(ticker)
+        rows.append(_quote_row(ticker, prices.get(ticker)))
     if not rows:
         rows.append("| n/a | n/a | n/a | n/a | n/a |")
     header = [
@@ -639,14 +652,15 @@ def _bottom_line(thesis):
     timeframe = _timeframe(thesis)
     if timeframe == "none":
         timeframe = "n/a"
+    # One list item per field: consecutive quote lines without a list
+    # marker run together into one paragraph in most markdown viewers.
     return "\n".join(
         [
-            "> **Bottom line**",
-            f"> Recommendation: {recommendation}",
-            f"> Expected return: {expected}",
-            f"> Timeframe: {timeframe}",
-            f"> Conviction: {conviction}",
-            f"> Biggest risk: {biggest}",
+            f"> - **Recommendation:** {recommendation}",
+            f"> - **Expected return:** {expected}",
+            f"> - **Timeframe:** {timeframe}",
+            f"> - **Conviction:** {conviction}",
+            f"> - **Biggest risk:** {biggest}",
         ]
     )
 
@@ -656,12 +670,183 @@ def _cause_bullets(lead):
     kept = [part for part in parts if part]
     if not kept:
         return "- none"
-    return "\n".join(f"- {part}" for part in kept)
+    lines = []
+    for index, part in enumerate(kept):
+        if index == 0:
+            english = _macro_cause_bullets(lead, part)
+            if english:
+                lines.extend(english)
+                continue
+        lines.append(f"- {part}")
+    return "\n".join(lines)
+
+
+_READING = re.compile(
+    r"^(?:macro_(?:level|spread)\s+)?"
+    r"(?:(?P<role>1m|3m)\s+)?"
+    r"(?P<series>[A-Za-z0-9][A-Za-z0-9.-]{0,40})\s+"
+    r"(?P<value>[+-]?\d+(?:\.\d+)?)\s+"
+    r"on\s+(?P<day>\d{4}-\d{2}-\d{2})\s+"
+    r"source\s+(?P<url>\S+?)$"
+)
+_CHANGE = re.compile(
+    r"^(?P<key>1m_pct|3m_pct|z_score|spread|range_low|range_high)\s+"
+    r"(?P<value>[+-]?\d+(?:\.\d+)?)$"
+)
+_WINDOW = {"1m_pct": "one month", "3m_pct": "three months"}
+_REASON = {
+    "1m_pct": "the one-month move",
+    "3m_pct": "the three-month move",
+    "z_score": "an unusual move versus the prior year",
+    "spread_outside_1y_range": "the spread sitting outside its prior-year range",
+}
+
+
+def _macro_cause_bullets(lead, text):
+    """Turn a stored macro figure into short sentences.
+
+    The stored summary keeps the machine fields. This report does not.
+    """
+    if not _looks_like_macro_figure(text):
+        return []
+    readings = []
+    changes = {}
+    reason_tokens = []
+    for clause in text.split(";"):
+        clause = " ".join(clause.split())
+        if not clause:
+            continue
+        reading = _READING.match(clause)
+        if reading:
+            readings.append(reading.groupdict())
+            continue
+        change = _CHANGE.match(clause)
+        if change:
+            changes[change.group("key")] = change.group("value")
+            continue
+        if clause.startswith("reasons "):
+            body = re.sub(r"\s+\d{4}-\d{2}-\d{2}$", "", clause[len("reasons ") :].strip())
+            reason_tokens = [token for token in body.split() if token in _REASON]
+    lines = [_reading_bullet(lead, item) for item in readings]
+    for key, window in _WINDOW.items():
+        if key in changes:
+            lines.append(_move_bullet(window, changes[key]))
+    if "z_score" in changes:
+        lines.append(_z_bullet(changes["z_score"]))
+    spread = _spread_bullet(lead, changes, reason_tokens)
+    if spread:
+        lines.append(spread)
+    why = _why_bullet(reason_tokens)
+    if why:
+        lines.append(why)
+    return [f"- {line}" for line in lines if line]
+
+
+def _looks_like_macro_figure(text):
+    folded = text.casefold()
+    return (
+        folded.startswith("macro_level")
+        or folded.startswith("macro_spread")
+        or "1m_pct" in folded
+        or "3m_pct" in folded
+        or "z_score" in folded
+        or "range_low" in folded
+    )
+
+
+def _reading_bullet(lead, item):
+    name = _series_label(lead, item["series"])
+    amount = f"{float(item['value']):,.2f}"
+    when = item["day"]
+    role = item.get("role")
+    if role == "1m":
+        sentence = f"One month earlier, {name} was {amount} on {when}"
+    elif role == "3m":
+        sentence = f"Three months earlier, {name} was {amount} on {when}"
+    else:
+        sentence = f"{name} was {amount} on {when}"
+    url = item.get("url") or ""
+    if _official_url(url):
+        sentence += f" ([source]({url}))"
+    return sentence + "."
+
+
+def _series_label(lead, series_id):
+    key = series_id.upper()
+    ticker = _text(getattr(lead, "ticker", "")).upper()
+    company = _text(getattr(lead, "company", ""))
+    if key == ticker and company and company.upper() != key:
+        return company
+    return {"BRENT": "Brent", "WTI": "WTI", "BRENT-WTI": "Brent minus WTI"}.get(key, series_id)
+
+
+def _move_bullet(window, value):
+    number = float(value)
+    if number > 0:
+        return f"Up {number:.1f}% over {window}."
+    if number < 0:
+        return f"Down {abs(number):.1f}% over {window}."
+    return f"Unchanged over {window}."
+
+
+def _z_bullet(value):
+    number = float(value)
+    side = "above" if number >= 0 else "below"
+    return f"{abs(number):.1f} standard deviations {side} its prior-year average."
+
+
+def _spread_bullet(lead, changes, reason_tokens):
+    if "spread" not in changes:
+        return ""
+    amount = f"{float(changes['spread']):,.2f}"
+    name = _text(getattr(lead, "company", "")) or "The spread"
+    if "range_low" in changes and "range_high" in changes:
+        low = f"{float(changes['range_low']):,.2f}"
+        high = f"{float(changes['range_high']):,.2f}"
+        if "spread_outside_1y_range" in reason_tokens:
+            return f"{name} was {amount}, outside its prior-year range of {low} to {high}."
+        return f"{name} was {amount}. Its prior-year range was {low} to {high}."
+    return f"{name} was {amount}."
+
+
+def _why_bullet(reason_tokens):
+    labels = []
+    for token in reason_tokens:
+        if token == "spread_outside_1y_range":
+            continue
+        label = _REASON.get(token)
+        if label and label not in labels:
+            labels.append(label)
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        joined = labels[0]
+    elif len(labels) == 2:
+        joined = f"{labels[0]} and {labels[1]}"
+    else:
+        joined = ", ".join(labels[:-1]) + ", and " + labels[-1]
+    return f"This lead is here because {joined} cleared its bar."
 
 
 def _stock_tickers(lead):
     series = set(_cause_series(lead))
     return [ticker for ticker in _tickers(lead) if ticker not in series]
+
+
+def _named_tickers(lead):
+    """Tickers a macro thesis names as winners or losers in its recommendation.
+
+    These are candidates only: the price table shows one when an official
+    quote for it is stored, so an ordinary capitalised word never becomes a row.
+    """
+    if getattr(lead, "lead_type", "") != "macro" or lead.thesis is None:
+        return []
+    text = _text(getattr(lead.thesis, "recommendation", None))
+    found = []
+    for token in re.findall(r"\b[A-Z]{1,5}\b", text):
+        if token not in found and token not in set(_cause_series(lead)):
+            found.append(token)
+    return found
 
 
 def _cause_series(lead):
@@ -675,7 +860,7 @@ def _cause_series(lead):
     expanded = []
     for series_id in ids:
         expanded.append(series_id)
-        if series_id == "BRENT-WTI":
+        if series_id in ("BRENT-WTI", "BRENT", "WTI"):
             for leg in ("BRENT", "WTI"):
                 if leg not in expanded:
                     expanded.append(leg)
