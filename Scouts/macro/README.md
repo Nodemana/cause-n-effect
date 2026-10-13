@@ -27,7 +27,7 @@ Official free sources only. Requests go through `shared/nethttp.py` (`Client`, o
 | `AUDUSD` | USD per 1 AUD (`FXRUSD` on table F11.1) | RBA |
 | `WTI` | WTI Cushing spot (`RWTC`) | EIA |
 | `BRENT` | Brent Europe spot (`RBRTE`) | EIA |
-| `HENRY_HUB` | Henry Hub natural gas spot (`RNGWHHD`) | EIA |
+| `HENRY_HUB` | Henry Hub natural gas spot (`RNGWHHD` on `natural-gas/pri/fut`) | EIA |
 | `US_FED_OUTLAYS` | US federal outlays | FRED |
 | `US_FED_SURPLUS` | US federal surplus or deficit (negative is a deficit) | FRED |
 | `AU_GOV_SPENDING` | General government final consumption expenditure, current prices, seasonally adjusted | ABS |
@@ -45,6 +45,8 @@ A series is fetched again only when its newest `fetched_at` is missing or at lea
 `macro_series` holds `series_id`, `name`, `source`, `source_url`, `unit`, `frequency`, and `stale_after_hours`. `macro_observations` holds `series_id`, `obs_date`, `value`, and `fetched_at`, unique on `(series_id, obs_date)`. A later fetch updates the value and `fetched_at` for that date. The migration is `migrations/001_macro.sql`, recorded in `schema_migrations`. That name does not collide with `shared/migrations/002_lead_pipeline.sql`. Either file can be applied first.
 
 The second pass reads `series_id`, `name`, `source`, `unit`, `obs_date`, and `value`. Those are the columns `pipeline.prompts.load_macro` selects when the tables are present.
+
+`python -m pipeline run` also reads the same observations. A series that moves at least 10 percent in one month, 20 percent in three months, or two standard deviations versus the prior year becomes a `macro` lead. Brent minus WTI becomes a lead when the spread is outside its prior-year range. The lead stores the series ids, values, dates, and source URLs, and it goes through significance, the Centurion rules in `Centurions/rules/macro.md`, and the Praetorian on the agent queue. That Centurion task also includes chain and smart-money findings whose text matches `Centurions/rules/macro_relevance.md` (refiners and tankers for Brent and WTI). This scout still does not insert that lead itself.
 
 ## Constraints and limitations
 

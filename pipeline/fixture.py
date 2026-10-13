@@ -1,151 +1,150 @@
-"""LLM providers.
+"""Deterministic fixture responder for tests.
 
-The live client speaks the OpenAI chat-completions API. It reads
-LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL from the environment. The key is
-never written to a log line, a repr, or an exception message.
-
-When LLM_API_KEY is unset, resolve_provider returns the stub. The stub is
-deterministic and does not open a socket. Tests use it the same way.
+Live `python -m pipeline run` does not import this module and does not call
+a model. Tests use `run_with_fixture` to write each stage's result files and
+ingest them until ranking finishes.
 """
 
 import json
-import os
 import re
-import urllib.error
-import urllib.request
+from pathlib import Path
 
 from pipeline.counterparties import is_common_heading
 
-DEFAULT_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_MODEL = "gpt-4o-mini"
-
-
-class LLMError(RuntimeError):
+class FixtureError(RuntimeError):
     pass
 
 
-class Completion:
-    def __init__(self, text, prompt_tokens, completion_tokens):
-        self.text = text
-        self.prompt_tokens = int(prompt_tokens)
-        self.completion_tokens = int(completion_tokens)
-
-    @property
-    def total_tokens(self):
-        return self.prompt_tokens + self.completion_tokens
-
-
-class OpenAICompatibleProvider:
-    """HTTP client for an OpenAI-compatible /chat/completions endpoint."""
-
-    name = "openai-compatible"
-
-    def __init__(self, api_key, base_url, model, opener=None):
-        self._api_key = api_key
-        self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
-        self.model = model or DEFAULT_MODEL
-        self._opener = opener or urllib.request.urlopen
-
-    def __repr__(self):
-        return f"OpenAICompatibleProvider(model={self.model!r})"
-
-    def complete(self, prompt, *, max_tokens):
-        url = self.base_url + "/chat/completions"
-        body = json.dumps(
-            {
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": int(max_tokens),
-            }
-        ).encode("utf-8")
-        request = urllib.request.Request(url, data=body, method="POST")
-        request.add_header("Content-Type", "application/json")
-        request.add_header("Authorization", "Bearer " + self._api_key)
-        try:
-            with self._opener(request, timeout=60) as response:
-                raw = response.read()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:500]
-            raise LLMError(_redact(f"LLM request failed with HTTP {exc.code}: {detail}", self._api_key)) from None
-        except urllib.error.URLError as exc:
-            raise LLMError(_redact(f"LLM request failed: {exc.reason}", self._api_key)) from None
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            raise LLMError("LLM response was not JSON") from exc
-        try:
-            text = payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError("LLM response had no message content") from exc
-        usage = payload.get("usage") or {}
-        prompt_tokens = usage.get("prompt_tokens")
-        completion_tokens = usage.get("completion_tokens")
-        if prompt_tokens is None:
-            prompt_tokens = max(1, (len(prompt) + 3) // 4)
-        if completion_tokens is None:
-            completion_tokens = max(1, (len(text) + 3) // 4)
-        return Completion(text, prompt_tokens, completion_tokens)
+def fixture_response(prompt):
+    """Return the JSON object the offline fixture would write for this prompt."""
+    task = _field(prompt, "TASK")
+    if task == "significance":
+        return _significance(prompt)
+    if task == "centurion":
+        return _centurion(prompt)
+    if task == "praetorian":
+        return _praetorian(prompt)
+    if task == "legate_selection":
+        return _legate_selection(prompt)
+    raise FixtureError(f"fixture has no response for task {task!r}")
 
 
-class StubProvider:
-    """Deterministic offline stand-in. No socket, no key, stable JSON."""
+def run_with_fixture(db_path, *, responder=None, queue_dir=None, **kwargs):
+    """Drive a sweep offline. Not used by the live CLI."""
+    from pipeline.agent import read_tasks, result_path
+    from pipeline.flow import ingest_run, run_pipeline
 
-    name = "stub"
+    if queue_dir is None:
+        queue_dir = str(Path(db_path).parent / "agent_queue")
+    responder = responder or (lambda task: fixture_response(task["prompt"]))
+    parties_client = kwargs.pop("parties_client", None)
+    result = run_pipeline(db_path, queue_dir=queue_dir, **kwargs)
+    prompts = []
+    seen = set()
+    while result.get("status") == "awaiting_agents":
+        if result.get("stage") == "prices":
+            write_fixture_prices(db_path, queue_dir, result["run_id"])
+            result = ingest_run(
+                db_path,
+                result["run_id"],
+                queue_dir=queue_dir,
+                parties_client=parties_client,
+            )
+            continue
+        tasks = read_tasks(queue_dir, result["run_id"], result["stage"])
+        if not tasks:
+            break
+        for task, path in tasks:
+            key = str(path)
+            if key not in seen:
+                prompts.append(task["prompt"])
+                seen.add(key)
+            answer = result_path(path)
+            if not answer.is_file():
+                payload = responder(task)
+                answer.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        result = ingest_run(
+            db_path,
+            result["run_id"],
+            queue_dir=queue_dir,
+            parties_client=parties_client,
+        )
+    result["prompts"] = prompts
+    return result
 
-    def __repr__(self):
-        return "StubProvider()"
 
-    def complete(self, prompt, *, max_tokens):
-        text = _stub_text(prompt)
-        return Completion(text, _count(prompt), _count(text))
+def write_fixture_prices(db_path, queue_dir, run_id):
+    """Write prices.result.json from official share_price figures.
 
-
-def resolve_provider(environ=None):
-    """Stub when LLM_API_KEY is missing or blank. Otherwise the HTTP client.
-
-    The key is read here and stored only on the provider instance.
+    Live runs do not call this. A filing, company release, or ASX announcement
+    price becomes a DELAYED quote dated on the sweep clock. Any other stored
+    price, including a media quote, is UNAVAILABLE and stays unverified.
     """
-    env = os.environ if environ is None else environ
-    key = (env.get("LLM_API_KEY") or "").strip()
-    if not key:
-        return StubProvider()
-    base = (env.get("LLM_BASE_URL") or DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL
-    model = (env.get("LLM_MODEL") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    return OpenAICompatibleProvider(key, base, model)
+    from shared.pipeline_store import connect
 
+    from pipeline.prices import needed_path, result_path
 
-def parse_json_object(text):
-    """Parse a JSON object from a model reply, including a fenced block."""
-    raw = (text or "").strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1]
-        if raw.endswith("```"):
-            raw = raw[: raw.rfind("```")]
-        raw = raw.strip()
+    needed = json.loads(needed_path(queue_dir, run_id).read_text(encoding="utf-8"))
+    as_of = str(needed.get("as_of") or "")[:10]
+    conn = connect(db_path)
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start < 0 or end <= start:
-            raise LLMError("model reply was not a JSON object")
-        try:
-            data = json.loads(raw[start : end + 1])
-        except json.JSONDecodeError as exc:
-            raise LLMError("model reply was not a JSON object") from exc
-    if not isinstance(data, dict):
-        raise LLMError("model reply was not a JSON object")
-    return data
+        quotes = []
+        for item in needed.get("tickers") or []:
+            ticker = item["ticker"]
+            last = _official_share_price(conn, ticker)
+            if last is None:
+                quotes.append(
+                    {
+                        "as_of": as_of,
+                        "conid": 0,
+                        "last": None,
+                        "ticker": ticker,
+                        "top_status": "UNAVAILABLE",
+                    }
+                )
+            else:
+                quotes.append(
+                    {
+                        "as_of": as_of,
+                        "conid": 1,
+                        "last": last,
+                        "ticker": ticker,
+                        "top_status": "DELAYED",
+                    }
+                )
+    finally:
+        conn.close()
+    path = result_path(queue_dir, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(quotes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
-def _redact(message, secret):
-    if secret and secret in message:
-        return message.replace(secret, "[redacted]")
-    return message
+_PRICE_TYPES = ("share_price", "closing_price", "stock_price")
+_OFFICIAL_PRICE_TYPES = {"filing", "company_release", "asx_announcement"}
+_OFFICIAL_PRICE_HOSTS = ("sec.gov", "asx.com.au", "asx.api.markitdigital.com")
 
 
-def _count(text):
-    return max(1, (len(text or "") + 3) // 4)
+def _official_share_price(conn, ticker):
+    placeholders = ", ".join("?" * len(_PRICE_TYPES))
+    rows = conn.execute(
+        f"""
+        SELECT value, currency, source_type, source_url
+        FROM figures
+        WHERE ticker = ? AND figure_type IN ({placeholders})
+          AND value IS NOT NULL AND value > 0 AND verified = 1
+        ORDER BY COALESCE(announced_on, '') DESC, figure_id DESC
+        """,
+        (ticker, *_PRICE_TYPES),
+    ).fetchall()
+    for row in rows:
+        if (row["currency"] or "USD").upper() != "USD":
+            continue
+        source_type = row["source_type"] or ""
+        url = (row["source_url"] or "").lower()
+        if source_type in _OFFICIAL_PRICE_TYPES or any(host in url for host in _OFFICIAL_PRICE_HOSTS):
+            return float(row["value"])
+    return None
 
 
 def _field(prompt, key):
@@ -181,7 +180,9 @@ def _stub_text(prompt):
         return json.dumps(_centurion(prompt), sort_keys=True)
     if task == "praetorian":
         return json.dumps(_praetorian(prompt), sort_keys=True)
-    raise LLMError(f"stub has no response for task {task!r}")
+    if task == "legate_selection":
+        return json.dumps(_legate_selection(prompt), sort_keys=True)
+    raise FixtureError(f"stub has no response for task {task!r}")
 
 
 _LARGE = {
@@ -272,6 +273,7 @@ _TIMEFRAME = {
     "debt_raise": 270,
     "insider_buying": 90,
     "accumulation": 120,
+    "macro": 120,
 }
 
 
@@ -320,12 +322,10 @@ def _constituent_value(item, fallback):
 def _centurion(prompt):
     lead_type = _field(prompt, "LEAD_TYPE") or "capex"
     ticker = _field(prompt, "TICKER")
-    pass_number = _field(prompt, "PASS") or "1"
     constituents = _constituents(prompt)
     suppliers, customers, buyers = _parties(prompt, constituents)
-    grades = _grades(prompt)
     value = _optional_float(_field(prompt, "VALUE")) or 0
-    if pass_number == "2" and constituents:
+    if constituents:
         roi = max(_expected_return(item.get("lead_type") or lead_type, _constituent_value(item, value)) for item in constituents)
         roi += 3
         timeframe = min(_TIMEFRAME.get(item.get("lead_type"), 365) for item in constituents)
@@ -338,19 +338,24 @@ def _centurion(prompt):
     assumptions = [
         "The figures used here are the ones stored from the filing or the announcement.",
     ]
-    if not _field(prompt, "MARKET_CAP"):
-        assumptions.insert(0, "market cap unverified")
     macro = _field(prompt, "MACRO")
-    if pass_number == "2" and macro and macro != "none":
+    if macro and macro != "none":
         assumptions.append(f"Macro context used: {macro}")
     where = ticker
-    if pass_number == "2" and suppliers:
+    if constituents and suppliers:
         named = suppliers[0]
         where = named.get("ticker") or named.get("name") or ticker
-    thesis = (
-        f"Thesis for {ticker} {lead_type}. "
-        f"A return depends on the official-source figure stored for this lead."
-    )
+    if lead_type == "macro":
+        thesis = (
+            f"Thesis for {ticker} macro. Cause: {_field(prompt, 'VALUE_TEXT')}. "
+            "Likely effects follow from that cause. "
+            "Winning tickers and losing tickers are named from that cause."
+        )
+    else:
+        thesis = (
+            f"Thesis for {ticker} {lead_type}. "
+            f"A return depends on the official-source figure stored for this lead."
+        )
     growth_text = _field(prompt, "GROWTH_TEXT")
     if growth_text:
         thesis = f"{thesis} {growth_text}"
@@ -366,7 +371,6 @@ def _centurion(prompt):
         "risks": risks,
         "recommendation": where,
         "assumptions": assumptions,
-        "grades": grades,
         "suppliers": suppliers,
         "customers": customers,
         "buyers": buyers,
@@ -374,57 +378,8 @@ def _centurion(prompt):
     }
 
 
-def _grades(prompt):
-    market = _optional_float(_field(prompt, "MARKET_CAP"))
-    value = _optional_float(_field(prompt, "VALUE"))
-    grades = []
-    for line in _block(prompt, "CRITERIA").splitlines():
-        line = line.strip()
-        if not line.startswith("- "):
-            continue
-        parts = [part.strip() for part in line[2:].split(" | ")]
-        name = parts[0] if parts else ""
-        if not name:
-            continue
-        threshold = _optional_float(parts[1]) if len(parts) > 1 else None
-        if "market_cap" in name:
-            if market is None:
-                passed = False
-                evidence = "market cap unverified"
-            elif threshold is not None and market >= threshold:
-                passed = True
-                evidence = "shares outstanding times an official price"
-            else:
-                passed = False
-                evidence = "market cap is below the threshold"
-        elif name == "raise_vs_company":
-            if market is None:
-                passed = False
-                evidence = "market cap unverified"
-            elif value is not None and threshold is not None and (100.0 * value / market) >= threshold:
-                passed = True
-                evidence = "the raise clears the percent of the official market cap"
-            else:
-                passed = False
-                evidence = "the raise is below the percent of market cap"
-        elif "growth" in name:
-            growth_text = _field(prompt, "GROWTH_TEXT")
-            passed = "PRIOR_COMPARISON: yes" in prompt
-            if passed and growth_text:
-                evidence = growth_text
-            elif passed:
-                evidence = "prior comparison in the figures table"
-            else:
-                evidence = "no prior comparison in the figures table"
-        else:
-            passed = True
-            evidence = "the stored figure is an official-source row"
-        grades.append({"name": name, "passed": passed, "evidence": evidence})
-    return grades
-
-
 def _parties(prompt, constituents):
-    if _field(prompt, "PASS") == "2":
+    if constituents:
         suppliers, customers, buyers = [], [], []
         for item in constituents:
             suppliers.extend(item.get("suppliers") or [])
@@ -624,52 +579,50 @@ def _official_citation(thesis):
     return any(mark in text for mark in marks)
 
 
+def _legate_selection(prompt):
+    """Select every listed candidate, at most 5, in the order the prompt lists them."""
+    ids = []
+    for line in (prompt or "").splitlines():
+        if not line.startswith("LEAD_ID: "):
+            continue
+        ids.append(int(line.split(":", 1)[1].strip()))
+    chosen = ids[:5]
+    return {
+        "lead_ids": chosen,
+        "rationale": {str(item): f"Selected lead {item}." for item in chosen},
+    }
+
+
 def _praetorian(prompt):
+    """List flaws. The returned object does not reject the lead."""
     price_run = _field(prompt, "PRICE_RUN")
     thesis = _block(prompt, "THESIS")
-    grade_issues = _grade_issues(thesis)
+    flaws = []
     if price_run == "priced-in":
-        assumptions = (
-            "The price-run classification is priced-in, so the claim that this is still early does not hold."
+        flaws.append(
+            {
+                "flaw": "The price-run classification is priced-in, so the claim that this is still early does not hold.",
+                "severity": "high",
+                "evidence": "The stored text marks the run as priced-in.",
+            }
         )
-        contradicting = "A priced-in classification is counter-evidence to treating the finding as an early lead."
-        stance = "agree"
-        counterevidence = (
-            "Agree: the stored text marks the run as priced-in, and that concern stands."
+    if not _official_citation(thesis):
+        flaws.append(
+            {
+                "flaw": "The thesis does not cite an SEC filing, an ASX announcement, or a company release.",
+                "severity": "high",
+                "evidence": "The thesis text has no official source host.",
+            }
         )
-        issues = 1
-    elif price_run in {"new", "acceleration"}:
-        assumptions = ""
-        contradicting = ""
-        stance = "agree"
-        counterevidence = f"Agree: the {price_run} classification matches the stored official-source figures."
-        issues = 0
-    else:
-        assumptions = ""
-        contradicting = ""
-        stance = ""
-        counterevidence = ""
-        issues = 0
-    if _official_citation(thesis):
-        bad_sources = ""
-    else:
-        bad_sources = "The thesis does not cite an SEC filing, an ASX announcement, or a company release."
-        issues += 1
-    if grade_issues:
-        issues += len(grade_issues)
-        listed = " ".join(grade_issues)
-        assumptions = (assumptions + " " + listed).strip()
-    elif "market cap unverified" in (thesis or "").casefold():
-        issues += 1
-        assumptions = (assumptions + " market cap unverified").strip()
-    return {
-        "assumptions_that_fail": assumptions,
-        "bad_sources": bad_sources,
-        "contradicting_research": contradicting,
-        "other_side": (
-            "The return fails if the named spending or order is cancelled before it reaches a filing the thesis can cite."
-        ),
-        "surviving_issues": issues,
-        "price_run_stance": stance,
-        "price_run_counterevidence": counterevidence,
-    }
+    grade_issues = _grade_issues(thesis)
+    for line in grade_issues:
+        flaws.append({"flaw": line, "severity": "moderate", "evidence": line})
+    if not grade_issues and "market cap unverified" in (thesis or "").casefold():
+        flaws.append(
+            {
+                "flaw": "market cap unverified",
+                "severity": "moderate",
+                "evidence": "The thesis states that the market cap is unverified.",
+            }
+        )
+    return {"flaws": flaws}

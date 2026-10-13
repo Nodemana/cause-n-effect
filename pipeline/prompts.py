@@ -1,4 +1,4 @@
-"""Prompt text for the three model tasks. Rules files are included in full."""
+"""Prompt text for the agent tasks. Rules files are included in full."""
 
 import json
 from pathlib import Path
@@ -9,7 +9,7 @@ REPO = Path(__file__).resolve().parents[1]
 RULES = REPO / "Centurions" / "rules"
 MACRO_CACHE = REPO / "cache" / "macro.json"
 
-_LEAD_ORDER = ("capex", "debt_raise", "orders_backlog", "accumulation", "insider_buying")
+_LEAD_ORDER = ("capex", "debt_raise", "orders_backlog", "accumulation", "insider_buying", "macro")
 
 
 def rules_text(lead_type):
@@ -35,6 +35,12 @@ def significance_prompt(candidate):
     timing_rule = ""
     if candidate.lead_type == "orders_backlog" or quarter:
         timing_rule = "timing on_time is recorded and is not a failure for this figure. "
+    macro_rule = ""
+    if candidate.lead_type == "macro":
+        macro_rule = (
+            "This is a macro signal. Judge the series move or spread in VALUE_TEXT. "
+            "The series ids, values, dates, and source URLs in that text are the evidence. "
+        )
     return "\n".join(
         [
             "TASK: significance",
@@ -57,6 +63,7 @@ def significance_prompt(candidate):
             "magnitude is large, moderate, or small. novelty is first or routine. "
             + novelty_rule
             + timing_rule
+            + macro_rule
             + "attention is unnoticed or noticed. "
             "timing is early (event age at most 45 days), on_time (46 to 120 days), or late (older than 120).",
             "Each rationale is one sentence. Use only the fields above. "
@@ -65,7 +72,7 @@ def significance_prompt(candidate):
     )
 
 
-def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None):
+def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None, related=None, show_macro=False):
     figure = lead.figure
     prior = "yes" if getattr(figure, "prior_comparison", False) else "no"
     lines = [
@@ -99,14 +106,33 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
             )
         )
     lines.append("COUNTERPARTIES_END")
-    lines.append("CRITERIA_BEGIN")
-    for criterion in criteria:
-        threshold = criterion.get("threshold_value")
-        unit = criterion.get("threshold_unit") or ""
+    lines.append("GATE_RESULTS_BEGIN")
+    gate_results = list(getattr(lead, "gate_results", None) or [])
+    if not gate_results:
+        lines.append("none")
+    for item in gate_results:
+        version = item.get("rubric_version")
+        version_text = "" if version is None else str(version)
         lines.append(
-            f"- {criterion['name']} | {_number(threshold)} | {unit} | {_one_line(criterion['description'])}"
+            " | ".join(
+                (
+                    str(item.get("name") or ""),
+                    "pass" if item.get("passed") else "fail",
+                    _one_line(item.get("measured_value")),
+                    version_text,
+                    _one_line(item.get("evidence")),
+                )
+            )
         )
-    lines.append("CRITERIA_END")
+    lines.append("GATE_RESULTS_END")
+    if lead.lead_type == "macro":
+        lines.append("Macro leads are not rubric-gated. Do not grade a rubric.")
+    else:
+        lines.append(
+            "The scout gate already applied the fixed rubric version stored in rubrics. "
+            "Every GATE_RESULTS line passed. Do not grade those criteria again."
+        )
+    _ = criteria
     lines.append("RULES_BEGIN")
     seen = []
     for lead_type in lead.grade_types:
@@ -114,15 +140,15 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
             seen.append(lead_type)
             lines.append(rules_text(lead_type))
     lines.append("RULES_END")
-    if pass_number == 2:
+    if constituents:
         lines.append("CONSTITUENTS_BEGIN")
-        for item in constituents or []:
+        for item in constituents:
             lines.append(json.dumps(item, sort_keys=True))
         lines.append("CONSTITUENTS_END")
         lines.append(
-            "This lead is the single new lead from a Legate merge. "
-            "A lead that was not merged is not sent back. "
-            "Still write one grade, one thesis, one ROI, one set of risks, one timeframe, "
+            "This lead joins the constituents into one finding. "
+            "Each constituent already passed its own rubric. "
+            "Still write one thesis, one ROI, one set of risks, one timeframe, "
             "and one assumptions list."
         )
         lines.append(
@@ -130,29 +156,43 @@ def centurion_prompt(lead, criteria, pass_number, constituents=None, macro=None)
             "with reasoning and evidence. Note that call as a concern where relevant. "
             "There is no automatic rejection. Do not invent a stock price."
         )
+    if show_macro:
         if macro:
             lines.append(f"MACRO: {_one_line(macro)}")
             lines.append(
-                "Macro context is a concern on this pass only. "
+                "Macro context is a concern on a capex chain and on a later merged lead. "
                 "Use the macro line as supplied. Do not re-pull series and do not treat it as a company figure."
             )
         else:
             lines.append("MACRO: none")
             lines.append("No macro cache is available. Do not invent macro conditions.")
+    if related is not None:
+        lines.append("RELATED_FINDINGS_BEGIN")
+        if related:
+            for item in related:
+                lines.append(json.dumps(item, sort_keys=True))
+        else:
+            lines.append("none")
+        lines.append("RELATED_FINDINGS_END")
+        lines.append(
+            "RELATED_FINDINGS are capex-chain and smart-money leads from this sweep "
+            "whose text matches this series. Use them when naming likely effects. "
+            "A finding that is not listed here is not relevant to this series."
+        )
     lines.append(
         "Reply with one JSON object and no other text. "
         "Keys: thesis, roi, roi_pct, timeframe_days, risks, recommendation, assumptions, "
-        "grades, suppliers, customers, buyers, price_run. "
-        "grades is a list of {name, passed, evidence}. "
+        "suppliers, customers, buyers, price_run. "
         "risks and assumptions are lists of sentences. "
         "suppliers, customers, and buyers are lists of {name, ticker} "
-        "taken from COUNTERPARTIES of that role and from the figure text. "
+        "taken from COUNTERPARTIES of that role, from CONSTITUENTS, and from the figure text. "
         "A customer on a capex lead stays a customer. A deal_party is not a "
         "supplier or a customer. "
         "When COUNTERPARTIES is empty, the thesis says none found for the "
         "suppliers line on a capex lead and for the customers line on a backlog lead. "
-        "price_run is null on a first pass. "
-        "Figures only from the source URL and the fields above."
+        "price_run is null when this task has no constituents. "
+        "When constituents are present, price_run is new, acceleration, or priced-in. "
+        "Figures only from the source URL, the constituents, the related findings, and the fields above."
     )
     return "\n".join(lines)
 
@@ -165,17 +205,39 @@ def praetorian_prompt(thesis_markdown, price_run):
             "THESIS_BEGIN",
             thesis_markdown,
             "THESIS_END",
-            "Critique only. Do not merge, rank, or add an assumptions list of your own.",
-            "The Centurion classified any prior price run first. "
-            "State whether you agree or disagree, with counter-evidence. "
-            "A priced-in call is a concern. Do not reject the lead automatically.",
-            "Reply with one JSON object and no other text. Keys: assumptions_that_fail, "
-            "bad_sources, contradicting_research, other_side, surviving_issues, "
-            "price_run_stance, price_run_counterevidence. "
-            "price_run_stance is agree, disagree, or empty when PRICE_RUN is none. "
-            "surviving_issues is an integer. Empty strings are allowed for the text keys.",
+            "Write every flaw in this thesis. Do not merge, rank, reject, or drop the lead.",
+            "The lead continues to ranking whether or not this list is empty.",
+            "Reply with one JSON object and no other text. Key: flaws.",
+            "flaws is a list of {flaw, severity, evidence}.",
+            "severity is low, moderate, or high.",
+            "flaw and evidence are non-empty strings.",
+            "An empty list means the thesis has no recorded flaw.",
         ]
     )
+
+
+def legate_selection_prompt(candidates):
+    lines = [
+        "TASK: legate_selection",
+        "Select at most 5 lead ids from the candidates below.",
+        "Reply with one JSON object and no other text. Keys: lead_ids, rationale.",
+        "lead_ids is an array of integers copied from the LEAD_ID lines. At most 5. No duplicates.",
+        "rationale is an object. Each key is a chosen lead id written as text. Each value is a non-empty string.",
+        "An empty lead_ids array selects none, and rationale is then {}.",
+        "The candidate report lists every thesis and its Praetorian flaws.",
+    ]
+    for item in candidates:
+        lines.extend(
+            [
+                f"LEAD_ID: {item['lead_id']}",
+                f"TICKER: {item['ticker']}",
+                f"RANK: {item['rank']}",
+                f"SCOUT: {item['source_scout']}",
+                f"SUMMARY: {item['summary']}",
+                f"FLAWS: {item['flaws']}",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def load_macro(conn, path=None):

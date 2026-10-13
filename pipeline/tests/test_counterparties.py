@@ -28,8 +28,8 @@ from pipeline.counterparties import (
     submissions_url,
 )
 import pipeline.counterparties as counterparties
-from pipeline.flow import PlannedLead, run_pipeline
-from pipeline.llm import StubProvider
+from pipeline.flow import PlannedLead
+from pipeline.fixture import fixture_response, run_with_fixture
 from pipeline.prompts import centurion_prompt
 from shared.nethttp import EndpointError
 from shared.store import save_run
@@ -383,7 +383,7 @@ class CounterpartyTests(unittest.TestCase):
         prompt = centurion_prompt(lead, [], 1)
         self.assertIn("COUNTERPARTIES_BEGIN", prompt)
         self.assertIn("Globex Power", prompt)
-        data = json.loads(StubProvider().complete(prompt, max_tokens=800).text)
+        data = fixture_response(prompt)
         self.assertEqual(data["suppliers"][0]["name"], "Globex Power")
         self.assertIn("Suppliers named: Globex Power", data["thesis"])
 
@@ -393,7 +393,7 @@ class CounterpartyTests(unittest.TestCase):
         capex.grade_types = []
         capex.figure = _bare_figure()
         capex.counterparties = []
-        capex_data = json.loads(StubProvider().complete(centurion_prompt(capex, [], 1), max_tokens=800).text)
+        capex_data = fixture_response(centurion_prompt(capex, [], 1))
         self.assertIn("Suppliers named: none found", capex_data["thesis"])
         self.assertNotIn("Customers named:", capex_data["thesis"])
         backlog = _lead(
@@ -406,7 +406,7 @@ class CounterpartyTests(unittest.TestCase):
         backlog.figure = _bare_figure()
         backlog.figure.figure_type = "backlog"
         backlog.counterparties = []
-        backlog_data = json.loads(StubProvider().complete(centurion_prompt(backlog, [], 1), max_tokens=800).text)
+        backlog_data = fixture_response(centurion_prompt(backlog, [], 1))
         self.assertIn("Customers named: none found", backlog_data["thesis"])
         self.assertNotIn("Suppliers named:", backlog_data["thesis"])
 
@@ -425,20 +425,27 @@ class CounterpartyTests(unittest.TestCase):
                 supplier = _orders("GEV", "filing", "2026-06-30", 2_000_000_000, figure_type="supplier_order")
                 supplier["company"] = "Globex Power"
                 supplier["source_url"] = "https://www.sec.gov/Archives/edgar/data/2088000/gev.htm"
+                backlog = _orders(
+                    "GEV",
+                    "RevenueRemainingPerformanceObligation",
+                    "2026-03-31",
+                    40_000_000,
+                    figure_type="customer_backlog",
+                )
+                backlog["company"] = "Globex Power"
+                backlog["source_url"] = "https://www.sec.gov/Archives/edgar/data/2088000/gev-prior.htm"
                 save_run(
                     conn,
                     "capex",
                     "2026-10-12T14:30:52Z",
                     [current, prior, *_caps("ORCL", "GEV")],
                 )
-                save_run(conn, "orders-backlog", "2026-10-12T14:31:00Z", [supplier])
+                save_run(conn, "orders-backlog", "2026-10-12T14:31:00Z", [supplier, backlog])
             finally:
                 conn.close()
             with self.assertLogs("pipeline.counterparties", level="WARNING") as caught:
-                run_pipeline(
+                run_with_fixture(
                     path,
-                    provider=StubProvider(),
-                    token_budget=80000,
                     now=SWEEP_AT,
                     parties_client=client,
                 )
@@ -459,25 +466,26 @@ class CounterpartyTests(unittest.TestCase):
         self.assertIn("failed closed", blob)
         self.assertIn("GEV", blob)
         self.assertNotIn(CONTACT, blob)
-        legate = [row for row in rows if row["source_scout"] == "legate"]
-        self.assertTrue(legate)
-        self.assertIn("cross-company capex-to-backlog", legate[0]["summary"])
-        self.assertTrue(any("Suppliers named: Globex Power" in (row["thesis_text"] or "") for row in legate))
-        parties = [row for row in legate if row["name"] == "Globex Power"]
+        chain = [row for row in rows if row["source_scout"] == "capex_chain"]
+        self.assertTrue(chain)
+        self.assertTrue(all(row["ticker"] == "ORCL" for row in chain))
+        self.assertIn("Spender", chain[0]["summary"])
+        self.assertIn("Supplier", chain[0]["summary"])
+        self.assertIn("backlog", chain[0]["summary"])
+        self.assertTrue(any("Suppliers named: Globex Power" in (row["thesis_text"] or "") for row in chain))
+        parties = [row for row in chain if row["name"] == "Globex Power"]
         self.assertTrue(parties)
         self.assertEqual(parties[0]["role"], "supplier")
         self.assertEqual(parties[0]["party_ticker"], "GEV")
         self.assertIn("https://www.sec.gov/", parties[0]["source_url"])
         self.assertIn("d1dex101.htm", parties[0]["source_url"])
+        self.assertFalse(any(row["ticker"] == "GEV" for row in rows))
         stored_names = [row["name"] for row in rows if row["name"]]
         thesis_blob = "\n".join(row["thesis_text"] or "" for row in rows)
         for junk in JUNK:
             self.assertNotIn(junk, stored_names)
             self.assertNotIn(junk, thesis_blob)
         self.assertTrue(all("orcl-10k.htm" not in url for url in client.urls))
-        gev = [row for row in rows if row["ticker"] == "GEV" and row["source_scout"] != "legate"]
-        self.assertTrue(gev)
-        self.assertTrue(all(row["name"] is None for row in gev))
         self.assertTrue(all((urlsplit(url).hostname or "").endswith("sec.gov") for url in client.urls))
         self.assertEqual(client.urls.count(TICKERS_URL), 1)
 
@@ -605,10 +613,8 @@ class CounterpartyTests(unittest.TestCase):
                 save_run(conn, "capex", "2026-10-12T14:30:52Z", [current, prior, *_caps("ORCL")])
             finally:
                 conn.close()
-            run_pipeline(
+            run_with_fixture(
                 path,
-                provider=StubProvider(),
-                token_budget=80000,
                 now=SWEEP_AT,
                 parties_client=client,
             )
@@ -1042,10 +1048,8 @@ class CounterpartyTests(unittest.TestCase):
                 save_run(conn, "orders-backlog", "2026-10-12T14:31:00Z", [backlog])
             finally:
                 conn.close()
-            run_pipeline(
+            run_with_fixture(
                 path,
-                provider=StubProvider(),
-                token_budget=80000,
                 now=SWEEP_AT,
                 parties_client=client,
             )

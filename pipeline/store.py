@@ -1,5 +1,7 @@
 """Writes for one pipeline run. Search for the reject log lives here too."""
 
+import json
+
 from shared.pipeline_store import lodge_lead, record_criterion_result
 from shared.store import allocate_run_id, utc_now
 
@@ -52,16 +54,42 @@ def start_run(conn, started_at):
     return run_id
 
 
-def finish_run(conn, run_id, token_budget, tokens_used, provider, started_at, finished_at):
+def begin_pipeline_run(conn, run_id, started_at, queue_dir, status, stage):
     with conn:
         conn.execute(
             """
             INSERT INTO pipeline_runs (
-                run_id, token_budget, tokens_used, provider, started_at, finished_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                run_id, token_budget, tokens_used, provider, started_at, finished_at,
+                status, stage, queue_dir
+            ) VALUES (?, 0, 0, 'agent', ?, NULL, ?, ?, ?)
             """,
-            (run_id, int(token_budget), int(tokens_used), provider, started_at, finished_at),
+            (run_id, started_at, status, stage, queue_dir),
         )
+
+
+def set_pipeline_stage(conn, run_id, status, stage):
+    with conn:
+        conn.execute(
+            "UPDATE pipeline_runs SET status = ?, stage = ? WHERE run_id = ?",
+            (status, stage, run_id),
+        )
+
+
+def complete_run(conn, run_id, finished_at):
+    with conn:
+        conn.execute(
+            """
+            UPDATE pipeline_runs
+            SET status = 'complete', stage = 'legate_selection', finished_at = ?,
+                token_budget = 0, tokens_used = 0, provider = 'agent'
+            WHERE run_id = ?
+            """,
+            (finished_at, run_id),
+        )
+
+
+def pipeline_run(conn, run_id):
+    return conn.execute("SELECT * FROM pipeline_runs WHERE run_id = ?", (run_id,)).fetchone()
 
 
 def insert_reject(conn, run_id, planned, created_at):
@@ -230,25 +258,96 @@ def insert_thesis(conn, run_id, lead_id, thesis, written_at):
             ),
         )
         thesis_id = cursor.lastrowid
-    for criterion in thesis.criteria:
-        grade = thesis.grades_by_name.get(criterion["name"])
-        if grade is None:
-            passed = 0
-            evidence = "not graded"
-        else:
-            passed = 1 if grade.get("passed") else 0
-            evidence = grade.get("evidence")
+    return thesis_id
+
+
+def record_gate_results(conn, lead_id, results, run_id, source_url, assessed_at):
+    """Store one scout-gate row per criterion. Replaces any earlier rows for those criteria."""
+    for item in results or []:
         record_criterion_result(
             conn,
             lead_id,
-            criterion["criterion_id"],
-            passed,
+            item["criterion_id"],
+            1 if item.get("passed") else 0,
             run_id,
-            evidence=evidence,
-            source_url=thesis.source_url,
-            assessed_at=written_at,
+            evidence=item.get("evidence"),
+            source_url=source_url,
+            assessed_at=assessed_at,
+            measured_value=item.get("measured_value"),
+            rubric_id=item.get("rubric_id"),
+            rubric_version=item.get("rubric_version"),
         )
-    return thesis_id
+
+
+def screened_lead_for_figure(conn, figure_id):
+    """The filtered or needs_price lead already stored for this figure, if any."""
+    if figure_id is None:
+        return None
+    return conn.execute(
+        """
+        SELECT leads.lead_id, leads.status
+        FROM lead_figures AS link
+        JOIN leads ON leads.lead_id = link.lead_id
+        WHERE link.figure_id = ? AND leads.status IN ('filtered', 'needs_price')
+        ORDER BY leads.lead_id DESC
+        LIMIT 1
+        """,
+        (figure_id,),
+    ).fetchone()
+
+
+def insert_screened_lead(conn, run_id, candidate, outcome, created_at):
+    """Store a filtered or needs_price lead and its criterion rows."""
+    from pipeline.prefilter import candidate_exchange
+
+    figure = candidate.figure
+    names = []
+    for item in outcome.results:
+        if item.get("needs_price"):
+            names.append(f"{item['name']}: needs price")
+        elif not item.get("passed"):
+            names.append(f"{item['name']}: {item.get('evidence') or 'fail'}")
+    summary = "; ".join(names) or outcome.status
+    lead_id = lodge_lead(
+        conn,
+        candidate.lead_type,
+        figure.ticker,
+        candidate_exchange(candidate),
+        figure.scout,
+        run_id,
+        figure_ids=[figure.figure_id],
+        company=figure.company,
+        source_url=figure.source_url or None,
+        summary=summary,
+        created_at=created_at,
+        status=outcome.status,
+    )
+    record_gate_results(conn, lead_id, outcome.results, run_id, figure.source_url or None, created_at)
+    return lead_id
+
+
+def update_screened_lead(conn, lead_id, outcome, run_id, source_url, created_at):
+    names = []
+    for item in outcome.results:
+        if item.get("needs_price"):
+            names.append(f"{item['name']}: needs price")
+        elif not item.get("passed"):
+            names.append(f"{item['name']}: {item.get('evidence') or 'fail'}")
+    summary = "; ".join(names) or outcome.status
+    with conn:
+        conn.execute(
+            "UPDATE leads SET status = ?, summary = ?, updated_at = ? WHERE lead_id = ?",
+            (outcome.status, summary, created_at, lead_id),
+        )
+        conn.execute("DELETE FROM lead_criteria_results WHERE lead_id = ?", (lead_id,))
+    record_gate_results(conn, lead_id, outcome.results, run_id, source_url, created_at)
+
+
+def delete_screened_lead(conn, lead_id):
+    with conn:
+        conn.execute("DELETE FROM lead_criteria_results WHERE lead_id = ?", (lead_id,))
+        conn.execute("DELETE FROM lead_counterparties WHERE lead_id = ?", (lead_id,))
+        conn.execute("DELETE FROM leads WHERE lead_id = ?", (lead_id,))
 
 
 def insert_merge(conn, run_id, survivor_id, constituent_ids, rationale, evidence_refs, created_at):
@@ -278,36 +377,31 @@ def set_merge_rank(conn, merge_id, rank):
 
 
 def insert_review(conn, run_id, thesis_id, review, critique_body, written_at):
+    """Store the flaw list. The critique verdict stays accept so the lead is not rejected."""
+    flaws = review.get("flaws") or []
     with conn:
         conn.execute(
             """
             INSERT INTO praetorian_reviews (
                 thesis_id, run_id, assumptions_that_fail, bad_sources,
                 contradicting_research, other_side, surviving_issues,
-                price_run_stance, price_run_counterevidence, written_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                price_run_stance, price_run_counterevidence, flaws, written_at
+            ) VALUES (?, ?, '', '', '', '', 0, NULL, '', ?, ?)
             """,
             (
                 thesis_id,
                 run_id,
-                review["assumptions_that_fail"],
-                review["bad_sources"],
-                review["contradicting_research"],
-                review["other_side"],
-                int(review["surviving_issues"]),
-                review.get("price_run_stance") or None,
-                review.get("price_run_counterevidence") or "",
+                json.dumps(flaws, sort_keys=True),
                 written_at,
             ),
         )
-        verdict = "accept" if int(review["surviving_issues"]) == 0 else "revise"
         conn.execute(
             """
             INSERT INTO critiques (
                 thesis_id, run_id, critique, verdict, round, written_at
-            ) VALUES (?, ?, ?, ?, 1, ?)
+            ) VALUES (?, ?, ?, 'accept', 1, ?)
             """,
-            (thesis_id, run_id, critique_body, verdict, written_at),
+            (thesis_id, run_id, critique_body, written_at),
         )
 
 
@@ -335,15 +429,42 @@ def insert_ranking(conn, run_id, lead_id, rank, roi, timeframe_days, issues, ris
         )
 
 
-def insert_decision(conn, run_id, lead_id, created_at):
+def record_selection(conn, run_id, picks, created_at):
+    """Store the Legate's picks, mark them presented, and complete the run.
+
+    `picks` is `(lead_id, rationale)` in selection order. An empty list
+    still completes the run.
+    """
     with conn:
+        for order, (lead_id, rationale) in enumerate(picks, start=1):
+            conn.execute(
+                "UPDATE rankings SET presented = 1 WHERE run_id = ? AND lead_id = ?",
+                (run_id, lead_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO legate_selections (
+                    run_id, lead_id, pick_order, rationale, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (run_id, lead_id, order, rationale, created_at),
+            )
+            conn.execute(
+                """
+                UPDATE leads
+                SET status = 'presented', priority = ?, updated_at = ?
+                WHERE lead_id = ?
+                """,
+                (order, created_at, lead_id),
+            )
         conn.execute(
             """
-            INSERT INTO decisions (
-                lead_id, run_id, status, created_at, updated_at
-            ) VALUES (?, ?, 'pending', ?, ?)
+            UPDATE pipeline_runs
+            SET status = 'complete', stage = 'legate_selection', finished_at = ?,
+                token_budget = 0, tokens_used = 0, provider = 'agent'
+            WHERE run_id = ?
             """,
-            (lead_id, run_id, created_at, created_at),
+            (created_at, run_id),
         )
 
 

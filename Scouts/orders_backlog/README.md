@@ -18,7 +18,7 @@ The backlog side covers defence, industrials, and chip equipment only, including
 
 ## Significance
 
-The code already reads backlog tags and order announcements. That pull is not a lead. The sector gate, the review flags, and a dedupe run first. A small LLM pass, inside a per-run token budget, then judges the shortlist and emits a lead only when the demand is genuinely interesting.
+The code already reads backlog tags and order announcements. That pull is not a lead. The sector gate, the review flags, and a dedupe run first. An external agent then judges the shortlist from a task file and emits a lead only when the demand is genuinely interesting. The sweep does not call a model.
 
 Each emitted lead stores a short label and a one-line reason on four dimensions. The same four fields are stored on a reject.
 
@@ -31,7 +31,7 @@ A candidate that fails is not a lead. It is a row in `lead_rejects`: scout `orde
 
 A lead that is stored goes to one Centurion, which writes one individual thesis. After the Centurions write those theses, the Legate merges linked theses. Only a merged finding goes back to one Centurion for a second, fresh full thesis pass. A lead that is not merged gets no second pass and goes straight to the Praetorians for critique. A merged finding goes to the Praetorians after that second-pass thesis.
 
-That second pass includes a priced-in check on any prior price run. The Centurion makes the call first, classifying the run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with its reasoning and evidence. It notes that call as a concern where relevant. There is no automatic rejection. The stock price and past performance come from quote data. The Praetorians then review that classification and state whether they agree or disagree, with counter-evidence.
+That second pass includes a priced-in check on any prior price run. The Centurion makes the call first, classifying the run as a new thesis, an acceleration of an existing thesis, or tail end / likely priced in, with its reasoning and evidence. It notes that call as a concern where relevant. There is no automatic rejection. The stock price and past performance come from quote data. The Praetorians then write every flaw in the thesis, including any objection to that classification, as flaw, severity, and evidence. The lead stays in ranking.
 
 ## Constraints and limitations
 
